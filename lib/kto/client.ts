@@ -62,6 +62,30 @@ export function ktoServiceKeyConfigured(): boolean {
   return Boolean(getRuntimeSecret("KTO_SERVICE_KEY"));
 }
 
+/* Waits before a retry so a struggling upstream is not hit again instantly.
+   Exponential with jitter, so concurrent callers that failed together do not
+   line up and retry in the same instant. Resolves early if the caller aborts,
+   which keeps the recovery response budget honest. */
+function backoffDelay(attempt: number, signal?: AbortSignal): Promise<void> {
+  const base = Math.min(1_000, 150 * 2 ** attempt);
+  const wait = base + Math.random() * base * 0.5;
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, wait);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function callKto(
   service: KtoServiceName,
   operation: string,
@@ -161,6 +185,7 @@ export async function callKto(
           attempt + 1 < attempts &&
           (response.status === 429 || response.status >= 500)
         ) {
+          await backoffDelay(attempt, options.signal);
           continue;
         }
         break;
@@ -237,7 +262,10 @@ export async function callKto(
         error instanceof DOMException && error.name === "TimeoutError"
           ? "TIMEOUT"
           : "NETWORK_ERROR";
-      if (attempt + 1 < attempts) continue;
+      if (attempt + 1 < attempts) {
+        await backoffDelay(attempt, options.signal);
+        continue;
+      }
     }
   }
 

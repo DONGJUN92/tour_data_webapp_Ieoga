@@ -4,6 +4,13 @@ export const KTO_BASE_URL = "https://apis.data.go.kr/B551011";
 export const KTO_MOBILE_OS = "ETC";
 export const KTO_MOBILE_APP = "IEOGA";
 
+/* Short-lived edge de-duplication for repeated identical queries, sized as
+   burst protection rather than storage. The contest requires live calls and
+   verifies the agency-side call log, so this window is kept small enough that
+   any real usage still produces a continuous trail. Responses are never
+   written to D1 or any durable store. */
+export const KTO_BURST_CACHE_TTL_SECONDS = 300;
+
 export const KTO_SERVICES: Record<
   KtoServiceName,
   { label: string; role: string; primaryOperation: string }

@@ -2,6 +2,12 @@ import { getStoredHealthSnapshot } from "@/lib/db/repository";
 import { jsonResponse } from "@/lib/http";
 import { ktoServiceKeyConfigured } from "@/lib/kto/client";
 import {
+  HEALTH_REFRESH_INTERVAL_MS,
+  HEALTH_STALE_AFTER_MS,
+  isOlderThan,
+  refreshKtoHealth,
+} from "@/lib/kto/health-refresh";
+import {
   externalProviderStatus,
   runtimeBindingStatus,
 } from "@/lib/runtime-readiness";
@@ -21,13 +27,35 @@ export async function GET() {
       databaseReadable = false;
     }
   }
+
+  /* The scheduled probe is the primary refresh path. If it has not run — a
+     fresh deployment, or a paused cron — probe inline rather than reporting a
+     months-old snapshot as if it described the current service. The helper
+     rate-limits itself, so this cannot become a per-request call storm. */
+  let refreshMode: "scheduled" | "on_read" = "scheduled";
+  if (
+    configured &&
+    databaseReadable &&
+    isOlderThan(
+      sources.map((source) => source.checkedAt).sort().at(-1),
+      HEALTH_REFRESH_INTERVAL_MS,
+    )
+  ) {
+    try {
+      if (await refreshKtoHealth()) {
+        refreshMode = "on_read";
+        sources = await getStoredHealthSnapshot();
+      }
+    } catch {
+      /* Keep serving the stored snapshot; `stale` below still flags it. */
+    }
+  }
+
   const checkedAt = sources
     .map((source) => source.checkedAt)
     .sort()
     .at(-1);
-  const stale =
-    checkedAt !== undefined &&
-    Date.now() - Date.parse(checkedAt) > 24 * 3_600_000;
+  const stale = isOlderThan(checkedAt, HEALTH_STALE_AFTER_MS);
   const errorCount = sources.filter(
     (source) => source.status === "error",
   ).length;
@@ -65,9 +93,14 @@ export async function GET() {
           : "satisfied",
       },
       sourceHealth: {
-        mode: "stored_ops_snapshot",
+        mode:
+          refreshMode === "on_read"
+            ? "live_probe_on_read"
+            : "scheduled_live_probe",
         expectedSourceCount: 8,
         sourceCount: sources.length,
+        refreshIntervalMs: HEALTH_REFRESH_INTERVAL_MS,
+        staleAfterMs: HEALTH_STALE_AFTER_MS,
         stale,
         checkedAt: checkedAt ?? null,
       },

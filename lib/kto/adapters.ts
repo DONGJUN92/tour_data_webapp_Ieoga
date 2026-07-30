@@ -1,4 +1,5 @@
 import {
+  KTO_BURST_CACHE_TTL_SECONDS,
   POLICY_INDICATORS,
   analysisRegionCode,
   analysisDistrictCode,
@@ -260,7 +261,7 @@ export function getRelatedTourism(params: {
     },
     {
       ...requestOptions,
-      cacheTtlSeconds: 21_600,
+      cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
       fieldsUsed: [
         "baseYm",
         "tAtsNm",
@@ -294,7 +295,7 @@ export function getConcentrationForecast(params: {
     },
     {
       ...requestOptions,
-      cacheTtlSeconds: 1_800,
+      cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
       fieldsUsed: ["baseYmd", "tAtsNm", "cnctrRate"],
     },
   );

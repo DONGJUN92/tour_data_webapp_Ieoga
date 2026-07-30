@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the IEOGA nationwide service. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { refreshKtoHealth } from "../lib/kto/health-refresh";
 import { runPolicySync } from "../lib/sync/policy-sync";
 
 interface Env {
@@ -87,6 +88,17 @@ const worker = {
   ): Promise<void> {
     ctx.waitUntil(
       runPolicySync({ batchSize: 2, bootstrapIfEmpty: true }).then(
+        () => undefined,
+      ),
+    );
+    /* Probes the eight KTO services on a schedule. This keeps the readiness
+       panel current instead of serving a snapshot from whenever an operator
+       last ran a manual check, and leaves a continuous call trail on the
+       agency side, which is what the contest verifies. refreshKtoHealth
+       skips itself when a recent probe already covers the window. */
+    ctx.waitUntil(
+      refreshKtoHealth().then(
+        () => undefined,
         () => undefined,
       ),
     );

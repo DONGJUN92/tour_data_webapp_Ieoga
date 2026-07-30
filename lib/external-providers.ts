@@ -50,9 +50,28 @@ export function forwardGeocodeProviderConfig() {
 
 export function routingProviderConfig() {
   return providerConfig(
-    getRuntimeSecret("ROUTING_BASE_URL"),
+    routingEndpoints()[0],
     PUBLIC_OSRM_WALKING_URL,
   );
+}
+
+/* Walking ETA is a hard gate: a candidate whose arrival cannot be verified is
+   rejected rather than guessed, so a single unreachable router takes the whole
+   recovery down. ROUTING_BASE_URL therefore accepts a comma-separated list of
+   OSRM-compatible endpoints, tried in order. The shared public router is
+   always kept as the final entry so a misconfigured managed endpoint degrades
+   instead of failing closed. Every entry is a real routing engine — none of
+   this substitutes an estimated distance for a measured one. */
+export function routingEndpoints(): string[] {
+  const configured = (getRuntimeSecret("ROUTING_BASE_URL") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const ordered = configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
+  if (!ordered.some((url) => normalizeUrl(url) === normalizeUrl(PUBLIC_OSRM_WALKING_URL))) {
+    ordered.push(PUBLIC_OSRM_WALKING_URL);
+  }
+  return ordered;
 }
 
 export function weatherProviderConfig() {

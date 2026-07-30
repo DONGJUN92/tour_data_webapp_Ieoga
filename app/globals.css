@@ -1,21 +1,68 @@
+/* =========================================================================
+   이어가 디자인 토큰
+   레이아웃·여백·인터랙션 문법은 토스 스타일을 따르고, 색은 이어가 고유
+   팔레트(이음 틸)를 사용한다. 여행앱 대부분이 파랑·코랄이라 틸은 시각적
+   으로 구분되고, "끊긴 것을 잇는다"는 서비스 의미와도 맞는다.
+   ========================================================================= */
 :root {
-  --ink: #191f28;
-  --ink-soft: #333d4b;
-  --forest: #3182f6;
-  --forest-dark: #1b64da;
-  --mint: #e8f3ff;
-  --mint-bright: #d6eaff;
-  --lime: #ffffff;
-  --coral: #f04452;
-  --cream: #f7f8fa;
-  --paper: #ffffff;
-  --canvas: #f2f4f6;
+  /* --- 브랜드: 이음 틸 --- */
+  --brand: #0e9594;
+  --brand-strong: #0b7a79; /* pressed / hover */
+  --brand-deep: #06605f; /* 틴트 위 텍스트 */
+  --brand-tint: #e6f5f5; /* 연한 배경 */
+  --brand-tint-strong: #cfeceb; /* 선택된 칩 */
+
+  /* --- 상태: 중단 → 복구의 서사를 색으로 표현 --- */
+  --disrupt: #f59e0b; /* 중단·위험 (앰버) */
+  --disrupt-tint: #fef4e5;
+  --restored: #12b886; /* 복구 완료 (민트) */
+  --restored-tint: #e4f8f1;
+  --danger: #f04452; /* 적용 불가·오류 */
+  --danger-tint: #fdecee;
+
+  /* --- 중립 --- */
+  --ink: #191f28; /* 제목 */
+  --ink-soft: #4e5968; /* 본문 */
+  --muted: #8b95a1; /* 보조 설명 */
   --line: #e5e8eb;
-  --muted: #6b7684;
-  --danger: #b94235;
+  --canvas: #f2f4f6; /* 화면 배경 */
+  --paper: #ffffff; /* 카드 */
+
+  /* --- 엘리베이션 --- */
+  --shadow-card: 0 1px 3px rgba(25, 31, 40, 0.06);
+  --shadow-raised: 0 8px 24px rgba(25, 31, 40, 0.1);
+  --shadow-cta: 0 -2px 12px rgba(25, 31, 40, 0.06);
+
+  /* --- 형태 --- */
+  --r-card: 20px;
+  --r-control: 14px;
+  --r-chip: 12px;
+  --r-pill: 999px;
+
+  /* --- 모션: 토스식 스프링 --- */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-screen: 320ms;
+
+  /* --- 하위 호환 별칭 ---------------------------------------------------
+     기존 CSS 약 5,000줄이 아래 이름을 참조한다. 값만 새 팔레트로 연결해
+     한 번에 브랜드가 반영되도록 하고, 화면을 옮길 때마다 위의 의미 기반
+     토큰으로 교체한다. 신규 코드에서는 사용하지 않는다. */
+  --forest: var(--brand);
+  --forest-dark: var(--brand-strong);
+  --mint: var(--brand-tint);
+  --mint-bright: var(--brand-tint-strong);
+  --lime: #ffffff;
+  --coral: var(--danger);
+  --cream: #f7f8fa;
   --warning: #9d6415;
   --success: #277a50;
   --shadow: 0 24px 70px rgba(18, 40, 42, 0.09);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-screen: 1ms;
+  }
 }
 
 /* Active recovery is a separate, versioned journey state. */

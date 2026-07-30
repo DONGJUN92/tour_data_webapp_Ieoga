@@ -2065,10 +2065,12 @@ export function ProductApp() {
           >
             처음 사용 가이드
           </button>
-          <button className="header-cta" onClick={() => changeTab("recover")}>
-            {language === "en" ? "Recover my trip" : "지금 일정 복구"}
+          {/* Bridge recovery is the fast path: it needs no registered
+              itinerary, so it is the primary entry rather than the tab. */}
+          <a className="header-cta" href="/flow">
+            {language === "en" ? "Recover now" : "지금 바로 복구"}
             <span aria-hidden="true">→</span>
-          </button>
+          </a>
         </div>
       </header>
 

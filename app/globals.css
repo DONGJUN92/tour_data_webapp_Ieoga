@@ -2693,7 +2693,8 @@ input:disabled {
     transform: translateX(-50%);
   }
 
-  .mobile-nav button {
+  .mobile-nav button,
+  .mobile-nav a {
     min-height: 50px;
     display: flex;
     flex-direction: column;
@@ -2704,22 +2705,29 @@ input:disabled {
     border-radius: 11px;
     background: transparent;
     color: #b4c3c0;
-    font-size: 8px;
+    /* Was 8px, which is below the point these labels stay legible. */
+    font-size: 11px;
     font-weight: 800;
+    letter-spacing: -0.02em;
+    text-align: center;
+    text-decoration: none;
     cursor: pointer;
   }
 
-  .mobile-nav button span {
+  .mobile-nav button span,
+  .mobile-nav a span {
     color: #89a09c;
     font-size: 14px;
   }
 
-  .mobile-nav button.is-active {
+  .mobile-nav button.is-active,
+  .mobile-nav a.is-active {
     background: var(--lime);
     color: var(--ink);
   }
 
-  .mobile-nav button.is-active span {
+  .mobile-nav button.is-active span,
+  .mobile-nav a.is-active span {
     color: var(--ink);
   }
 }
@@ -4932,7 +4940,8 @@ body .mobile-nav {
   grid-template-columns: 1fr;
 }
 
-body .mobile-nav button:not(:first-child) {
+body .mobile-nav button:not(:first-child),
+body .mobile-nav a:not(:first-child) {
   display: none;
 }
 

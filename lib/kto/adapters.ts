@@ -12,12 +12,22 @@ import type { KtoAudit, KtoCallResult, KtoItem } from "./types";
 
 const listDefaults = { pageNo: 1, numOfRows: 100 };
 
+/* Region and district codes are official reference data that changes on the
+   order of once a year, yet ldongCode2 is hit on every page load and its
+   latency is spiky enough to occasionally exceed the request timeout. The
+   short burst window absorbs that without holding tourism content: the same
+   five-minute ceiling as every other cached call, so the agency-side call log
+   still shows continuous use. */
 export function getRegions(): Promise<KtoCallResult> {
   return callKto(
     "KorService2",
     "ldongCode2",
     { ...listDefaults },
-    { fieldsUsed: ["code", "name"] },
+    {
+      fieldsUsed: ["code", "name"],
+      cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
+      timeoutMs: 12_000,
+    },
   );
 }
 
@@ -26,7 +36,11 @@ export function getDistricts(regionCode: string): Promise<KtoCallResult> {
     "KorService2",
     "ldongCode2",
     { ...listDefaults, lDongRegnCd: regionCode },
-    { fieldsUsed: ["code", "name"] },
+    {
+      fieldsUsed: ["code", "name"],
+      cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
+      timeoutMs: 12_000,
+    },
   );
 }
 

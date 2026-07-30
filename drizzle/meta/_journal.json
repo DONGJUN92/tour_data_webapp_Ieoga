@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784188265540,
+      "tag": "0000_wild_star_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784189167478,
+      "tag": "0001_curvy_marrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784198244336,
+      "tag": "0002_past_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784198413896,
+      "tag": "0003_parallel_slyde",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784203623306,
+      "tag": "0004_privacy_redact_recovery_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784213937167,
+      "tag": "0005_dizzy_big_bertha",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784215542777,
+      "tag": "0006_marvelous_tyger_tiger",
+      "breakpoints": true
+    }
+  ]
+}

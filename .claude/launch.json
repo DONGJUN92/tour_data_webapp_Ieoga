@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ieoga-dev",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["run", "dev", "--", "--host", "localhost", "--port", "4173"],
+      "port": 4173
+    }
+  ]
+}

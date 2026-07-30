@@ -1,0 +1,48 @@
+const EARTH_RADIUS_METERS = 6_371_000;
+
+function radians(value: number): number {
+  return (value * Math.PI) / 180;
+}
+
+export function haversineMeters(
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+): number {
+  const latitudeDelta = radians(to.latitude - from.latitude);
+  const longitudeDelta = radians(to.longitude - from.longitude);
+  const fromLatitude = radians(from.latitude);
+  const toLatitude = radians(to.latitude);
+
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(fromLatitude) *
+      Math.cos(toLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return (
+    EARTH_RADIUS_METERS *
+    2 *
+    Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)))
+  );
+}
+
+export function conservativeWalkingMinutes(distanceMeters: number): number {
+  return Math.max(1, Math.ceil(distanceMeters / 60) + 4);
+}
+
+export function distanceBucket(distanceMeters: number): string {
+  if (distanceMeters < 500) return "0-499m";
+  if (distanceMeters < 1_000) return "500-999m";
+  if (distanceMeters < 2_000) return "1-1.9km";
+  if (distanceMeters < 5_000) return "2-4.9km";
+  if (distanceMeters < 10_000) return "5-9.9km";
+  return "10km+";
+}
+
+export function minutesBucket(minutes: number): string {
+  if (minutes <= 15) return "0-15m";
+  if (minutes <= 30) return "16-30m";
+  if (minutes <= 60) return "31-60m";
+  if (minutes <= 120) return "61-120m";
+  return "121m+";
+}

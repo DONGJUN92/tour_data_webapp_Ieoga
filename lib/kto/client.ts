@@ -62,6 +62,32 @@ export function ktoServiceKeyConfigured(): boolean {
   return Boolean(getRuntimeSecret("KTO_SERVICE_KEY"));
 }
 
+/* The portal queues concurrent requests per account rather than serving them
+   in parallel: measured against the live service, three simultaneous calls
+   each return in about 0.2s while eight push most responses past 3.4s. Detail
+   lookups run on a 2.5s budget, so an unthrottled burst turns calls that would
+   have succeeded into timeouts — losing the opening-hours evidence and
+   spending the recovery budget on nothing. Capping in-flight requests keeps
+   each one fast instead. */
+const MAX_CONCURRENT_KTO_REQUESTS = 3;
+let inFlightRequests = 0;
+const waiting: Array<() => void> = [];
+
+async function acquireRequestSlot(): Promise<void> {
+  if (inFlightRequests < MAX_CONCURRENT_KTO_REQUESTS) {
+    inFlightRequests += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => waiting.push(resolve));
+  inFlightRequests += 1;
+}
+
+function releaseRequestSlot(): void {
+  inFlightRequests -= 1;
+  const next = waiting.shift();
+  if (next) next();
+}
+
 /* Waits before a retry so a struggling upstream is not hit again instantly.
    Exponential with jitter, so concurrent callers that failed together do not
    line up and retry in the same instant. Resolves early if the caller aborts,
@@ -166,6 +192,9 @@ export async function callKto(
   let lastCode = "KTO_UPSTREAM_ERROR";
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    /* The slot is held only for the network call, so a slow response cannot
+       block the queue longer than its own timeout. */
+    await acquireRequestSlot();
     try {
       const response = await fetch(url, {
         headers: { Accept: "application/json" },
@@ -266,6 +295,12 @@ export async function callKto(
         await backoffDelay(attempt, options.signal);
         continue;
       }
+    } finally {
+      /* Covers every exit from the attempt — success, break, continue and
+         throw — so a slot is never leaked. Backoff runs before this, which
+         means a failing upstream also paces the whole client rather than
+         letting the next caller hammer it immediately. */
+      releaseRequestSlot();
     }
   }
 

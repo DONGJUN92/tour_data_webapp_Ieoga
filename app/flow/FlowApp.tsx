@@ -102,6 +102,19 @@ function appliedSources(option: RecoveryOption): {
   };
 }
 
+/* Engine reason codes rendered as something a traveller can act on. */
+const REJECTION_LABELS: Record<string, string> = {
+  TIME_LIMIT: "약속 시각까지 왕복이 어려움",
+  DISTANCE_LIMIT: "설정한 이동 거리 초과",
+  TRAVEL_PURPOSE_MISMATCH: "원래 일정의 목적과 맞지 않음",
+  SAME_AS_DISRUPTED_PLACE: "지금 있는 곳과 같은 장소",
+  OFFICIALLY_CLOSED: "그 시각에 운영하지 않음",
+  CONCENTRATION_HIGH: "혼잡할 것으로 예측됨",
+  ROUTE_UNAVAILABLE: "도보 경로를 확인하지 못함",
+  NEXT_FIXED_APPOINTMENT_AT_RISK: "다음 약속 도착이 위태로움",
+  INVALID_COORDINATE: "공식 좌표를 확인하지 못함",
+};
+
 const INCIDENTS: {
   value: Incident;
   mark: string;
@@ -229,6 +242,9 @@ export default function FlowApp() {
   const [apiLog, setApiLog] = useState<string[]>([]);
   const [options, setOptions] = useState<RecoveryOption[]>([]);
   const [rejectedCount, setRejectedCount] = useState(0);
+  const [rejectionSummary, setRejectionSummary] = useState<
+    Array<{ reasonCode: string; count: number }>
+  >([]);
   const [errorText, setErrorText] = useState("");
   const searchAbort = useRef<AbortController | null>(null);
 
@@ -258,6 +274,41 @@ export default function FlowApp() {
     if (!Number.isFinite(target)) return null;
     return Math.floor((target - nowMs) / 60_000);
   }, [apptDate, apptTime, nowMs]);
+
+
+  /* The dominant reason decides what to say. A schedule with no room is a
+     different problem from a place that happens to be closed, and telling the
+     traveller which one it is turns a dead end into a next step. */
+  const emptyReason = useMemo(() => {
+    const top = rejectionSummary[0]?.reasonCode;
+    if (availableMinutes != null && availableMinutes < 60) {
+      return {
+        headline:
+          "약속까지 남은 시간이 짧아 머물 수 있는 곳이 없습니다. 약속 시각을 늦추면 다시 찾아볼 수 있어요.",
+      };
+    }
+    if (top === "TIME_LIMIT" || top === "NEXT_FIXED_APPOINTMENT_AT_RISK") {
+      return {
+        headline:
+          "다녀오면 다음 약속에 늦습니다. 약속 시각을 늦추거나 더 가까운 곳을 찾아보세요.",
+      };
+    }
+    if (top === "DISTANCE_LIMIT") {
+      return {
+        headline: "이동 거리 조건 안에서는 대안이 없었습니다.",
+      };
+    }
+    if (top === "OFFICIALLY_CLOSED") {
+      return {
+        headline:
+          "그 시간대에 운영하는 곳이 없었습니다. 시간을 바꾸면 결과가 달라질 수 있어요.",
+      };
+    }
+    return {
+      headline:
+        "억지로 추천하지 않습니다. 확인하지 못한 후보는 보여드리지 않습니다.",
+    };
+  }, [rejectionSummary, availableMinutes]);
 
   const detectOrigin = useCallback(() => {
     if (!navigator.geolocation) {
@@ -492,6 +543,14 @@ export default function FlowApp() {
         : [];
       setRejectedCount(
         typeof root?.rejectedCount === "number" ? root.rejectedCount : 0,
+      );
+      setRejectionSummary(
+        Array.isArray(root?.rejectionSummary)
+          ? (root.rejectionSummary as Array<{
+              reasonCode: string;
+              count: number;
+            }>)
+          : [],
       );
       setOptions(list);
       go(list.length ? "options" : "empty");
@@ -906,11 +965,26 @@ export default function FlowApp() {
                 <br />
                 지금은 없습니다
               </h1>
-              <p className={styles.sub}>
-                억지로 추천하지 않습니다. 확인하지 못한 후보는 보여드리지
-                않습니다.
-              </p>
+              {/* "없다"만 남기면 고장과 구분되지 않는다. 어떤 조건이
+                  후보를 걸러냈는지와, 그래서 무엇을 바꾸면 되는지를
+                  같이 알려준다. */}
+              <p className={styles.sub}>{emptyReason.headline}</p>
             </div>
+            {!!rejectionSummary.length && (
+              <div className={styles.card} style={{ width: "100%" }}>
+                <h2 className={styles.cardTitle} style={{ fontSize: 15 }}>
+                  검토한 {rejectedCount}곳이 제외된 이유
+                </h2>
+                <ul className={styles.why}>
+                  {rejectionSummary.slice(0, 4).map((entry) => (
+                    <li key={entry.reasonCode}>
+                      {REJECTION_LABELS[entry.reasonCode] ?? entry.reasonCode}{" "}
+                      · {entry.count}곳
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className={styles.noteCard}>
               이 결과는 그냥 사라지지 않습니다. `{
                 INCIDENTS.find((entry) => entry.value === incident)?.title

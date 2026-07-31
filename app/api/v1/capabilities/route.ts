@@ -45,7 +45,10 @@ export async function GET() {
         },
         weatherAutoDetection: {
           supported: true,
-          currentMethod: "open_meteo_current_conditions",
+          currentMethod:
+            providers.weather === "managed"
+              ? "kma_ultra_short_nowcast_with_open_meteo_fallback"
+              : "open_meteo_current_conditions",
           requiredContext: "registered_itinerary",
           decisionRole:
             "supporting_evidence_user_selected_incident_takes_priority",

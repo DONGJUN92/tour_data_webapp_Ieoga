@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build && node scripts/sanitize-build.mjs",
     "start": "node scripts/start-production-local.mjs",
-    "test": "npm run build && node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/place-search.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs",
+    "test": "npm run build && node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/place-search.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/kma-weather.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",

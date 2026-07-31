@@ -1,4 +1,7 @@
 import { weatherProviderConfig } from "@/lib/external-providers";
+import { getKmaObservation, kmaConfigured } from "./kma";
+
+export type WeatherProvider = "kma_short_term" | "open_meteo";
 
 export type WeatherEvidence =
   | {
@@ -11,16 +14,19 @@ export type WeatherEvidence =
       weatherCode: number;
       windSpeedKph: number;
       raining: boolean;
-      provider: "open_meteo";
+      provider: WeatherProvider;
       attribution: string;
     }
   | {
       status: "unavailable";
       observedAt: string;
-      provider: "open_meteo";
+      provider: WeatherProvider;
       reason: string;
       attribution: string;
     };
+
+const KMA_ATTRIBUTION = "기상자료: 기상청 단기예보 (공공누리 제1유형)";
+const OPEN_METEO_ATTRIBUTION = "기상자료: Open-Meteo (CC BY 4.0)";
 
 type OpenMeteoResponse = {
   current?: {
@@ -56,8 +62,42 @@ export async function getWeatherEvidence(
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
+  /* The domestic forecast authority answers first when its service is
+     approved on the portal key. Open-Meteo stays as the fallback so a KMA
+     outage degrades the evidence rather than removing it, and every result
+     names the provider that actually answered. */
+  if (kmaConfigured()) {
+    try {
+      const observation = await getKmaObservation(latitude, longitude, options);
+      const evidence: WeatherEvidence = {
+        status: "available",
+        observedAt: observation.observedAt,
+        temperatureCelsius: observation.temperatureCelsius,
+        /* The nowcast product does not publish an apparent temperature, and
+           deriving one here would present a computed value as an observed
+           one. The measured air temperature is reported instead. */
+        apparentTemperatureCelsius: observation.temperatureCelsius,
+        precipitationMillimeters: observation.precipitationMillimeters,
+        precipitationProbabilityPercent:
+          observation.precipitationProbabilityPercent,
+        weatherCode: observation.weatherCode,
+        windSpeedKph: observation.windSpeedKph,
+        raining: observation.raining,
+        provider: "kma_short_term",
+        attribution: KMA_ATTRIBUTION,
+      };
+      cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value: evidence });
+      return evidence;
+    } catch {
+      if (options.signal?.aborted) {
+        throw new DOMException("Weather request cancelled", "AbortError");
+      }
+      /* Fall through to Open-Meteo below. */
+    }
+  }
+
   const observedAt = new Date().toISOString();
-  const attribution = "기상자료: Open-Meteo (CC BY 4.0)";
+  const attribution = OPEN_METEO_ATTRIBUTION;
   const url = new URL(weatherProviderConfig().url);
   url.searchParams.set("latitude", String(latitude));
   url.searchParams.set("longitude", String(longitude));

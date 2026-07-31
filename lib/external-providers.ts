@@ -120,9 +120,17 @@ export function routingEndpoints(): string[] {
 }
 
 export function weatherProviderConfig() {
-  return providerConfig(
+  const config = providerConfig(
     getRuntimeSecret("WEATHER_API_URL"),
     PUBLIC_OPEN_METEO_URL,
   );
+  /* An approved KMA forecast service makes the domestic authority the primary
+     source, with Open-Meteo kept only as fallback. Keyed off the dedicated
+     variable so the status reflects an approval the operator confirmed, not
+     merely the presence of some portal key. */
+  if (config.mode === "public_shared" && getRuntimeSecret("KMA_SERVICE_KEY")) {
+    return { ...config, mode: "managed" as ProviderMode };
+  }
+  return config;
 }
 import { getRuntimeSecret } from "@/lib/runtime-env";

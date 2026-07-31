@@ -1530,9 +1530,12 @@ export async function recoverTrip(
          0.2s for most calls with an occasional ten-second outlier — so a lone
          four-second attempt turns that tail straight into a failed recovery.
          Retrying is cheap here precisely because the fast path dominates: a
-         second attempt almost always lands on it, and two bounded attempts
-         still fit inside the response budget. */
-    }, { signal: execution.signal, timeoutMs: 4_000, retry: true });
+         second attempt almost always lands on it. The per-attempt budget is
+         deliberately tighter than the old single attempt — normal responses
+         from this runtime land near 1.4s, so three seconds keeps the healthy
+         case intact while cutting the outlier early enough that two attempts
+         plus the rest of the pipeline still fit in the response budget. */
+    }, { signal: execution.signal, timeoutMs: 3_000, retry: true });
     sourceLedger.push(nearby.audit);
   } catch (error) {
     sourceLedger.push(

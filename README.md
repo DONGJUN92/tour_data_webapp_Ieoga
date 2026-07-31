@@ -185,6 +185,42 @@ npm.cmd run test
 `OPS_API_KEY` Bearer 인증이 필요합니다. 파트너 키로 운영 제어
 API를 호출할 수 없습니다.
 
+## 배포 현황
+
+| 항목 | 값 |
+|---|---|
+| 운영 URL | https://ieoga-national-travel-resilience.sans5-poems-5045.workers.dev |
+| 런타임 | Cloudflare Workers |
+| D1 | `site-creator-d1` (마이그레이션 7종 적용 완료) |
+| R2 | `site-creator-r2` (Standard) |
+| 예약 실행 | 매시 17분 — 정책팩 갱신, OpenAPI 8종 상태 점검 |
+
+### 배포 절차
+
+```powershell
+npm.cmd run build
+npx.cmd wrangler d1 migrations apply site-creator-d1 --remote
+cd dist/server
+npx.cmd wrangler deploy --config wrangler.json
+```
+
+빌드가 `dist/server/wrangler.json`에 바인딩·크론 설정을 생성하므로 배포는
+루트가 아니라 해당 파일을 사용합니다. 배포 직후 수 분간 자산 전파가
+끝나지 않아 일부 요청이 404로 응답할 수 있으며, 전파가 끝나면 해소됩니다.
+
+### Secret 등록
+
+값이 명령 이력에 남지 않도록 대화형 입력을 사용합니다.
+
+```powershell
+npx.cmd wrangler secret put KTO_SERVICE_KEY --name ieoga-national-travel-resilience
+npx.cmd wrangler secret put PARTNER_API_KEY --name ieoga-national-travel-resilience
+npx.cmd wrangler secret put OPS_API_KEY --name ieoga-national-travel-resilience
+```
+
+`KTO_SERVICE_KEY`가 없으면 `/api/v1/health/ready`가 `configured: false`와
+함께 `unavailable`을 반환하고, 후보를 지어내지 않고 조회 실패로 종료합니다.
+
 ## 배포 전 필수 작업
 
 1. 공공데이터포털에서 노출 이력이 없는 KTO 인증키를 준비합니다.

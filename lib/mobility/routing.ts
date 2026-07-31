@@ -93,7 +93,14 @@ export async function getWalkingRoute(
     if (options.signal?.aborted) {
       throw new DOMException("Routing request cancelled", "AbortError");
     }
-    const url = new URL(`${baseUrl.replace(/\/$/, "")}/${key}`);
+    /* Keep any query the endpoint was configured with. Managed OSRM-compatible
+       providers (Mapbox Directions and similar) authenticate with a query
+       parameter, so appending the coordinates by string concatenation would
+       land them after the query and break the request. Parsing first means a
+       keyed provider works from configuration alone, with no per-provider
+       code here. */
+    const url = new URL(baseUrl);
+    url.pathname = `${url.pathname.replace(/\/$/, "")}/${key}`;
     url.searchParams.set("overview", "simplified");
     url.searchParams.set("geometries", "geojson");
     url.searchParams.set("steps", "false");

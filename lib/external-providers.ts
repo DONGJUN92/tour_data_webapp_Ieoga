@@ -20,6 +20,26 @@ function normalizeUrl(value: string): string {
   }
 }
 
+/* Splits a comma-separated endpoint list without breaking URLs that carry a
+   comma inside their query string — `annotations=distance,duration` is valid
+   and must not be read as two endpoints. Any fragment that does not begin a
+   new URL is rejoined to the one before it, so a misplaced comma degrades
+   into one endpoint rather than silently dropping configuration. */
+function splitEndpointList(value: string | undefined): string[] {
+  const parts = (value ?? "").split(",");
+  const endpoints: string[] = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    if (/^https?:\/\//i.test(trimmed) || endpoints.length === 0) {
+      endpoints.push(trimmed);
+    } else {
+      endpoints[endpoints.length - 1] += `,${trimmed}`;
+    }
+  }
+  return endpoints.filter((entry) => /^https?:\/\//i.test(entry));
+}
+
 function providerConfig(
   configured: string | undefined,
   publicUrl: string,
@@ -34,18 +54,46 @@ function providerConfig(
   };
 }
 
-export function reverseGeocodeProviderConfig() {
-  return providerConfig(
-    getRuntimeSecret("REVERSE_GEOCODE_URL"),
-    PUBLIC_NOMINATIM_REVERSE_URL,
+/* A Kakao REST key turns geocoding into a managed, keyed provider: reverse
+   lookups go through coord2regioncode and place search through the local
+   keyword API, with the shared Nominatim endpoints kept only as fallback. */
+function kakaoGeocodingConfigured(): boolean {
+  return Boolean(getRuntimeSecret("KAKAO_REST_API_KEY"));
+}
+
+/* Whether the Nominatim endpoint itself is the shared public one. The
+   reverse-geocode *mode* can read as managed via Kakao while Nominatim is
+   still reachable as fallback, and that fallback must keep honouring the
+   public usage policy — so throttling keys off this, not off the mode. */
+export function usesPublicNominatim(): boolean {
+  return (
+    providerConfig(
+      getRuntimeSecret("REVERSE_GEOCODE_URL"),
+      PUBLIC_NOMINATIM_REVERSE_URL,
+    ).mode === "public_shared"
   );
 }
 
+export function reverseGeocodeProviderConfig() {
+  const config = providerConfig(
+    getRuntimeSecret("REVERSE_GEOCODE_URL"),
+    PUBLIC_NOMINATIM_REVERSE_URL,
+  );
+  if (config.mode === "public_shared" && kakaoGeocodingConfigured()) {
+    return { ...config, mode: "managed" as ProviderMode };
+  }
+  return config;
+}
+
 export function forwardGeocodeProviderConfig() {
-  return providerConfig(
+  const config = providerConfig(
     getRuntimeSecret("FORWARD_GEOCODE_URL"),
     PUBLIC_NOMINATIM_SEARCH_URL,
   );
+  if (config.mode === "public_shared" && kakaoGeocodingConfigured()) {
+    return { ...config, mode: "managed" as ProviderMode };
+  }
+  return config;
 }
 
 export function routingProviderConfig() {
@@ -63,10 +111,7 @@ export function routingProviderConfig() {
    instead of failing closed. Every entry is a real routing engine — none of
    this substitutes an estimated distance for a measured one. */
 export function routingEndpoints(): string[] {
-  const configured = (getRuntimeSecret("ROUTING_BASE_URL") ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+  const configured = splitEndpointList(getRuntimeSecret("ROUTING_BASE_URL"));
   const ordered = configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
   if (!ordered.some((url) => normalizeUrl(url) === normalizeUrl(PUBLIC_OSRM_WALKING_URL))) {
     ordered.push(PUBLIC_OSRM_WALKING_URL);

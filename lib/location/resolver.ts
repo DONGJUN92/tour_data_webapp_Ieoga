@@ -4,7 +4,11 @@ import {
   getRegions,
   normalizeAnalysisCodes,
 } from "@/lib/kto/adapters";
-import { reverseGeocodeProviderConfig } from "@/lib/external-providers";
+import {
+  reverseGeocodeProviderConfig,
+  usesPublicNominatim,
+} from "@/lib/external-providers";
+import { getRuntimeSecret } from "@/lib/runtime-env";
 
 type NominatimAddress = Record<string, string | undefined>;
 
@@ -19,8 +23,14 @@ export type ResolvedLocation = {
   sigunguCode?: string;
   areaName?: string;
   districtName?: string;
-  source: "openstreetmap_reverse" | "kto_nearest_content";
-  confidence: "administrative_match" | "nearest_content";
+  source:
+    | "kakao_local_reverse"
+    | "openstreetmap_reverse"
+    | "kto_nearest_content";
+  confidence:
+    | "legal_dong_code"
+    | "administrative_match"
+    | "nearest_content";
   attribution: string;
 };
 
@@ -74,7 +84,7 @@ function findByAdministrativeName<T extends { name: string }>(
 }
 
 async function respectPublicReverseLimit(): Promise<void> {
-  if (reverseGeocodeProviderConfig().mode !== "public_shared") return;
+  if (!usesPublicNominatim()) return;
   const previous = reverseQueue;
   let release: (() => void) | undefined;
   reverseQueue = new Promise<void>((resolve) => {
@@ -87,6 +97,105 @@ async function respectPublicReverseLimit(): Promise<void> {
   }
   nextPublicReverseAt = Date.now() + 1_050;
   release?.();
+}
+
+/* Kakao returns the ten-digit legal-dong code for a coordinate, whose first
+   two and five digits are exactly the area and sigungu codes the KTO services
+   expect. That is a direct lookup, where the Nominatim path below has to match
+   place *names* against the agency's list and can miss on spelling or on
+   boundary renames. Both codes are still validated against the official list
+   before use, so a code the agency does not publish is rejected rather than
+   passed downstream. Used only when KAKAO_REST_API_KEY is configured. */
+async function reverseWithKakao(
+  latitude: number,
+  longitude: number,
+): Promise<ResolvedLocation | null> {
+  const key = getRuntimeSecret("KAKAO_REST_API_KEY");
+  if (!key) return null;
+
+  const url = new URL(
+    "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json",
+  );
+  url.searchParams.set("x", String(longitude));
+  url.searchParams.set("y", String(latitude));
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `KakaoAK ${key}`,
+      },
+      signal: AbortSignal.timeout(4_000),
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      documents?: Array<{
+        region_type?: string;
+        code?: string;
+        region_1depth_name?: string;
+        region_2depth_name?: string;
+        address_name?: string;
+      }>;
+    };
+    /* "B" is the legal-dong record, which is the one whose code lines up with
+       the agency's ldongCode2 values. */
+    const document =
+      payload.documents?.find((entry) => entry.region_type === "B") ??
+      payload.documents?.[0];
+    const legalCode = (document?.code ?? "").trim();
+    if (!/^\d{10}$/.test(legalCode)) return null;
+
+    const regions = (await getRegions()).items
+      .map((item) => ({
+        code: String(item.code ?? ""),
+        name: String(item.name ?? ""),
+      }))
+      .filter((item) => item.code && item.name);
+
+    /* Sejong and similar single-tier areas are published as one five-digit
+       region rather than a two-digit region plus districts. */
+    const fiveDigit = legalCode.slice(0, 5);
+    const twoDigit = legalCode.slice(0, 2);
+    const region =
+      regions.find((entry) => entry.code === fiveDigit) ??
+      regions.find((entry) => entry.code === twoDigit);
+    if (!region) return null;
+
+    let districtCode: string | undefined;
+    let districtName: string | undefined;
+    if (region.code.length === 2) {
+      const districts = (await getDistricts(region.code)).items.map((item) => ({
+        code: `${region.code}${String(item.code ?? "")}`,
+        name: String(item.name ?? ""),
+      }));
+      const match = districts.find((entry) => entry.code === fiveDigit);
+      if (match) {
+        districtCode = match.code;
+        districtName = match.name;
+      }
+    }
+
+    const label =
+      [document?.region_1depth_name, document?.region_2depth_name]
+        .filter(Boolean)
+        .join(" ") ||
+      document?.address_name ||
+      "현재 위치";
+
+    return {
+      label,
+      areaCode: region.code,
+      sigunguCode: districtCode,
+      areaName: region.name,
+      districtName,
+      source: "kakao_local_reverse",
+      confidence: "legal_dong_code",
+      attribution: "카카오맵 (Kakao)",
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function reverseWithNominatim(
@@ -224,7 +333,11 @@ export async function resolveLocation(
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
+  /* Managed provider first, then the shared public one, then the agency's own
+     nearest-content fallback. Each step is strictly less precise than the one
+     before, and every step reports which provider answered. */
   const resolved =
+    (await reverseWithKakao(latitude, longitude)) ??
     (await reverseWithNominatim(latitude, longitude)) ??
     (await resolveWithNearestKtoContent(latitude, longitude));
   if (resolved) {

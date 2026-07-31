@@ -185,6 +185,55 @@ npm.cmd run test
 `OPS_API_KEY` Bearer 인증이 필요합니다. 파트너 키로 운영 제어
 API를 호출할 수 없습니다.
 
+## 관리형 외부 제공자
+
+공사 OpenAPI 외의 보조 데이터는 기본값이 공개 공유 엔드포인트이며, 이
+상태에서는 준비 상태가 `degraded`로 표시됩니다. 아래를 설정하면 각
+항목이 `managed`로 전환됩니다.
+
+| 항목 | 환경변수 | 미설정 시 |
+|---|---|---|
+| 역지오코딩·장소검색 | `KAKAO_REST_API_KEY` | 공개 Nominatim |
+| 도보 경로 | `ROUTING_BASE_URL` | 공개 OSRM |
+| 날씨 | `WEATHER_API_URL` | 공개 Open-Meteo |
+
+### 카카오 (역지오코딩·장소검색)
+
+`KAKAO_REST_API_KEY` 하나로 두 가지가 함께 관리형으로 바뀝니다.
+[Kakao Developers](https://developers.kakao.com)에서 애플리케이션을
+만들고 REST API 키를 발급받습니다.
+
+역지오코딩은 `coord2regioncode`가 돌려주는 법정동 코드의 앞 2자리와
+5자리를 시도·시군구 코드로 사용합니다. 공개 Nominatim 경로가 장소
+*이름*을 공사 목록과 문자열 대조하는 것과 달리 코드가 직접 대응하므로
+표기 차이나 행정구역 개편에 영향을 받지 않습니다. 두 코드 모두 공사
+공식 목록으로 다시 검증하며, 목록에 없는 코드는 사용하지 않습니다.
+
+카카오 호출이 실패하면 공개 Nominatim, 그다음 공사 관광정보 최근접
+콘텐츠 순으로 내려갑니다. 각 응답은 어느 제공자가 답했는지
+(`source`, `confidence`)를 함께 반환합니다.
+
+### 도보 경로
+
+`ROUTING_BASE_URL`은 OSRM 호환 엔드포인트를 쉼표로 구분해 순서대로
+받습니다. 앞에서부터 시도하고 실패하면 다음으로 넘어가며, 공개
+제공자가 항상 마지막에 자동으로 붙습니다.
+
+```dotenv
+# 자체 운영 OSRM
+ROUTING_BASE_URL=https://osrm.example.com/route/v1/foot
+
+# 질의 문자열로 인증하는 관리형 제공자도 그대로 사용 가능
+ROUTING_BASE_URL=https://api.mapbox.com/directions/v5/mapbox/walking?access_token=발급받은_토큰
+```
+
+좌표는 경로(path)에 이어 붙이므로 인증용 질의 문자열이 보존됩니다.
+질의 문자열 안의 쉼표는 구분자로 처리하지 않습니다.
+
+경로를 확인하지 못한 후보는 직선거리로 추정해 통과시키지 않고
+탈락시킵니다. 따라서 경로 제공자가 모두 실패하면 복구안이 줄어들거나
+0개가 되며, 이는 의도된 동작입니다.
+
 ## 배포 현황
 
 | 항목 | 값 |

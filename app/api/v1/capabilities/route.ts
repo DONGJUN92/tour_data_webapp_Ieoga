@@ -20,7 +20,7 @@ export async function GET() {
         exactLocationRetention: "none",
         currentOriginRetention: "none",
         savedItineraryPlaceRetention: "30_days_or_session_delete",
-        responseBudgetMilliseconds: 12_000,
+        responseBudgetMilliseconds: 20_000,
         continuityPath:
           "current_origin_to_replacement_to_every_original_waypoint_to_next_fixed_appointment",
         counterfactual: {

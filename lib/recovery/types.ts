@@ -148,6 +148,9 @@ export type TravelPurposeProof = {
 };
 
 export type RecoveryOption = {
+  /* Conditions official data could not confirm for this option. */
+  evidenceGaps: EvidenceGap[];
+  confirmationRequired: boolean;
   id: string;
   strategy: "minimum_change" | "comfortable" | "local_discovery";
   strategyLabel: string;
@@ -178,6 +181,16 @@ export type RecoveryOption = {
   scheduleDiff: ScheduleDiff;
   continuityProof: ContinuityProof;
   dataContributions: DataContribution[];
+};
+
+/* A condition the official data could not confirm. Carried on an offered
+   option so the traveller sees exactly what was not checked. */
+export type EvidenceGap = {
+  code:
+    | "INDOOR_UNVERIFIED"
+    | "ACCESSIBILITY_UNVERIFIED"
+    | "CONCENTRATION_UNVERIFIED";
+  note: string;
 };
 
 export type RejectedCandidate = {
@@ -244,6 +257,9 @@ export type RecoveryResult = {
   };
   options: RecoveryOption[];
   rejectedCount: number;
+  /* Constraint-by-constraint breakdown of why candidates were removed, so an
+     empty result can state its own cause. Counts only, no place names. */
+  rejectionSummary: Array<{ reasonCode: string; count: number }>;
   counterfactual?: CounterfactualProof;
   dataContributions: DataContribution[];
   sourceLedger: KtoAudit[];

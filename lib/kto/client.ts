@@ -112,6 +112,79 @@ function backoffDelay(attempt: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/* Latency on the portal is erratic rather than uniformly slow: the identical
+   query, with the same parameters and the same result count, was measured
+   returning in 0.19s on one call and 6.5s on the next. Waiting longer does not
+   help, because a slow call is not a call that is nearly done — it is a call
+   that drew the bad path. Retrying only after a timeout means paying the full
+   timeout first.
+
+   So for calls the whole request depends on, a second identical attempt is
+   started while the first is still running, and whichever answers first wins.
+   The loser is aborted. This converts "sometimes 6s" into "almost always fast"
+   at the cost of one extra call on the slow fraction. Use it only where the
+   result is on the critical path; ordinary calls keep the plain retry. */
+export async function callKtoHedged(
+  service: KtoServiceName,
+  operation: string,
+  params: KtoParams = {},
+  options: KtoCallOptions & { hedgeAfterMs?: number } = {},
+): Promise<KtoCallResult> {
+  const hedgeAfterMs = options.hedgeAfterMs ?? 1_200;
+  const controllers: AbortController[] = [];
+
+  function launch(): Promise<KtoCallResult> {
+    const controller = new AbortController();
+    controllers.push(controller);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, controller.signal])
+      : controller.signal;
+    return callKto(service, operation, params, {
+      ...options,
+      signal,
+      retry: false,
+    });
+  }
+
+  /* Called once a winner has been awaited, so aborting every controller is
+     safe: the settled attempt ignores it and any still-running one is
+     released. Aborting only the non-first controller would leak the original
+     request whenever the hedge won. */
+  function abortAll() {
+    for (const controller of controllers) controller.abort();
+  }
+
+  const first = launch();
+
+  let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+  const hedged = new Promise<KtoCallResult>((resolve, reject) => {
+    hedgeTimer = setTimeout(() => {
+      launch().then(resolve, reject);
+    }, hedgeAfterMs);
+  });
+
+  try {
+    /* Promise.any resolves on the first success and only rejects if every
+       attempt fails, which is exactly the desired semantics: a hedge must not
+       turn one slow-but-fine call into an error. */
+    const result = await Promise.any([first, hedged]);
+    return result;
+  } catch (error) {
+    /* AggregateError means both attempts failed. Surface the first attempt's
+       own error so the audit keeps its real code rather than a wrapper. */
+    if (error instanceof AggregateError) {
+      return await first;
+    }
+    throw error;
+  } finally {
+    if (hedgeTimer) clearTimeout(hedgeTimer);
+    abortAll();
+    /* Keep the unawaited loser from surfacing as an unhandled rejection. */
+    void hedged.catch(() => undefined);
+    void first.catch(() => undefined);
+  }
+}
+
 export async function callKto(
   service: KtoServiceName,
   operation: string,

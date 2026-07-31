@@ -37,7 +37,6 @@ const cache = new Map<
   string,
   { expiresAt: number; value: WalkingRouteEvidence }
 >();
-let routingQueue: Promise<void> = Promise.resolve();
 let nextPublicRequestAt = 0;
 
 function routeKey(points: RoutePoint[]) {
@@ -46,20 +45,39 @@ function routeKey(points: RoutePoint[]) {
     .join(";");
 }
 
-async function respectPublicRoutingLimit(): Promise<void> {
+/* Paces calls to the shared public router, which asks for no more than one
+   request per second.
+
+   This used to chain each caller onto a promise the previous caller resolved.
+   That deadlocks: when a request is abandoned — the recovery deadline fires,
+   the client disconnects — its call stays suspended at the await and never
+   resolves the promise the next caller is chained to, so every routing call
+   afterwards blocks forever and the process serves nothing. It survived
+   review because sequential callers rarely overlapped; verifying candidates
+   concurrently made it reproducible on the first timeout.
+
+   Reserving a timestamp instead has no such failure mode. The slot is claimed
+   synchronously, so concurrent callers get distinct slots in arrival order,
+   and a caller that goes away simply leaves an unused gap. There is nothing to
+   release and therefore nothing to leak. */
+async function respectPublicRoutingLimit(signal?: AbortSignal): Promise<void> {
   if (routingProviderConfig().mode !== "public_shared") return;
-  const previous = routingQueue;
-  let release: (() => void) | undefined;
-  routingQueue = new Promise<void>((resolve) => {
-    release = resolve;
+  const now = Date.now();
+  const slotAt = Math.max(now, nextPublicRequestAt);
+  nextPublicRequestAt = slotAt + 1_050;
+  const waitMs = slotAt - now;
+  if (waitMs <= 0) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, waitMs);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
-  await previous;
-  const waitMs = Math.max(0, nextPublicRequestAt - Date.now());
-  if (waitMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
-  nextPublicRequestAt = Date.now() + 1_050;
-  release?.();
 }
 
 export async function getWalkingRoute(
@@ -109,7 +127,7 @@ export async function getWalkingRoute(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3_500);
     try {
-      await respectPublicRoutingLimit();
+      await respectPublicRoutingLimit(options.signal);
       const response = await fetch(url, {
         headers: {
           Accept: "application/json",

@@ -36,7 +36,6 @@ export type ResolvedLocation = {
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const cache = new Map<string, { expiresAt: number; value: ResolvedLocation }>();
-let reverseQueue: Promise<void> = Promise.resolve();
 let nextPublicReverseAt = 0;
 
 function cacheKey(latitude: number, longitude: number) {
@@ -83,20 +82,20 @@ function findByAdministrativeName<T extends { name: string }>(
   });
 }
 
+/* Paces calls to the shared public geocoder. Reserves a timestamp rather than
+   chaining callers onto each other's promises: the chained form deadlocks
+   permanently once any caller is abandoned mid-wait, since the promise the
+   next caller awaits is never resolved. See the routing limiter for the same
+   fix and the failure it caused. */
 async function respectPublicReverseLimit(): Promise<void> {
   if (!usesPublicNominatim()) return;
-  const previous = reverseQueue;
-  let release: (() => void) | undefined;
-  reverseQueue = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  const waitMs = Math.max(0, nextPublicReverseAt - Date.now());
+  const now = Date.now();
+  const slotAt = Math.max(now, nextPublicReverseAt);
+  nextPublicReverseAt = slotAt + 1_050;
+  const waitMs = slotAt - now;
   if (waitMs > 0) {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
-  nextPublicReverseAt = Date.now() + 1_050;
-  release?.();
 }
 
 /* Kakao returns the ten-digit legal-dong code for a coordinate, whose first

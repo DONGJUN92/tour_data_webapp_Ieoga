@@ -14,7 +14,15 @@ import { recoverTrip } from "@/lib/recovery/engine";
 import { recoveryRequestSchema } from "@/lib/recovery/schema";
 
 export const dynamic = "force-dynamic";
-const RECOVERY_RESPONSE_BUDGET_MS = 12_000;
+/* Ceiling for the whole recovery, not a target. Measured directly against the
+   portal, a single candidate-discovery call ranges from 0.6s to 12.4s with a
+   median near 3.3s, and the slow responses are genuine successes rather than
+   errors. A twelve-second ceiling was calibrated on a fast upstream: during a
+   degraded window it cut off work that was about to succeed and returned an
+   error instead of an answer. Healthy requests still finish in about three to
+   five seconds — the wider ceiling only changes what happens on the tail,
+   where returning a verified answer late beats returning nothing. */
+const RECOVERY_RESPONSE_BUDGET_MS = 20_000;
 
 class RecoveryDeadlineError extends Error {}
 
@@ -143,7 +151,7 @@ export async function POST(request: NextRequest) {
         error: {
           code: "RECOVERY_DEADLINE_EXCEEDED",
           message:
-            "12초 안에 실제 데이터 검증과 안전한 저장을 끝내지 못했습니다. 확인되지 않은 후보는 표시하지 않았습니다. 잠시 후 다시 실행해 주세요.",
+            "20초 안에 실제 데이터 검증과 안전한 저장을 끝내지 못했습니다. 확인되지 않은 후보는 표시하지 않았습니다. 잠시 후 다시 실행해 주세요.",
         },
       },
       { status: 504 },

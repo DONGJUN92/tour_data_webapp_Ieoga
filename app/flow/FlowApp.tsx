@@ -214,6 +214,9 @@ export default function FlowApp() {
   const [origin, setOrigin] = useState<Coordinate | null>(null);
   const [originBusy, setOriginBusy] = useState(false);
   const [originNote, setOriginNote] = useState("");
+  const [originQuery, setOriginQuery] = useState("");
+  const [originHits, setOriginHits] = useState<PlaceHit[]>([]);
+  const [originSearchBusy, setOriginSearchBusy] = useState(false);
 
   const [apptDate] = useState(() => kstDateString(kstNow()));
   const [apptTime, setApptTime] = useState(defaultAppointmentTime);
@@ -305,6 +308,64 @@ export default function FlowApp() {
     );
   }, [go]);
 
+  /* Both the origin and the appointment steps resolve a typed place name the
+     same way, against the official tourism search. */
+  const lookupPlaces = useCallback(async (keyword: string): Promise<PlaceHit[]> => {
+    const response = await fetch(
+      `/api/v1/places/search?keyword=${encodeURIComponent(keyword)}`,
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        readText(asRecord(asRecord(payload)?.error), ["message"]) ||
+          "장소를 찾지 못했습니다.",
+      );
+    }
+    const root = asRecord(payload);
+    const rows = ["places", "items", "results", "candidates"]
+      .map((key) => root?.[key])
+      .find(Array.isArray) as unknown[] | undefined;
+    return (rows ?? []).flatMap((item): PlaceHit[] => {
+      const row = asRecord(item);
+      const title = readText(row, ["title", "name"]);
+      const latitude = Number(row?.latitude ?? row?.mapY);
+      const longitude = Number(row?.longitude ?? row?.mapX);
+      if (!title || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return [];
+      }
+      return [
+        {
+          title,
+          address: readText(row, ["address", "addr1"]) || undefined,
+          latitude,
+          longitude,
+          areaCode: readText(row, ["regionCode", "areaCode"]) || undefined,
+          sigunguCode:
+            readText(row, ["districtCode", "sigunguCode"]) || undefined,
+        },
+      ];
+    });
+  }, []);
+
+  const searchOriginPlace = useCallback(async () => {
+    const keyword = originQuery.trim();
+    if (!keyword) return;
+    setOriginSearchBusy(true);
+    setOriginNote("");
+    setOriginHits([]);
+    try {
+      const hits = await lookupPlaces(keyword);
+      setOriginHits(hits.slice(0, 6));
+      if (!hits.length) {
+        setOriginNote("검색 결과가 없습니다. 다르게 입력해 보세요.");
+      }
+    } catch (error) {
+      setOriginNote((error as Error).message);
+    } finally {
+      setOriginSearchBusy(false);
+    }
+  }, [originQuery, lookupPlaces]);
+
   const searchAppointmentPlace = useCallback(async () => {
     const keyword = apptQuery.trim();
     if (!keyword) return;
@@ -312,40 +373,7 @@ export default function FlowApp() {
     setApptNote("");
     setApptHits([]);
     try {
-      const response = await fetch(
-        `/api/v1/places/search?keyword=${encodeURIComponent(keyword)}`,
-      );
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          readText(asRecord(asRecord(payload)?.error), ["message"]) ||
-            "장소를 찾지 못했습니다.",
-        );
-      }
-      const root = asRecord(payload);
-      const rows = ["places", "items", "results", "candidates"]
-        .map((key) => root?.[key])
-        .find(Array.isArray) as unknown[] | undefined;
-      const hits: PlaceHit[] = (rows ?? []).flatMap((item) => {
-        const row = asRecord(item);
-        const title = readText(row, ["title", "name"]);
-        const latitude = Number(row?.latitude ?? row?.mapY);
-        const longitude = Number(row?.longitude ?? row?.mapX);
-        if (!title || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-          return [];
-        }
-        return [
-          {
-            title,
-            address: readText(row, ["address", "addr1"]) || undefined,
-            latitude,
-            longitude,
-            areaCode: readText(row, ["regionCode", "areaCode"]) || undefined,
-            sigunguCode:
-              readText(row, ["districtCode", "sigunguCode"]) || undefined,
-          },
-        ];
-      });
+      const hits = await lookupPlaces(keyword);
       setApptHits(hits.slice(0, 6));
       if (!hits.length) setApptNote("검색 결과가 없습니다. 다르게 입력해 보세요.");
     } catch (error) {
@@ -353,7 +381,7 @@ export default function FlowApp() {
     } finally {
       setApptBusy(false);
     }
-  }, [apptQuery]);
+  }, [apptQuery, lookupPlaces]);
 
   /* Registers the synthesised two-node itinerary, then runs recovery. The
      traveller sees one "찾는 중" screen while both calls happen. */
@@ -586,14 +614,64 @@ export default function FlowApp() {
                 </span>
               </button>
               <div className={styles.field}>
-                <span className={styles.label}>
-                  위치 권한을 쓰기 어렵다면
-                </span>
-                <p className={styles.sub} style={{ margin: 0 }}>
-                  다음 단계에서 약속 장소를 검색하면, 그 주변을 기준으로
-                  복구안을 찾습니다.
-                </p>
+                <label className={styles.label} htmlFor="origin-place">
+                  또는 지금 있는 곳을 검색
+                </label>
+                <input
+                  id="origin-place"
+                  className={styles.input}
+                  type="search"
+                  placeholder="예: 부산역, 광안리해수욕장"
+                  value={originQuery}
+                  onChange={(event) => setOriginQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void searchOriginPlace();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className={styles.ghost}
+                  style={{ marginTop: 0 }}
+                  onClick={() => void searchOriginPlace()}
+                  disabled={originSearchBusy || !originQuery.trim()}
+                >
+                  {originSearchBusy ? "찾는 중…" : "공식 관광정보에서 검색"}
+                </button>
               </div>
+
+              {originHits.map((hit) => (
+                <button
+                  key={`${hit.title}-${hit.latitude}-${hit.longitude}`}
+                  type="button"
+                  className={`${styles.choice} ${
+                    origin?.latitude === hit.latitude &&
+                    origin?.longitude === hit.longitude
+                      ? styles.choiceOn
+                      : ""
+                  }`}
+                  onClick={() => {
+                    setOrigin({
+                      latitude: hit.latitude,
+                      longitude: hit.longitude,
+                      label: hit.title,
+                      areaCode: hit.areaCode,
+                      sigunguCode: hit.sigunguCode,
+                    });
+                    setOriginNote(`${hit.title}에서 출발합니다.`);
+                  }}
+                >
+                  <span className={styles.choiceMark}>📌</span>
+                  <span className={styles.choiceText}>
+                    <span className={styles.choiceTitle}>{hit.title}</span>
+                    {hit.address && (
+                      <span className={styles.choiceSub}>{hit.address}</span>
+                    )}
+                  </span>
+                </button>
+              ))}
             </div>
           </>
         )}
@@ -882,7 +960,7 @@ export default function FlowApp() {
             onClick={() => go("appointment")}
             disabled={!origin}
           >
-            {origin ? "다음" : "현재 위치를 먼저 확인해 주세요"}
+            {origin ? "다음" : "현재 위치를 확인하거나 장소를 검색해 주세요"}
           </button>
         )}
 

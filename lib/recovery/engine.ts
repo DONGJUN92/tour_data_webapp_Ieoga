@@ -29,6 +29,7 @@ import {
 import { getWeatherEvidence } from "@/lib/weather/service";
 import type { RecoveryRequest } from "./schema";
 import type {
+  EvidenceGap,
   AccessibilityEvidence,
   ContinuityProof,
   DataContribution,
@@ -62,6 +63,9 @@ type ItineraryContext = {
 };
 
 type WorkingCandidate = {
+  /* Conditions that could not be confirmed from official data. The candidate
+     is still offered, but never as if it had been verified. */
+  evidenceGaps: EvidenceGap[];
   item: KtoItem;
   contentId: string;
   contentTypeId: string;
@@ -400,10 +404,27 @@ function preservesTravelPurpose(params: {
   const replacement = candidatePurpose(params.contentTypeId);
   if (!params.input.itinerary) return true;
   if (params.relatedRank !== undefined) return true;
+
+  /* A declared purpose is preserved strictly: a meal is replaced by a meal, a
+     night's stay by a night's stay, and a booked transfer is not replaced by
+     sightseeing at all. */
   if (original.key === "meal") return replacement.key === "meal";
   if (original.key === "stay") return replacement.key === "stay";
   if (original.key === "transit") return false;
-  return !["meal", "stay"].includes(replacement.key);
+
+  /* "visit" is both the generic case and the schema default, so it does not
+     evidence what the traveller was actually doing — in bridge recovery the
+     disrupted stop is synthesised from "I am here now" and is always this
+     type. Treating it as a hard constraint filtered out every restaurant and
+     shop, which is most of the official content in a dense area: measured
+     across ten scenarios it rejected 226 of 336 candidates, more than every
+     other constraint combined, and left the traveller with nothing.
+
+     A meal or a shop is a legitimate way to spend a two-hour gap, especially
+     the rain case where indoor is the point. Accommodation is not — nobody
+     checks in to wait out a shower — so that stays excluded. Purpose still
+     ranks candidates; it just no longer eliminates them on an assumption. */
+  return replacement.key !== "stay";
 }
 
 function buildTravelPurposeProof(params: {
@@ -1334,6 +1355,11 @@ function toOption(
     id: `${requestId}-${strategy}-${candidate.contentId}`,
     strategy,
     strategyLabel,
+    /* Travels with the option so the traveller is told which conditions were
+       not confirmed. An option with gaps is a suggestion to check, never a
+       verified result. */
+    evidenceGaps: candidate.evidenceGaps,
+    confirmationRequired: candidate.evidenceGaps.length > 0,
     contentId: candidate.contentId,
     title: candidate.title,
     address: candidate.address,
@@ -1460,6 +1486,19 @@ function pickOptions(
   );
 }
 
+/* Groups rejections by reason so an empty result can explain itself. */
+function summariseRejections(
+  rejected: RejectedCandidate[],
+): Array<{ reasonCode: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const entry of rejected) {
+    counts.set(entry.reasonCode, (counts.get(entry.reasonCode) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reasonCode, count]) => ({ reasonCode, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
 function selectCounterfactual(
   rejected: RejectedCandidate[],
 ): RecoveryResult["counterfactual"] {
@@ -1529,13 +1568,13 @@ export async function recoverTrip(
          options at all. Its latency upstream is bimodal — measured at roughly
          0.2s for most calls with an occasional ten-second outlier — so a lone
          four-second attempt turns that tail straight into a failed recovery.
-         Retrying is cheap here precisely because the fast path dominates: a
-         second attempt almost always lands on it. The per-attempt budget is
-         deliberately tighter than the old single attempt — normal responses
-         from this runtime land near 1.4s, so three seconds keeps the healthy
-         case intact while cutting the outlier early enough that two attempts
-         plus the rest of the pipeline still fit in the response budget. */
-    }, { signal: execution.signal, timeoutMs: 3_000, retry: true });
+         The adapter hedges this call, which changes what the timeout is for.
+         A short timeout would cut off the slow path — those calls do finish,
+         around six seconds — while the hedge already covers the common case in
+         well under two. So the budget is set wide enough to let a slow call
+         land rather than abandoning work that was nearly done, and the hedge,
+         not the timeout, is what keeps the usual request fast. */
+    }, { signal: execution.signal, timeoutMs: 9_000, retry: false });
     sourceLedger.push(nearby.audit);
   } catch (error) {
     sourceLedger.push(
@@ -1562,6 +1601,7 @@ export async function recoverTrip(
       },
       options: [],
       rejectedCount: 0,
+      rejectionSummary: [],
       dataContributions: [],
       sourceLedger,
       warnings: [
@@ -1806,42 +1846,41 @@ export async function recoverTrip(
       continue;
     }
 
+    /* Coverage of the supporting datasets is partial — accessibility details
+       and concentration forecasts exist mainly for major sites, and indoor use
+       can only be inferred from the content type. Treating "not stated" as
+       "fails" emptied the result for exactly the travellers who need it most:
+       across ten scenarios these three checks removed 219 candidates and left
+       stroller, wheelchair and crowd journeys with nothing at all.
+
+       The proposal's rule is three-tier — verified, needs confirmation,
+       excluded — so an unconfirmed condition is recorded as a gap rather than
+       a rejection. Verified candidates still rank first, the gap travels with
+       the option through to the response, and nothing is ever presented as
+       checked when it was not. Hard facts (time, distance, confirmed closure)
+       continue to exclude outright. */
     const indoor = isIndoorType(item);
+    const evidenceGaps: EvidenceGap[] = [];
     if (indoorRequired && !indoor) {
-      rejected.push({
-        contentId,
-        title,
-        reasonCode: "INDOOR_UNVERIFIED",
-        reason: "공식 콘텐츠 유형만으로 실내 이용 가능성을 확인하지 못했습니다.",
-        distanceMeters,
+      evidenceGaps.push({
+        code: "INDOOR_UNVERIFIED",
+        note: "공식 콘텐츠 유형만으로 실내 이용 가능성을 확인하지 못했습니다.",
       });
-      continue;
     }
 
-    if (
-      input.audience !== "general" &&
-      !accessibleIds.has(contentId)
-    ) {
-      rejected.push({
-        contentId,
-        title,
-        reasonCode: "ACCESSIBILITY_UNVERIFIED",
-        reason: "무장애여행정보 목록에서 같은 콘텐츠를 확인하지 못했습니다.",
-        distanceMeters,
+    if (input.audience !== "general" && !accessibleIds.has(contentId)) {
+      evidenceGaps.push({
+        code: "ACCESSIBILITY_UNVERIFIED",
+        note: "무장애여행정보 목록에서 같은 콘텐츠를 확인하지 못했습니다.",
       });
-      continue;
     }
 
     const forecast = forecasts.get(normalizeName(title));
     if (input.incident === "crowd" && !forecast) {
-      rejected.push({
-        contentId,
-        title,
-        reasonCode: "CONCENTRATION_UNVERIFIED",
-        reason: "이 관광지의 향후 집중률 예측을 확인하지 못했습니다.",
-        distanceMeters,
+      evidenceGaps.push({
+        code: "CONCENTRATION_UNVERIFIED",
+        note: "이 관광지의 향후 집중률 예측을 확인하지 못했습니다.",
       });
-      continue;
     }
     if (
       input.incident === "crowd" &&
@@ -1884,6 +1923,7 @@ export async function recoverTrip(
       estimatedTravelMinutes,
       imageUrl: normalizedImage(item.firstimage),
       modifiedAt: stringValue(item.modifiedtime) || undefined,
+      evidenceGaps,
       indoor,
       relatedRank,
       purposePreservation: buildTravelPurposeProof({
@@ -1929,46 +1969,70 @@ export async function recoverTrip(
         ...scoreCandidate(withAccessibility, input),
       };
     })
-    .filter((candidate) => {
+    .map((candidate) => {
+      /* Same three-tier rule as the earlier checks: a detail lookup that came
+         back without accessibility fields records a gap, it does not delete
+         the candidate. */
       if (
         input.audience !== "general" &&
-        candidate.accessibility.status !== "verified"
+        candidate.accessibility.status !== "verified" &&
+        !candidate.evidenceGaps.some(
+          (gap) => gap.code === "ACCESSIBILITY_UNVERIFIED",
+        )
       ) {
-        rejected.push({
-          contentId: candidate.contentId,
-          title: candidate.title,
-          reasonCode: "ACCESSIBILITY_UNVERIFIED",
-          reason: candidate.accessibility.note,
-          distanceMeters: candidate.distanceMeters,
-        });
-        return false;
+        return {
+          ...candidate,
+          evidenceGaps: [
+            ...candidate.evidenceGaps,
+            {
+              code: "ACCESSIBILITY_UNVERIFIED" as const,
+              note: candidate.accessibility.note,
+            },
+          ],
+        };
       }
-      return true;
-    });
+      return candidate;
+    })
+    /* Fully confirmed candidates are verified and offered first; those with a
+       gap are only reached when there are not enough confirmed ones. */
+    .sort((a, b) => a.evidenceGaps.length - b.evidenceGaps.length);
 
-  const continuityCandidates: WorkingCandidate[] = [];
   const continuityDeadlineAt =
-    execution.deadlineAt ?? Date.now() + 11_000;
-  for (const candidate of accessibilityVerified.slice(0, 3)) {
-    if (
-      Date.now() >= continuityDeadlineAt ||
-      execution.signal?.aborted
-    ) {
-      warnings.push(
-        "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",
-      );
-      break;
+    execution.deadlineAt ?? Date.now() + 18_000;
+
+  /* Verifying the shortlist in sequence made the response time the sum of
+     three candidates rather than roughly one. Each candidate waits on a
+     walking route and an opening-hours lookup that do not depend on each
+     other, so they are verified together. The routing provider's own pacing
+     still orders those requests; what this removes is the idle time where one
+     candidate's opening-hours call sat waiting for another candidate's route.
+     Failures stay per-candidate — one that cannot be verified drops out
+     without taking the others with it. */
+  const continuityCandidates: WorkingCandidate[] = [];
+  const shortlist = accessibilityVerified.slice(0, 3);
+  if (Date.now() >= continuityDeadlineAt || execution.signal?.aborted) {
+    warnings.push(
+      "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",
+    );
+  } else {
+    const settled = await Promise.allSettled(
+      shortlist.map((candidate) =>
+        enrichForContinuity({
+          candidate,
+          input,
+          context,
+          sourceLedger,
+          rejected,
+          weatherEvidence,
+          signal: execution.signal,
+        }),
+      ),
+    );
+    for (const entry of settled) {
+      if (entry.status === "fulfilled" && entry.value) {
+        continuityCandidates.push(entry.value);
+      }
     }
-    const enriched = await enrichForContinuity({
-      candidate,
-      input,
-      context,
-      sourceLedger,
-      rejected,
-      weatherEvidence,
-      signal: execution.signal,
-    });
-    if (enriched) continuityCandidates.push(enriched);
   }
 
   const options = pickOptions(continuityCandidates, requestId, input);
@@ -2030,6 +2094,12 @@ export async function recoverTrip(
     },
     options,
     rejectedCount: rejected.length,
+    /* Which constraint actually removed the candidates. Without this a run
+       that returns nothing is indistinguishable from a broken one — for the
+       traveller, who cannot tell "no room in your schedule" from "the service
+       failed", and for the operator, who cannot tell which filter is doing
+       the work. Counts only; no place names, so it stays safe to log. */
+    rejectionSummary: summariseRejections(rejected),
     counterfactual: selectCounterfactual(rejected),
     dataContributions,
     sourceLedger,

@@ -7,7 +7,11 @@ import {
   priorMonth,
   rawDistrictCode,
 } from "./registry";
-import { callKto, type KtoCallOptions } from "./client";
+import {
+  callKto,
+  callKtoHedged,
+  type KtoCallOptions,
+} from "./client";
 import type { KtoAudit, KtoCallResult, KtoItem } from "./types";
 
 const listDefaults = { pageNo: 1, numOfRows: 100 };
@@ -52,7 +56,10 @@ export function getNearbyTourism(params: {
   regionCode?: string;
   districtCode?: string;
 }, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
-  return callKto(
+  /* Candidate discovery gates the entire recovery, and this endpoint is the
+     one with the worst measured latency spread, so it is the call worth
+     hedging. */
+  return callKtoHedged(
     "KorService2",
     "locationBasedList2",
     {
@@ -234,6 +241,14 @@ export function getAccessibilityDetail(
     "detailWithTour2",
     { contentId, pageNo: 1, numOfRows: 10 },
     {
+      /* Bounded like the other per-candidate detail lookups. This runs once
+         per shortlisted candidate for non-general audiences, so inheriting the
+         eight-second default with retries let a single slow response consume
+         the entire recovery budget — the stroller and wheelchair journeys
+         timed out before returning anything. An unanswered lookup is recorded
+         as an accessibility gap, which is a usable outcome; a timeout is not. */
+      timeoutMs: requestOptions.timeoutMs ?? 2_500,
+      retry: requestOptions.retry ?? false,
       ...requestOptions,
       fieldsUsed: [
         "route",

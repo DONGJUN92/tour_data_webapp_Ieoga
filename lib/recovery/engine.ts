@@ -1524,7 +1524,15 @@ export async function recoverTrip(
       radius: input.radiusMeters,
       regionCode: input.origin.areaCode,
       districtCode: input.origin.sigunguCode,
-    }, { signal: execution.signal, timeoutMs: 4_000, retry: false });
+      /* Candidate discovery is the one call the whole recovery depends on:
+         without it there is nothing to filter and the request ends with no
+         options at all. Its latency upstream is bimodal — measured at roughly
+         0.2s for most calls with an occasional ten-second outlier — so a lone
+         four-second attempt turns that tail straight into a failed recovery.
+         Retrying is cheap here precisely because the fast path dominates: a
+         second attempt almost always lands on it, and two bounded attempts
+         still fit inside the response budget. */
+    }, { signal: execution.signal, timeoutMs: 4_000, retry: true });
     sourceLedger.push(nearby.audit);
   } catch (error) {
     sourceLedger.push(

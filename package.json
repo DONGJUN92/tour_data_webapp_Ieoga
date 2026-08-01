@@ -9,7 +9,12 @@
     "dev": "vinext dev",
     "build": "vinext build && node scripts/sanitize-build.mjs",
     "start": "node scripts/start-production-local.mjs",
-    "test": "npm run build && node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/place-search.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs",
+    "test": "npm run build && npm run test:unit",
+    "test:unit": "node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/place-search.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=lib/**/*.ts --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/place-search.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs",
+    "test:e2e": "playwright test",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "quality": "npm run typecheck && npm run lint && npm run test && npm run test:coverage && npm run audit:production",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
@@ -18,32 +23,38 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
-    "leaflet": "^1.9.4",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
-    "react-leaflet": "^5.0.0",
+    "next": "16.2.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@axe-core/playwright": "4.12.1",
+    "@cloudflare/vite-plugin": "1.49.0",
+    "@cloudflare/workers-types": "5.20260731.1",
     "@tailwindcss/postcss": "4.2.1",
-    "@cloudflare/workers-types": "4.20260702.1",
-    "@types/leaflet": "^1.9.21",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@playwright/test": "1.62.1",
+    "@vitejs/plugin-react": "6.0.5",
+    "@vitejs/plugin-rsc": "0.5.32",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
+    "eslint-config-next": "16.2.12",
+    "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.2.0",
+    "wrangler": "4.116.0"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    },
+    "postcss": "8.5.25",
+    "sharp": "0.35.3"
   },
   "type": "module"
 }

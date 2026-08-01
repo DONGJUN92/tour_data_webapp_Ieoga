@@ -67,35 +67,35 @@ export function ShareView({ token }: { token: string }) {
       <p className="share-lead">
         실제 한국관광공사 OpenAPI와 이어가 규칙으로 판정한 복구 기록입니다.
       </p>
-      <dl>
-        <div>
+      <div className="share-proof-facts">
+        <dl>
           <dt>판정 상태</dt>
           <dd>{String(state.proof.decisionStatus ?? "미확인")}</dd>
-        </div>
-        <div>
+        </dl>
+        <dl>
           <dt>지역</dt>
           <dd>
             {String(state.proof.regionCode ?? "-")} ·{" "}
             {String(state.proof.districtCode ?? "-")}
           </dd>
-        </div>
-        <div>
+        </dl>
+        <dl>
           <dt>거리 구간</dt>
           <dd>{String(option.distanceBucket ?? "-")}</dd>
-        </div>
-        <div>
+        </dl>
+        <dl>
           <dt>이동시간 구간</dt>
           <dd>{String(option.travelMinutesBucket ?? "-")}</dd>
-        </div>
-        <div>
+        </dl>
+        <dl>
           <dt>접근성 근거</dt>
           <dd>{String(option.accessibilityStatus ?? "-")}</dd>
-        </div>
-        <div>
+        </dl>
+        <dl>
           <dt>규칙 버전</dt>
           <dd>{String(state.proof.ruleVersion ?? "-")}</dd>
-        </div>
-      </dl>
+        </dl>
+      </div>
       <p className="share-notice">{String(state.proof.notice ?? "")}</p>
       <a className="primary-link" href="/">
         내 여행 복구하기

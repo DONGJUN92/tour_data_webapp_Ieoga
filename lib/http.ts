@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  createSessionCookieValue,
+  sessionSigningStatus,
+  verifySessionCookieValue,
+} from "@/lib/session-cookie";
 
 const SESSION_COOKIE = "ieoga_session";
+
+export function readSessionId(request: NextRequest): string | undefined {
+  return verifySessionCookieValue(
+    request.cookies.get(SESSION_COOKIE)?.value,
+  );
+}
 
 export function jsonResponse(
   body: unknown,
@@ -16,15 +27,37 @@ export function publicJsonResponse(
   body: unknown,
   options: { maxAge?: number; status?: number } = {},
 ): NextResponse {
+  const status = options.status ?? 200;
   const response = NextResponse.json(body, {
-    status: options.status ?? 200,
+    status,
   });
-  response.headers.set(
-    "Cache-Control",
-    `public, max-age=${options.maxAge ?? 300}, s-maxage=${options.maxAge ?? 300}, stale-while-revalidate=60`,
-  );
+  if (status >= 400 || options.maxAge === 0) {
+    /* Never let an edge cache retain a transient outage, validation failure,
+       authorization response, or explicitly dynamic health result merely
+       because the successful form of the same endpoint is public. */
+    response.headers.set("Cache-Control", "private, no-store");
+  } else {
+    response.headers.set(
+      "Cache-Control",
+      `public, max-age=${options.maxAge ?? 300}, s-maxage=${options.maxAge ?? 300}, stale-while-revalidate=60`,
+    );
+  }
   response.headers.set("X-Content-Type-Options", "nosniff");
   return response;
+}
+
+export function requireSessionSigning(): NextResponse | null {
+  if (sessionSigningStatus().available) return null;
+  return jsonResponse(
+    {
+      error: {
+        code: "SESSION_SIGNING_UNAVAILABLE",
+        message:
+          "안전한 익명 세션을 확인할 수 없어 요청을 중단했습니다. 잠시 후 다시 시도해 주세요.",
+      },
+    },
+    { status: 503 },
+  );
 }
 
 export function getRequestId(request: NextRequest): string {
@@ -37,8 +70,11 @@ export function getOrCreateSession(request: NextRequest): {
   id: string;
   isNew: boolean;
 } {
-  const current = request.cookies.get(SESSION_COOKIE)?.value;
-  if (current && /^[a-f0-9-]{32,40}$/i.test(current)) {
+  if (!sessionSigningStatus().available) {
+    throw new Error("SESSION_SIGNING_KEY_UNAVAILABLE");
+  }
+  const current = readSessionId(request);
+  if (current) {
     return { id: current, isNew: false };
   }
   return { id: crypto.randomUUID(), isNew: true };
@@ -50,7 +86,7 @@ export function setSessionCookie(
 ): void {
   response.cookies.set({
     name: SESSION_COOKIE,
-    value: sessionId,
+    value: createSessionCookieValue(sessionId),
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",

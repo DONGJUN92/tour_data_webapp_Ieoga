@@ -168,16 +168,16 @@ export function ActiveJourneyCockpit({
           <p>{stepRole(current)}</p>
           <h1 id="active-journey-title">{current.title}</h1>
           <span>{current.locationLabel || "목적지 위치 확인"}</span>
-          <dl>
-            <div>
+          <div className="cockpit-facts">
+            <dl>
               <dt>예상·예약 시각</dt>
               <dd>
                 {formatTime(
                   current.estimatedArrivalAt ?? current.scheduledAt,
                 )}
               </dd>
-            </div>
-            <div>
+            </dl>
+            <dl>
               <dt>지켜야 할 다음 예약</dt>
               <dd>
                 {nextFixed.title} ·{" "}
@@ -185,8 +185,8 @@ export function ActiveJourneyCockpit({
                   nextFixed.estimatedArrivalAt ?? nextFixed.scheduledAt,
                 )}
               </dd>
-            </div>
-          </dl>
+            </dl>
+          </div>
         </div>
 
         <div className="cockpit-actions">

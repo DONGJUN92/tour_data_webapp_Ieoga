@@ -194,8 +194,23 @@ try {
       },
       timeoutMs: 90_000,
     });
-    assert.ok([200, 503].includes(healthRefresh.response.status));
+    assert.equal(
+      healthRefresh.response.status,
+      200,
+      JSON.stringify(healthRefresh.body),
+    );
+    assert.equal(
+      healthRefresh.body.overall,
+      "ready",
+      JSON.stringify(healthRefresh.body),
+    );
     assert.equal(healthRefresh.body.sources?.length, 8);
+    assert.equal(
+      healthRefresh.body.sources.filter((source) => source.status === "error")
+        .length,
+      0,
+      JSON.stringify(healthRefresh.body.sources),
+    );
   }
 
   const placeSearch = await request(
@@ -427,9 +442,43 @@ try {
   const evidence = await request("/api/v1/release/evidence");
   assert.equal(evidence.response.status, 200);
   assert.ok(evidence.body.report.items.length >= 10);
+  assert.equal(
+    evidence.body.report.overall,
+    "ready",
+    JSON.stringify({
+      overall: evidence.body.report.overall,
+      incomplete: evidence.body.report.items
+        .filter((item) => item.status !== "verified")
+        .map((item) => ({ id: item.id, status: item.status })),
+    }),
+  );
+  assert.equal(
+    evidence.body.report.verifiedCount,
+    evidence.body.report.totalCount,
+    JSON.stringify(evidence.body.report),
+  );
+  assert.ok(
+    evidence.body.report.items.every((item) => item.status === "verified"),
+    JSON.stringify(evidence.body.report.items),
+  );
 
   const health = await request("/api/v1/health/ready");
-  assert.ok([200, 503].includes(health.response.status));
+  assert.equal(health.response.status, 200, JSON.stringify(health.body));
+  assert.equal(
+    health.body.overall,
+    "ready",
+    JSON.stringify(health.body),
+  );
+  assert.equal(health.body.sourceHealth?.sourceCount, 8);
+  assert.equal(health.body.sourceHealth?.stale, false);
+  assert.equal(health.body.externalProviders?.releaseRequirement, "satisfied");
+  assert.equal(
+    (health.body.sources ?? []).filter(
+      (source) => source.status === "error",
+    ).length,
+    0,
+    JSON.stringify(health.body.sources),
+  );
 
   console.log(
     JSON.stringify(

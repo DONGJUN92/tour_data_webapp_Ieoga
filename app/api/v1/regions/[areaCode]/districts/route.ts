@@ -23,6 +23,18 @@ export async function GET(
       const region = regionsResult.items.find(
         (item) => String(item.code ?? "") === areaCode,
       );
+      if (!region) {
+        return publicJsonResponse(
+          {
+            error: {
+              code: "UNKNOWN_AREA_CODE",
+              message:
+                "해당 5자리 지역 코드를 최신 공식 지역 목록에서 확인하지 못했습니다.",
+            },
+          },
+          { status: 400, maxAge: 0 },
+        );
+      }
       const districts = region
         ? [
             {

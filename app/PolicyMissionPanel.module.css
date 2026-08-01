@@ -333,7 +333,7 @@
 
 .contractHeading span {
   color: #667674;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -345,17 +345,18 @@
 
 .contractHeading > small {
   color: #667674;
-  font-size: 11px;
+  font-size: 12px;
 }
 
-.contract dl {
+.contractFacts {
   margin: 14px 0 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
-.contract dl > div {
+.contractFacts > dl {
+  margin: 0;
   min-width: 0;
   padding-top: 10px;
   border-top: 1px solid #dde5eb;
@@ -363,7 +364,7 @@
 
 .contract dt {
   color: #667674;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -409,13 +410,13 @@
   display: block;
   margin-top: 9px;
   color: #667674;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .revalidationRecord {
   margin: 14px 0 0;
   color: #667674;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -430,7 +431,7 @@
 .cardLoop li {
   min-width: 0;
   position: relative;
-  color: #87928f;
+  color: #5f6b79;
   text-align: center;
 }
 
@@ -703,7 +704,7 @@
     gap: 7px;
   }
 
-  .contract dl {
+  .contractFacts {
     grid-template-columns: 1fr;
   }
 

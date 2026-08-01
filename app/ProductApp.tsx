@@ -61,6 +61,7 @@ import {
   normalizeJourneyPlan,
   normalizePlaceResults,
   normalizeRegions,
+  parseKoreaCoordinate,
   practiceJourneySchedule,
   readText,
   sourceDecisionEffect,
@@ -74,7 +75,7 @@ import {
 
 export function ProductApp() {
   const [activeTab, setActiveTab] = useState<TabId>("recover");
-  const [language] = useState<Language>("ko");
+  const [language, setLanguage] = useState<Language>("ko");
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionState, setRegionState] = useState<LoadState>("loading");
   const [regionError, setRegionError] = useState("");
@@ -107,6 +108,14 @@ export function ProductApp() {
   const [placeSearchState, setPlaceSearchState] = useState<LoadState>("idle");
   const [placeSearchError, setPlaceSearchError] = useState("");
   const [placeResults, setPlaceResults] = useState<PlaceSearchResult[]>([]);
+  const originSelectionCurrent = Boolean(
+    latitude.trim() &&
+      longitude.trim() &&
+      geoState === "success" &&
+      (locationMode === "automatic" ||
+        (locationMode === "manual" &&
+          placeKeyword.trim() === originLabel.trim())),
+  );
   const [incident, setIncident] = useState<Incident>("rain");
   const [availableMinutes, setAvailableMinutes] = useState(90);
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
@@ -118,6 +127,13 @@ export function ProductApp() {
   const [analyticsConsent, setAnalyticsConsent] = useState(false);
   const [deleteState, setDeleteState] = useState<LoadState>("idle");
   const [deleteMessage, setDeleteMessage] = useState("");
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+    return () => {
+      document.documentElement.lang = "ko";
+    };
+  }, [language]);
 
   const [recoverState, setRecoverState] = useState<LoadState>("idle");
   const [recoverError, setRecoverError] = useState("");
@@ -736,14 +752,6 @@ export function ProductApp() {
     setInsightDetailState("idle");
   }
 
-  function openLegalSection(sectionId: "privacy" | "terms") {
-    setActiveTab("transparency");
-    if (healthState === "idle") void loadHealth();
-    window.setTimeout(() => {
-      document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 30);
-  }
-
   function requestGeolocation() {
     setGeoMessage("");
     setGeoAttribution("");
@@ -778,6 +786,8 @@ export function ProductApp() {
             setAreaCode(resolvedAreaCode);
             setSigunguCode(resolvedDistrictCode);
             setOriginLabel(readText(resolved, ["label"]) || "내 현재 위치");
+            setPlaceKeyword("");
+            setPlaceResults([]);
             setGeoAttribution(readText(resolved, ["attribution"]));
             setLocationMode("automatic");
             setGeoState("success");
@@ -809,6 +819,12 @@ export function ProductApp() {
   function useManualLocation() {
     setLocationMode("manual");
     setGeoState("idle");
+    setLatitude("");
+    setLongitude("");
+    setOriginLabel("");
+    setPlaceKeyword("");
+    setPlaceResults([]);
+    setPlaceSearchState("idle");
     setGeoAttribution("");
     setGeoMessage("현재 장소명이나 주소를 검색해 주세요.");
   }
@@ -824,25 +840,31 @@ export function ProductApp() {
       setPlaceSearchError("관광지명을 두 글자 이상 입력해 주세요.");
       return;
     }
+    setLatitude("");
+    setLongitude("");
+    setOriginLabel("");
+    setGeoState("idle");
     setPlaceSearchState("loading");
-    const query = new URLSearchParams({
+    const currentLatitude = parseKoreaCoordinate(latitude, 32, 39.8);
+    const currentLongitude = parseKoreaCoordinate(longitude, 124, 132);
+    const searchInput = {
       keyword,
       purpose: "current_origin",
       fallback,
-    });
-    if (areaCode) query.set("areaCode", areaCode);
-    if (sigunguCode) query.set("sigunguCode", sigunguCode);
-    const currentLatitude = Number(latitude);
-    const currentLongitude = Number(longitude);
-    if (
-      Number.isFinite(currentLatitude) &&
-      Number.isFinite(currentLongitude)
-    ) {
-      query.set("latitude", String(currentLatitude));
-      query.set("longitude", String(currentLongitude));
-    }
+      ...(areaCode ? { areaCode } : {}),
+      ...(sigunguCode ? { sigunguCode } : {}),
+      ...(currentLatitude !== undefined && currentLongitude !== undefined
+        ? {
+            latitude: currentLatitude,
+            longitude: currentLongitude,
+          }
+        : {}),
+    };
     try {
-      const payload = await fetchJson(`/api/v1/places/search?${query.toString()}`);
+      const payload = await fetchJson("/api/v1/places/search", {
+        method: "POST",
+        body: JSON.stringify(searchInput),
+      });
       const next = normalizePlaceResults(payload).slice(0, 10);
       setPlaceResults(next);
       setPlaceSearchState("success");
@@ -860,6 +882,7 @@ export function ProductApp() {
     setLatitude(place.latitude.toFixed(6));
     setLongitude(place.longitude.toFixed(6));
     setOriginLabel(place.title);
+    setPlaceKeyword(place.title);
     setLocationMode("manual");
     setPlaceResults([]);
     setPlaceSearchState("idle");
@@ -888,8 +911,8 @@ export function ProductApp() {
       );
       return;
     }
-    const lat = Number(latitude);
-    const lng = Number(longitude);
+    const lat = latitude.trim() ? Number(latitude) : Number.NaN;
+    const lng = longitude.trim() ? Number(longitude) : Number.NaN;
     if (
       !Number.isFinite(lat) ||
       lat < 32 ||
@@ -1080,6 +1103,26 @@ export function ProductApp() {
   }
 
   async function shareRecoveryOption(option: RecoveryOption) {
+    if (
+      option.confirmationRequired ||
+      (option.evidenceGaps?.length ?? 0) > 0
+    ) {
+      setShareMessages((current) => ({
+        ...current,
+        [option.id]:
+          language === "en"
+            ? "Proof cannot be shared until every required condition is verified by official evidence."
+            : "필수 조건의 공식 근거가 모두 확인되기 전에는 복구 증명을 공유할 수 없습니다.",
+      }));
+      return;
+    }
+    if (!originSelectionCurrent) {
+      setRecoverState("error");
+      setRecoverError(
+        "현재 위치를 자동으로 확인하거나 검색 결과에서 장소를 다시 선택해 주세요.",
+      );
+      return;
+    }
     if (!recovery?.requestId || !option.id || !recoveryPersisted) {
       setShareMessages((current) => ({
         ...current,
@@ -1132,6 +1175,18 @@ export function ProductApp() {
     option: RecoveryOption,
     event: "selected" | "applied" | "arrived" | "continued" | "abandoned",
   ) {
+    if (
+      (event === "selected" || event === "applied") &&
+      (option.confirmationRequired ||
+        (option.evidenceGaps?.length ?? 0) > 0)
+    ) {
+      setOutcomeMessage(
+        language === "en"
+          ? "This option cannot be applied until every required condition is verified by official evidence."
+          : "필수 조건의 공식 근거가 모두 확인되기 전에는 이 복구안을 적용할 수 없습니다.",
+      );
+      return;
+    }
     if (!recovery?.requestId || !option.id || !recoveryPersisted) {
       setOutcomeMessage(
         "저장이 확인된 복구 실행만 적용하거나 결과를 기록할 수 있습니다. 복구를 다시 실행해 주세요.",
@@ -1260,9 +1315,10 @@ export function ProductApp() {
   return (
     <div
       className={`product-shell ${hasExecution ? "has-active-execution" : ""}`}
+      lang={language}
     >
       <a className="skip-link" href="#main-content">
-        본문으로 바로가기
+        {language === "en" ? "Skip to main content" : "본문으로 바로가기"}
       </a>
 
       <SimulationGuide
@@ -1275,7 +1331,11 @@ export function ProductApp() {
       />
 
       <header className="product-header">
-        <a className="product-brand" href="/" aria-label="이어가 홈">
+        <a
+          className="product-brand"
+          href="/"
+          aria-label={language === "en" ? "IEOGA home" : "이어가 홈"}
+        >
           <span className="product-brand-mark" aria-hidden="true">
             이
           </span>
@@ -1287,7 +1347,7 @@ export function ProductApp() {
 
         <nav
           className="desktop-nav"
-          aria-label="주요 메뉴"
+          aria-label={language === "en" ? "Main navigation" : "주요 메뉴"}
           role="tablist"
           onKeyDown={handleTabKeyDown}
         >
@@ -1301,7 +1361,7 @@ export function ProductApp() {
             onClick={() => changeTab("recover")}
             data-testid="nav-recover"
           >
-            여행 복구
+            {language === "en" ? "Trip recovery" : "여행 복구"}
           </button>
           <button
             id="tab-insights"
@@ -1313,7 +1373,7 @@ export function ProductApp() {
             onClick={() => changeTab("insights")}
             data-testid="nav-insights"
           >
-            지역 개선 미션
+            {language === "en" ? "Regional missions" : "지역 개선 미션"}
           </button>
           <button
             id="tab-transparency"
@@ -1325,11 +1385,33 @@ export function ProductApp() {
             onClick={() => changeTab("transparency")}
             data-testid="nav-transparency"
           >
-            데이터 투명성
+            {language === "en" ? "Data transparency" : "데이터 투명성"}
           </button>
         </nav>
 
         <div className="header-actions">
+          <div
+            className="language-toggle"
+            role="group"
+            aria-label={language === "en" ? "Language" : "언어 선택"}
+          >
+            <button
+              type="button"
+              className={language === "ko" ? "is-active" : ""}
+              aria-pressed={language === "ko"}
+              onClick={() => setLanguage("ko")}
+            >
+              KO
+            </button>
+            <button
+              type="button"
+              className={language === "en" ? "is-active" : ""}
+              aria-pressed={language === "en"}
+              onClick={() => setLanguage("en")}
+            >
+              EN
+            </button>
+          </div>
           <button
             className="header-guide"
             onClick={() => {
@@ -1337,7 +1419,7 @@ export function ProductApp() {
               setGuideOpen(true);
             }}
           >
-            처음 사용 가이드
+            {language === "en" ? "Getting started" : "처음 사용 가이드"}
           </button>
           {/* Bridge recovery is the fast path: it needs no registered
               itinerary, so it is the primary entry rather than the tab. */}
@@ -2035,7 +2117,16 @@ export function ProductApp() {
                           <input
                             id="origin-place-keyword"
                             value={placeKeyword}
-                            onChange={(event) => setPlaceKeyword(event.target.value)}
+                            onChange={(event) => {
+                              setPlaceKeyword(event.target.value);
+                              setLatitude("");
+                              setLongitude("");
+                              setOriginLabel("");
+                              setGeoState("idle");
+                              setPlaceResults([]);
+                              setPlaceSearchState("idle");
+                              setPlaceSearchError("");
+                            }}
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
                                 event.preventDefault();
@@ -2299,7 +2390,9 @@ export function ProductApp() {
                 <button
                   className="primary-action"
                   type="submit"
-                  disabled={recoverState === "loading"}
+                  disabled={
+                    recoverState === "loading" || !originSelectionCurrent
+                  }
                   data-testid="recover-submit"
                 >
                   {recoverState === "loading"
@@ -2566,8 +2659,8 @@ export function ProductApp() {
                           </div>
                         </div>
 
-                        <dl className="continuity-proof-facts">
-                          <div>
+                        <div className="continuity-proof-facts">
+                          <dl>
                             <dt>잠긴 일정 보존</dt>
                             <dd>
                               {readText(appliedProof, ["lockedNodesPreserved"]) ||
@@ -2577,8 +2670,8 @@ export function ProductApp() {
                                 ? ` / ${readText(appliedProof, ["lockedNodesTotal"])}`
                                 : ""}
                             </dd>
-                          </div>
-                          <div>
+                          </dl>
+                          <dl>
                             <dt>실제 경로 근거</dt>
                             <dd>
                               {readText(appliedRouteEvidence, [
@@ -2587,8 +2680,8 @@ export function ProductApp() {
                                 "method",
                               ]) || "구간별 경로 확인"}
                             </dd>
-                          </div>
-                          <div>
+                          </dl>
+                          <dl>
                             <dt>다음 일정 도착</dt>
                             <dd>
                               {readText(appliedRouteEvidence, [
@@ -2598,17 +2691,17 @@ export function ProductApp() {
                                 appliedScheduleDiff?.arrivalTime ||
                                 "도착 시각 확인"}
                             </dd>
-                          </div>
-                          <div>
+                          </dl>
+                          <dl>
                             <dt>안전 여유</dt>
                             <dd>
                               {typeof appliedScheduleDiff?.safetyBufferMinutes === "number"
                                 ? `${appliedScheduleDiff.safetyBufferMinutes}분`
                                 : `${safetyBufferMinutes}분 기준`}
                             </dd>
-                          </div>
+                          </dl>
                           {appliedWeatherEvidence && (
-                            <div>
+                            <dl>
                               <dt>현재 기상 근거</dt>
                               <dd>
                                 <a
@@ -2625,9 +2718,9 @@ export function ProductApp() {
                                   ]),
                                 )}
                               </dd>
-                            </div>
+                            </dl>
                           )}
-                        </dl>
+                        </div>
 
                         <div className="route-action-row">
                           <a
@@ -2692,11 +2785,16 @@ export function ProductApp() {
                     <div className="option-list">
                       {recovery.options.map((option, index) => (
                         <article
-                          className={
-                            appliedOptionId === option.id
-                              ? "option-card is-applied"
-                              : "option-card"
-                          }
+                          className={[
+                            "option-card",
+                            appliedOptionId === option.id ? "is-applied" : "",
+                            option.confirmationRequired ||
+                            (option.evidenceGaps?.length ?? 0) > 0
+                              ? "is-unverified"
+                              : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
                           key={option.id || option.contentId || `${option.title}-${index}`}
                           data-testid="recovery-option"
                           hidden={index > 0 && !showAllOptions}
@@ -2732,6 +2830,40 @@ export function ProductApp() {
                                 </span>
                               )}
                             </div>
+                            {(option.confirmationRequired ||
+                              (option.evidenceGaps?.length ?? 0) > 0) && (
+                              <section
+                                className="evidence-gap-alert"
+                                role="alert"
+                                aria-label="공식 근거 확인 필요"
+                              >
+                                <strong>
+                                  이 후보는 아직 검증된 복구안이 아닙니다
+                                </strong>
+                                <p>
+                                  아래 조건을 공식 정보로 확인하지 못해 일정에
+                                  적용할 수 없습니다.
+                                </p>
+                                <ul>
+                                  {(option.evidenceGaps ?? []).map(
+                                    (gap, gapIndex) => (
+                                      <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
+                                        {gap.note ||
+                                          (gap.code === "INDOOR_UNVERIFIED"
+                                            ? "실내 이용 가능 여부 미확인"
+                                            : gap.code ===
+                                                "ACCESSIBILITY_UNVERIFIED"
+                                              ? "요청한 접근성 조건 미확인"
+                                              : gap.code ===
+                                                  "CONCENTRATION_UNVERIFIED"
+                                                ? "관광 집중률 예측 미확인"
+                                                : "필수 조건 근거 미확인")}
+                                      </li>
+                                    ),
+                                  )}
+                                </ul>
+                              </section>
+                            )}
                             {option.purposePreservation && (
                               <div
                                 className="purpose-contract"
@@ -2762,8 +2894,8 @@ export function ProductApp() {
                                 </small>
                               </div>
                             )}
-                            <dl className="option-facts">
-                              <div>
+                            <div className="option-facts">
+                              <dl>
                                 <dt>거리</dt>
                                 <dd>
                                   {typeof option.distanceMeters === "number"
@@ -2772,24 +2904,24 @@ export function ProductApp() {
                                       : `${Math.round(option.distanceMeters)}m`
                                     : "미확인"}
                                 </dd>
-                              </div>
-                              <div>
+                              </dl>
+                              <dl>
                                 <dt>이동 추정</dt>
                                 <dd>
                                   {typeof option.estimatedTravelMinutes === "number"
                                     ? `약 ${Math.ceil(option.estimatedTravelMinutes)}분`
                                     : compactValue(option.travelEstimate)}
                                 </dd>
-                              </div>
-                              <div>
+                              </dl>
+                              <dl>
                                 <dt>접근성</dt>
                                 <dd>{compactValue(option.accessibility)}</dd>
-                              </div>
-                              <div>
+                              </dl>
+                              <dl>
                                 <dt>집중 예측</dt>
                                 <dd>{formatCrowd(option.crowd)}</dd>
-                              </div>
-                            </dl>
+                              </dl>
+                            </div>
                             {option.indoorSuitability !== undefined && (
                               <div className="verification-tags">
                                 <span>실내 적합성 · {compactValue(option.indoorSuitability)}</span>
@@ -2906,10 +3038,15 @@ export function ProductApp() {
                                   disabled={
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
-                                    !option.id
+                                    !option.id ||
+                                    option.confirmationRequired ||
+                                    (option.evidenceGaps?.length ?? 0) > 0
                                   }
                                 >
-                                  {appliedOptionId === option.id
+                                  {option.confirmationRequired ||
+                                  (option.evidenceGaps?.length ?? 0) > 0
+                                    ? "공식 확인 전 적용 불가"
+                                    : appliedOptionId === option.id
                                     ? "현재 적용 중"
                                     : "이 일정으로 이어가기"}
                                 </button>
@@ -2919,7 +3056,9 @@ export function ProductApp() {
                                   disabled={
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
-                                    !option.id
+                                    !option.id ||
+                                    option.confirmationRequired ||
+                                    (option.evidenceGaps?.length ?? 0) > 0
                                   }
                                 >
                                   {shareMessages[option.id] ?? "복구 증명 공유"}
@@ -3269,15 +3408,17 @@ export function ProductApp() {
                     })}
                   </div>
                   {insightMetrics.length > 0 ? (
-                    <dl className="metric-grid">
+                    <div className="metric-grid">
                       {insightMetrics.map((metric) => (
-                        <div key={metric.key}>
+                        <dl key={metric.key}>
                           <dt>{metric.label}</dt>
-                          <dd>{compactValue(metric.value)}</dd>
-                          {metric.meta && <small>{metric.meta}</small>}
-                        </div>
+                          <dd>
+                            {compactValue(metric.value)}
+                            {metric.meta && <small>{metric.meta}</small>}
+                          </dd>
+                        </dl>
                       ))}
-                    </dl>
+                    </div>
                   ) : (
                     <div className="policy-empty compact">
                       <strong>공개 가능한 수치가 없습니다.</strong>
@@ -3490,18 +3631,21 @@ export function ProductApp() {
       {/* Mobile navigation points at the scenario routes rather than the
           in-page tabs. Each of those is a sequence of single-decision screens;
           the tab panels below remain as the detailed desktop view. */}
-      <nav className="mobile-nav" aria-label="모바일 주요 메뉴">
+      <nav
+        className="mobile-nav"
+        aria-label={language === "en" ? "Mobile navigation" : "모바일 주요 메뉴"}
+      >
         <a href="/flow">
           <span aria-hidden="true">↗</span>
-          여행 복구
+          {language === "en" ? "Recovery" : "여행 복구"}
         </a>
         <a href="/policy">
           <span aria-hidden="true">▦</span>
-          지역 회복력
+          {language === "en" ? "Resilience" : "지역 회복력"}
         </a>
         <a href="/sources">
           <span aria-hidden="true">◎</span>
-          데이터 출처
+          {language === "en" ? "Sources" : "데이터 출처"}
         </a>
       </nav>
 
@@ -3513,35 +3657,34 @@ export function ProductApp() {
             </span>
             <span>
               <strong>이어가</strong>
-              <small>여행이 흔들려도, 목적은 이어지도록</small>
+              <small>
+                {language === "en"
+                  ? "Keep what matters when travel changes"
+                  : "여행이 흔들려도, 목적은 이어지도록"}
+              </small>
             </span>
           </a>
-          <p>한국관광공사 OpenAPI 기반 전국 여행 중단 회복 서비스</p>
+          <p>
+            {language === "en"
+              ? "Nationwide travel continuity powered by Korea Tourism OpenAPI"
+              : "한국관광공사 OpenAPI 기반 전국 여행 중단 회복 서비스"}
+          </p>
         </div>
         <div className="footer-links">
-          <a
-            href="#privacy"
-            onClick={(event) => {
-              event.preventDefault();
-              openLegalSection("privacy");
-            }}
-          >
-            개인정보 처리 원칙
+          <a href="/privacy">
+            {language === "en" ? "Privacy" : "개인정보 처리방침"}
           </a>
-          <a
-            href="#terms"
-            onClick={(event) => {
-              event.preventDefault();
-              openLegalSection("terms");
-            }}
-          >
-            이용 확인사항
+          <a href="/terms">{language === "en" ? "Terms" : "이용약관"}</a>
+          <a href="/accessibility">
+            {language === "en" ? "Accessibility" : "접근성 안내"}
           </a>
           <button type="button" onClick={() => changeTab("transparency")}>
-            데이터 출처
+            {language === "en" ? "Data sources" : "데이터 출처"}
           </button>
           <button type="button" onClick={() => changeTab("insights")}>
-            기관용 지역 실행계약
+            {language === "en"
+              ? "Regional action contract"
+              : "기관용 지역 실행계약"}
           </button>
           <a
             href="#launch-evidence"
@@ -3555,7 +3698,7 @@ export function ProductApp() {
               }, 30);
             }}
           >
-            출시 증거
+            {language === "en" ? "Launch evidence" : "출시 증거"}
           </a>
         </div>
         <small>© 2026 IEOGA. Data provided by Korea Tourism Organization.</small>

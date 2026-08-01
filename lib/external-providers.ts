@@ -1,3 +1,5 @@
+import { getRuntimeSecret } from "@/lib/runtime-env";
+
 export const PUBLIC_NOMINATIM_REVERSE_URL =
   "https://nominatim.openstreetmap.org/reverse";
 export const PUBLIC_NOMINATIM_SEARCH_URL =
@@ -18,6 +20,29 @@ function normalizeUrl(value: string): string {
   } catch {
     return value.trim().replace(/\/$/, "");
   }
+}
+
+function canonicalOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/\.+$/, "");
+    const port =
+      (url.protocol === "https:" && url.port === "443") ||
+      (url.protocol === "http:" && url.port === "80")
+        ? ""
+        : url.port;
+    return `${url.protocol}//${hostname}${port ? `:${port}` : ""}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameOrigin(left: string, right: string): boolean {
+  const leftOrigin = canonicalOrigin(left);
+  const rightOrigin = canonicalOrigin(right);
+  return leftOrigin && rightOrigin
+    ? leftOrigin === rightOrigin
+    : normalizeUrl(left) === normalizeUrl(right);
 }
 
 /* Splits a comma-separated endpoint list without breaking URLs that carry a
@@ -48,23 +73,15 @@ function providerConfig(
   return {
     url,
     mode:
-      normalizeUrl(url) === normalizeUrl(publicUrl)
+      sameOrigin(url, publicUrl)
         ? "public_shared"
         : "managed",
   };
 }
 
-/* A Kakao REST key turns geocoding into a managed, keyed provider: reverse
-   lookups go through coord2regioncode and place search through the local
-   keyword API, with the shared Nominatim endpoints kept only as fallback. */
-function kakaoGeocodingConfigured(): boolean {
-  return Boolean(getRuntimeSecret("KAKAO_REST_API_KEY"));
-}
-
-/* Whether the Nominatim endpoint itself is the shared public one. The
-   reverse-geocode *mode* can read as managed via Kakao while Nominatim is
-   still reachable as fallback, and that fallback must keep honouring the
-   public usage policy — so throttling keys off this, not off the mode. */
+/* Whether the reachable reverse-geocoding fallback is the shared public
+   Nominatim endpoint. Kakao being configured does not change that endpoint's
+   usage policy or release classification. */
 export function usesPublicNominatim(): boolean {
   return (
     providerConfig(
@@ -75,62 +92,44 @@ export function usesPublicNominatim(): boolean {
 }
 
 export function reverseGeocodeProviderConfig() {
-  const config = providerConfig(
+  return providerConfig(
     getRuntimeSecret("REVERSE_GEOCODE_URL"),
     PUBLIC_NOMINATIM_REVERSE_URL,
   );
-  if (config.mode === "public_shared" && kakaoGeocodingConfigured()) {
-    return { ...config, mode: "managed" as ProviderMode };
-  }
-  return config;
 }
 
 export function forwardGeocodeProviderConfig() {
-  const config = providerConfig(
+  return providerConfig(
     getRuntimeSecret("FORWARD_GEOCODE_URL"),
     PUBLIC_NOMINATIM_SEARCH_URL,
   );
-  if (config.mode === "public_shared" && kakaoGeocodingConfigured()) {
-    return { ...config, mode: "managed" as ProviderMode };
-  }
-  return config;
 }
 
 export function routingProviderConfig() {
-  return providerConfig(
-    routingEndpoints()[0],
-    PUBLIC_OSRM_WALKING_URL,
-  );
+  const endpoints = routingEndpoints();
+  return {
+    url: endpoints[0],
+    mode: endpoints.some(
+      (url) => sameOrigin(url, PUBLIC_OSRM_WALKING_URL),
+    )
+      ? ("public_shared" as const)
+      : ("managed" as const),
+  };
 }
 
 /* Walking ETA is a hard gate: a candidate whose arrival cannot be verified is
-   rejected rather than guessed, so a single unreachable router takes the whole
-   recovery down. ROUTING_BASE_URL therefore accepts a comma-separated list of
-   OSRM-compatible endpoints, tried in order. The shared public router is
-   always kept as the final entry so a misconfigured managed endpoint degrades
-   instead of failing closed. Every entry is a real routing engine — none of
-   this substitutes an estimated distance for a measured one. */
+   rejected rather than guessed. ROUTING_BASE_URL accepts a comma-separated
+   list of OSRM-compatible endpoints, tried in order. A configured list is
+   authoritative; operators must explicitly include a shared-public fallback,
+   allowing readiness to classify the complete reachable chain truthfully. */
 export function routingEndpoints(): string[] {
   const configured = splitEndpointList(getRuntimeSecret("ROUTING_BASE_URL"));
-  const ordered = configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
-  if (!ordered.some((url) => normalizeUrl(url) === normalizeUrl(PUBLIC_OSRM_WALKING_URL))) {
-    ordered.push(PUBLIC_OSRM_WALKING_URL);
-  }
-  return ordered;
+  return configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
 }
 
 export function weatherProviderConfig() {
-  const config = providerConfig(
+  return providerConfig(
     getRuntimeSecret("WEATHER_API_URL"),
     PUBLIC_OPEN_METEO_URL,
   );
-  /* An approved KMA forecast service makes the domestic authority the primary
-     source, with Open-Meteo kept only as fallback. Keyed off the dedicated
-     variable so the status reflects an approval the operator confirmed, not
-     merely the presence of some portal key. */
-  if (config.mode === "public_shared" && getRuntimeSecret("KMA_SERVICE_KEY")) {
-    return { ...config, mode: "managed" as ProviderMode };
-  }
-  return config;
 }
-import { getRuntimeSecret } from "@/lib/runtime-env";

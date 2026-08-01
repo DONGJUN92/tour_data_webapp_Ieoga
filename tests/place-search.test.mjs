@@ -176,6 +176,128 @@ test("current-origin search uses Kakao only as an ephemeral fallback", async () 
   }
 });
 
+test("blank, null and out-of-domain official coordinates are rejected", async () => {
+  const result = await withProviderEnv(
+    async () =>
+      new Response(
+        JSON.stringify(
+          ktoEnvelope([
+            {
+              contentid: "blank-coordinate",
+              contenttypeid: "12",
+              title: "빈 좌표 장소",
+              mapy: null,
+              mapx: "",
+            },
+            {
+              contentid: "zero-coordinate",
+              contenttypeid: "12",
+              title: "영점 좌표 장소",
+              mapy: "0",
+              mapx: "0",
+            },
+            {
+              contentid: "valid-coordinate",
+              contenttypeid: "14",
+              title: "검증 좌표 문화관",
+              addr1: "서울특별시",
+              mapy: "37.57",
+              mapx: "126.98",
+            },
+          ]),
+        ),
+        { status: 200 },
+      ),
+    () =>
+      searchPlaces({
+        keyword: "검증 좌표 문화관",
+        purpose: "saved_stop",
+        fallback: "auto",
+      }),
+  );
+
+  assert.deepEqual(
+    result.places.map((place) => place.providerId),
+    ["valid-coordinate"],
+  );
+});
+
+test("place query never coerces blank coordinates to zero", async () => {
+  const { placeSearchQuerySchema } = await import(
+    "../lib/location/place-query.ts"
+  );
+  assert.equal(
+    placeSearchQuerySchema.safeParse({
+      keyword: "광화문",
+      purpose: "current_origin",
+      fallback: "auto",
+      latitude: "",
+      longitude: "",
+    }).success,
+    false,
+  );
+  assert.equal(
+    placeSearchQuerySchema.safeParse({
+      keyword: "광화문",
+      purpose: "current_origin",
+      fallback: "auto",
+      latitude: undefined,
+      longitude: undefined,
+    }).success,
+    true,
+  );
+  assert.equal(
+    placeSearchQuerySchema.safeParse({
+      keyword: "광화문",
+      purpose: "current_origin",
+      fallback: "auto",
+      areaCode: "11",
+      sigunguCode: "26110",
+    }).success,
+    false,
+  );
+  assert.equal(
+    placeSearchQuerySchema.safeParse({
+      keyword: "광화문",
+      purpose: "saved_stop",
+      fallback: "auto",
+      areaCode: "99",
+    }).success,
+    false,
+  );
+  assert.equal(
+    placeSearchQuerySchema.safeParse({
+      keyword: "광화문",
+      purpose: "saved_stop",
+      fallback: "auto",
+      sigunguCode: "11110",
+    }).success,
+    false,
+  );
+});
+
+test("current-origin coordinates are accepted only in JSON POST and costly searches fail closed", async () => {
+  const [placeRoute, recoverRoute, limiter] = await Promise.all([
+    readFile(
+      path.join(ROOT, "app/api/v1/places/search/route.ts"),
+      "utf8",
+    ),
+    readFile(path.join(ROOT, "app/api/v1/recover/route.ts"), "utf8"),
+    readFile(path.join(ROOT, "lib/durable-rate-limit.ts"), "utf8"),
+  ]);
+  assert.match(placeRoute, /SENSITIVE_QUERY_PARAMETERS_FORBIDDEN/);
+  assert.match(placeRoute, /searchParams\.has\("latitude"\)/);
+  assert.match(placeRoute, /searchParams\.has\("longitude"\)/);
+  assert.match(placeRoute, /export async function POST[\s\S]*request\.json\(\)/);
+  assert.match(placeRoute, /allowDurableRequest\(/);
+  assert.match(placeRoute, /isKnownAdministrativeScope\(/);
+  assert.match(placeRoute, /UNKNOWN_REGION_SCOPE/);
+  assert.match(placeRoute, /REGION_REFERENCE_UNAVAILABLE/);
+  assert.match(recoverRoute, /allowDurableRequest\(/);
+  assert.match(limiter, /unavailable:\s*true/);
+  assert.match(limiter, /allowed:\s*false/);
+});
+
 test("normal user UI contains no latitude or longitude input fields", async () => {
   const product = await readFile(
     path.join(ROOT, "app/ProductApp.tsx"),

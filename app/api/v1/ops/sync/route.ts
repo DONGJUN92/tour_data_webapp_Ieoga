@@ -43,13 +43,31 @@ export async function POST(request: NextRequest) {
     batchSize = 2;
   }
 
-  const result = await runPolicySync({
-    batchSize,
-    bootstrapIfEmpty: true,
-  });
-  return jsonResponse({
-    status: result.failed ? "degraded" : "completed",
-    ...result,
-    checkedAt: new Date().toISOString(),
-  });
+  try {
+    const result = await runPolicySync({
+      batchSize,
+      bootstrapIfEmpty: true,
+    });
+    const bootstrapDegraded = Boolean(
+      result.bootstrapError ||
+        result.bootstrapped?.failedRegionCodes.length,
+    );
+    return jsonResponse({
+      status:
+        result.failed || bootstrapDegraded ? "degraded" : "completed",
+      ...result,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch {
+    return jsonResponse(
+      {
+        error: {
+          code: "POLICY_SYNC_UNAVAILABLE",
+          message:
+            "정책 지역팩 저장소를 사용할 수 없어 동기화를 시작하지 못했습니다.",
+        },
+      },
+      { status: 503 },
+    );
+  }
 }

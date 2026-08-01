@@ -3,21 +3,20 @@ import {
   getActiveJourneyExecution,
   updateActiveJourneyExecution,
 } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
 import { journeyExecutionActionSchema } from "@/lib/recovery/schema";
 
 export const dynamic = "force-dynamic";
 
-function sessionIdFrom(request: NextRequest): string | undefined {
-  const sessionId = request.cookies.get("ieoga_session")?.value;
-  return sessionId && /^[a-f0-9-]{32,40}$/i.test(sessionId)
-    ? sessionId
-    : undefined;
-}
-
 export async function GET(request: NextRequest) {
-  const sessionId = sessionIdFrom(request);
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
+  const sessionId = readSessionId(request);
   if (!sessionId) {
     return jsonResponse({ status: "empty", execution: null });
   }
@@ -41,7 +40,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const sessionId = sessionIdFrom(request);
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
+  const sessionId = readSessionId(request);
   if (!sessionId) {
     return jsonResponse(
       {

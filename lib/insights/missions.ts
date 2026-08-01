@@ -41,6 +41,8 @@ export type RecoveryAggregate = {
   audiences: Record<string, number>;
   outcomeRunCount: number;
   arrivedCount: number;
+  verifiedArrivedCount: number;
+  selfReportedArrivedCount: number;
   continuedCount: number;
   abandonedCount: number;
   arrivedOnTimeCount: number;
@@ -114,6 +116,12 @@ export type MissionActionEvidence = {
   recordedBy: string;
 };
 
+export type PublicMissionActionEvidence = {
+  actionSummary: string;
+  evidenceCount: number;
+  occurredAt: string;
+};
+
 export type MissionCandidate = {
   id: string;
   regionCode: string;
@@ -169,7 +177,7 @@ export type PublicMission = {
   failureCategory: FailureCategory;
   actionContract: MissionActionContract;
   scenario: MissionScenario;
-  actionEvidence?: MissionActionEvidence;
+  actionEvidence?: PublicMissionActionEvidence;
   actionRecordedAt?: string;
   lastRevalidatedAt?: string;
   lastRevalidationResult?:
@@ -240,6 +248,8 @@ const EMPTY_AGGREGATE: RecoveryAggregate = {
   audiences: {},
   outcomeRunCount: 0,
   arrivedCount: 0,
+  verifiedArrivedCount: 0,
+  selfReportedArrivedCount: 0,
   continuedCount: 0,
   abandonedCount: 0,
   arrivedOnTimeCount: 0,
@@ -958,6 +968,10 @@ export function buildMissionCandidates(
         evidenceKind: "consented_generalized_continuity_outcomes",
         finalizedOutcomeCount: aggregate.outcomeRunCount,
         arrivedCount: aggregate.arrivedCount,
+        verifiedArrivedCount: aggregate.verifiedArrivedCount ?? 0,
+        selfReportedArrivedCount:
+          aggregate.selfReportedArrivedCount ??
+          aggregate.arrivedCount,
         continuedCount: aggregate.continuedCount,
         abandonedCount: aggregate.abandonedCount,
         continuityRate,
@@ -1153,6 +1167,7 @@ async function loadRecoveryAggregate(params: {
       event: recoveryOutcomes.event,
       occurredAt: recoveryOutcomes.occurredAt,
       arrivedOnTime: recoveryOutcomes.arrivedOnTime,
+      metadataJson: recoveryOutcomes.metadataJson,
       audience: recoveryRuns.audience,
     })
     .from(recoveryOutcomes)
@@ -1185,7 +1200,29 @@ async function loadRecoveryAggregate(params: {
     aggregate.outcomeRunCount += 1;
     if (row.event === "arrived") {
       aggregate.arrivedCount += 1;
-      if (row.arrivedOnTime !== null) {
+      let arrivalEvidence = "self_reported";
+      try {
+        const metadata = JSON.parse(row.metadataJson) as {
+          arrivalEvidence?: unknown;
+        };
+        if (
+          metadata.arrivalEvidence === "server_verified" ||
+          metadata.arrivalEvidence === "location_verified"
+        ) {
+          arrivalEvidence = metadata.arrivalEvidence;
+        }
+      } catch {
+        arrivalEvidence = "self_reported";
+      }
+      if (arrivalEvidence === "self_reported") {
+        aggregate.selfReportedArrivedCount += 1;
+      } else {
+        aggregate.verifiedArrivedCount += 1;
+      }
+      if (
+        arrivalEvidence !== "self_reported" &&
+        row.arrivedOnTime !== null
+      ) {
         aggregate.arrivedWithTimingCount += 1;
         if (row.arrivedOnTime) aggregate.arrivedOnTimeCount += 1;
       }
@@ -1369,7 +1406,13 @@ function asPublicMission(
       evidenceRequirement: row.evidenceRequirement,
     },
     scenario: storedScenario(row, missionType),
-    actionEvidence,
+    actionEvidence: actionEvidence
+      ? {
+          actionSummary: actionEvidence.actionSummary,
+          evidenceCount: actionEvidence.artifactReferences.length,
+          occurredAt: actionEvidence.occurredAt,
+        }
+      : undefined,
     actionRecordedAt: row.actionRecordedAt ?? undefined,
     lastRevalidatedAt: row.lastRevalidatedAt ?? undefined,
     lastRevalidationResult:

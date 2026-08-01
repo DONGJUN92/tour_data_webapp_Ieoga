@@ -1,10 +1,16 @@
 import { NextRequest } from "next/server";
+import { isKnownAdministrativeScope } from "@/lib/db/repository";
 import { publicJsonResponse } from "@/lib/http";
 import {
   listResilienceMissions,
   MINIMUM_BEHAVIOR_SAMPLE,
 } from "@/lib/insights/missions";
-import { isOfficialRegionCode } from "@/lib/kto/registry";
+import {
+  analysisDistrictCode,
+  analysisRegionCode,
+  districtBelongsToRegion,
+  isOfficialRegionCode,
+} from "@/lib/kto/registry";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +39,9 @@ export async function GET(request: NextRequest) {
     (areaCode && !isOfficialRegionCode(areaCode)) ||
     (districtCode && !/^\d{5}$/.test(districtCode)) ||
     (districtCode && !areaCode) ||
+    (districtCode &&
+      areaCode &&
+      !districtBelongsToRegion(areaCode, districtCode)) ||
     (status && !MISSION_STATUSES.has(status))
   ) {
     return publicJsonResponse(
@@ -45,11 +54,47 @@ export async function GET(request: NextRequest) {
       { status: 400, maxAge: 0 },
     );
   }
+  const normalizedAreaCode = analysisRegionCode(areaCode);
+  const normalizedDistrictCode = analysisDistrictCode(
+    areaCode,
+    districtCode,
+  );
+  if (normalizedAreaCode && normalizedDistrictCode) {
+    try {
+      const known = await isKnownAdministrativeScope({
+        regionCode: normalizedAreaCode,
+        districtCode: normalizedDistrictCode,
+      });
+      if (!known) {
+        return publicJsonResponse(
+          {
+            error: {
+              code: "UNKNOWN_REGION_SCOPE",
+              message:
+                "선택한 시군구를 최신 공식 행정구역 기준표에서 확인하지 못했습니다.",
+            },
+          },
+          { status: 400, maxAge: 0 },
+        );
+      }
+    } catch {
+      return publicJsonResponse(
+        {
+          error: {
+            code: "REGION_REFERENCE_UNAVAILABLE",
+            message:
+              "공식 행정구역 기준표를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+          },
+        },
+        { status: 503, maxAge: 0 },
+      );
+    }
+  }
 
   try {
     const missions = await listResilienceMissions({
-      areaCode,
-      districtCode,
+      areaCode: normalizedAreaCode,
+      districtCode: normalizedDistrictCode,
       status,
       includeResolved,
       limit: Number.isInteger(requestedLimit)
@@ -67,8 +112,8 @@ export async function GET(request: NextRequest) {
       {
         scope: {
           coverage: "nationwide",
-          areaCode: areaCode ?? null,
-          sigunguCode: districtCode ?? null,
+          areaCode: normalizedAreaCode ?? null,
+          sigunguCode: normalizedDistrictCode ?? null,
         },
         missionCount: missions.length,
         byStatus,

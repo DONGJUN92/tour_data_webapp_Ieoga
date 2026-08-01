@@ -54,9 +54,8 @@ type PolicyMission = {
   scenario: { id: string };
   actionEvidence?: {
     actionSummary: string;
-    artifactReferences: string[];
+    evidenceCount: number;
     occurredAt: string;
-    recordedBy: string;
   };
   actionRecordedAt?: string;
   lastRevalidatedAt?: string;
@@ -615,48 +614,42 @@ export function PolicyMissionPanel({
                       동일 시나리오 {mission.revalidationCount}회 재검증
                     </small>
                   </div>
-                  <dl>
-                    <div>
+                  <div className={styles.contractFacts}>
+                    <dl>
                       <dt>실행 책임</dt>
                       <dd>
                         {mission.actionContract.ownerOrganization}
                         <small>{mission.actionContract.ownerRole}</small>
                       </dd>
-                    </div>
-                    <div>
+                    </dl>
+                    <dl>
                       <dt>완료 기한</dt>
                       <dd>
                         {formatDateTime(
                           mission.actionContract.deadlineAt,
                         )}
                       </dd>
-                    </div>
-                    <div>
+                    </dl>
+                    <dl>
                       <dt>성공 조건</dt>
                       <dd>
                         {mission.actionContract.successCondition}
                       </dd>
-                    </div>
-                    <div>
+                    </dl>
+                    <dl>
                       <dt>필수 증빙</dt>
                       <dd>
                         {mission.actionContract.evidenceRequirement}
                       </dd>
-                    </div>
-                  </dl>
+                    </dl>
+                  </div>
                   {mission.actionEvidence && (
                     <details>
                       <summary>등록된 조치·증빙 확인</summary>
                       <p>{mission.actionEvidence.actionSummary}</p>
-                      <ul>
-                        {mission.actionEvidence.artifactReferences.map(
-                          (reference) => (
-                            <li key={reference}>{reference}</li>
-                          ),
-                        )}
-                      </ul>
                       <small>
-                        {mission.actionEvidence.recordedBy} ·{" "}
+                        비공개 증빙 {mission.actionEvidence.evidenceCount}건을
+                        운영자 검토함 ·{" "}
                         {formatDateTime(
                           mission.actionEvidence.occurredAt,
                         )}

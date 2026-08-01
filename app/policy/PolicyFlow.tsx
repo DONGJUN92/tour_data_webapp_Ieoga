@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import styles from "../flow/flow.module.css";
+import policyStyles from "./policy.module.css";
 
 /* The policy view used to be a single scrolling report: every region, metric,
    coverage figure and mission stacked on one page. Here it is a sequence —
@@ -90,6 +92,67 @@ function statusLabel(status?: string): string {
       return "응답 실패";
     default:
       return status ?? "—";
+  }
+}
+
+function metricGuide(metric: Metric): {
+  category: string;
+  explanation: string;
+} {
+  const key = `${metric.key} ${metric.label} ${metric.officialName ?? ""} ${
+    metric.source
+  }`.toLowerCase();
+  if (key.includes("div") || key.includes("다양")) {
+    return {
+      category: "관광 구성의 다양성",
+      explanation:
+        "관광객·소비·국제성 등 여러 구성 요소를 종합한 공식 지수입니다. 단일 값만으로 우열을 판단하지 않고 같은 기준월의 다른 지역과 함께 비교해야 합니다.",
+    };
+  }
+  if (key.includes("dem") || key.includes("수요")) {
+    return {
+      category: "관광 수요 신호",
+      explanation:
+        "체류·소비 또는 관광자원 수요를 나타내는 공식 지수입니다. 값의 크기는 백분율이 아니며 기준월과 지표 정의를 함께 확인해야 합니다.",
+    };
+  }
+  if (key.includes("hub") || key.includes("중심")) {
+    return {
+      category: "관광 거점 근거",
+      explanation:
+        "지역 내 중심 관광지 응답을 바탕으로 한 근거입니다. 값이 없으면 관광지가 없다는 뜻이 아니라 현재 공식 응답에서 확인하지 못했다는 뜻입니다.",
+    };
+  }
+  return {
+    category: "공식 관광 지표",
+    explanation:
+      "한국관광공사 원 지표를 그대로 표시합니다. 이 화면은 임의 점수로 재가공하지 않으며, 값의 의미는 기준월·출처·커버리지와 함께 읽어야 합니다.",
+  };
+}
+
+function formatCheckedAt(value?: string): string {
+  if (!value) return "조회 시각 미확인";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Seoul",
+  }).format(date);
+}
+
+function missionStatusLabel(status?: string): string {
+  switch (status) {
+    case "open":
+      return "공백 발견";
+    case "in_progress":
+      return "개선 진행";
+    case "ready_for_recheck":
+      return "재검증 대기";
+    case "resolved":
+      return "개선 확인";
+    default:
+      return "상태 확인 필요";
   }
 }
 
@@ -182,17 +245,23 @@ export default function PolicyFlow() {
   const stepIndex = Math.max(0, STEPS.indexOf(step));
 
   return (
-    <div className={styles.shell}>
+    <div className={`${styles.shell} ${policyStyles.policyShell}`}>
       <div className={styles.top}>
-        <button
-          type="button"
-          className={styles.back}
-          onClick={back}
-          disabled={step === "region" || step === "loading"}
-          aria-label="지역 선택으로"
-        >
-          ←
-        </button>
+        {step === "region" ? (
+          <Link className={styles.back} href="/" aria-label="이어가 홈으로">
+            ←
+          </Link>
+        ) : (
+          <button
+            type="button"
+            className={styles.back}
+            onClick={back}
+            disabled={step === "loading"}
+            aria-label="지역 선택으로"
+          >
+            ←
+          </button>
+        )}
         <div className={styles.progress} aria-hidden="true">
           {STEPS.map((entry, index) => (
             <span
@@ -222,8 +291,8 @@ export default function PolicyFlow() {
               빈틈을 보시겠어요?
             </h1>
             <p className={styles.sub}>
-              한국관광공사 공식 정책 지표를 지금 조회합니다. 저장된 값이
-              아니라 조회 시점의 응답입니다.
+              운영 동기화에서 한국관광공사 공식 정책 지표를 검증해 저장한
+              최신 지역팩을 읽습니다. 기준월과 생성 시각을 함께 확인하세요.
             </p>
             <div className={styles.body}>
               {regionsError && <p className={styles.sub}>{regionsError}</p>}
@@ -254,7 +323,7 @@ export default function PolicyFlow() {
               <h1 className={styles.title} style={{ fontSize: 22 }}>
                 {selected?.name}의
                 <br />
-                공식 지표를 조회하고 있어요
+                검증된 지역팩을 불러오고 있어요
               </h1>
             </div>
             <div className={styles.apiLog}>
@@ -279,7 +348,7 @@ export default function PolicyFlow() {
             <p className={styles.sub}>{insight.coverage?.meaning}</p>
 
             <div className={styles.body}>
-              <div className={styles.card}>
+              <div className={`${styles.card} ${policyStyles.coverageCard}`}>
                 <div className={styles.cardTop}>
                   <div>
                     <h2 className={styles.cardTitle}>근거 커버리지</h2>
@@ -298,29 +367,70 @@ export default function PolicyFlow() {
                     {insight.coverage?.percent}%
                   </span>
                 </div>
+                <div className={policyStyles.coverageTrack} aria-hidden="true">
+                  <span
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, insight.coverage?.percent ?? 0),
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <p className={policyStyles.readingGuide}>
+                  커버리지는 공식 세부지표가 응답한 비율입니다. 100%는
+                  “지역이 우수하다”가 아니라 이 화면의 판단 근거가 모두
+                  도착했다는 뜻입니다.
+                </p>
+                <div className={policyStyles.summaryFacts}>
+                  <dl>
+                    <dt>기준월</dt>
+                    <dd>{insight.baseYm ?? "최신 가용 기준월"}</dd>
+                  </dl>
+                  <dl>
+                    <dt>지역팩 생성</dt>
+                    <dd>{formatCheckedAt(insight.generatedAt)}</dd>
+                  </dl>
+                  <dl>
+                    <dt>판독 원칙</dt>
+                    <dd>백분율·순위로 임의 환산하지 않음</dd>
+                  </dl>
+                </div>
               </div>
 
-              {insight.metrics.map((metric) => (
-                <div key={`${metric.source}-${metric.key}`} className={styles.card}>
-                  <div className={styles.cardTop}>
-                    <div>
-                      <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
-                        {metric.officialName || metric.label}
-                      </h2>
-                      <p className={styles.cardAddr}>
-                        {metric.source} · {metric.operation}
-                      </p>
+              {insight.metrics.map((metric) => {
+                const guide = metricGuide(metric);
+                return (
+                  <div
+                    key={`${metric.source}-${metric.key}`}
+                    className={`${styles.card} ${policyStyles.metricCard}`}
+                  >
+                    <div className={styles.cardTop}>
+                      <div>
+                        <span className={policyStyles.metricCategory}>
+                          {guide.category}
+                        </span>
+                        <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
+                          {metric.officialName || metric.label}
+                        </h2>
+                        <p className={styles.cardAddr}>
+                          {metric.source} · {metric.operation}
+                        </p>
+                      </div>
+                      <span className={`${styles.badge} ${policyStyles.metricValue}`}>
+                        {formatValue(metric.value)}
+                      </span>
                     </div>
-                    <span className={styles.badge}>
-                      {formatValue(metric.value)}
-                    </span>
+                    <p className={policyStyles.metricExplanation}>
+                      {guide.explanation}
+                    </p>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
-              <div className={styles.card}>
+              <div className={`${styles.card} ${policyStyles.sourceCard}`}>
                 <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
-                  이 화면을 만든 공사 OpenAPI
+                  이 지역팩을 만든 공사 OpenAPI
                 </h2>
                 <div className={styles.ledger} style={{ marginTop: 12 }}>
                   {insight.sourceLedger.map((entry, index) => (
@@ -335,25 +445,51 @@ export default function PolicyFlow() {
                     </span>
                   ))}
                 </div>
+                <a className={policyStyles.sourceLink} href="/sources">
+                  데이터 출처와 판단 역할 전체 보기
+                </a>
               </div>
 
               {missions.length > 0 && (
-                <div className={styles.card}>
+                <div className={`${styles.card} ${policyStyles.missionCard}`}>
                   <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
                     개선 미션 {missions.length}건
                   </h2>
-                  <ul className={styles.why}>
+                  <ul className={policyStyles.missionList}>
                     {missions.slice(0, 6).map((mission, index) => (
                       <li key={mission.missionId ?? mission.id ?? index}>
-                        {mission.title ?? mission.summary ?? "미션"}
+                        <span>{missionStatusLabel(mission.status)}</span>
+                        <strong>
+                          {mission.title ?? mission.summary ?? "개선 미션"}
+                        </strong>
                       </li>
                     ))}
                   </ul>
                 </div>
               )}
 
+              {missions.length === 0 && (
+                <div className={`${styles.card} ${policyStyles.emptyMission}`}>
+                  <span aria-hidden="true">0</span>
+                  <div>
+                    <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
+                      현재 공개된 개선 미션이 없습니다
+                    </h2>
+                    <p>
+                      “개선할 문제가 없다”는 뜻이 아닙니다. 공식 데이터 공백이
+                      감지되거나, 동의된 비식별 여행 복구 기록이 공개 최소
+                      표본을 충족한 뒤에만 미션이 생성됩니다.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {insight.warnings.map((warning) => (
-                <div key={warning} className={styles.noteCard}>
+                <div
+                  key={warning}
+                  className={`${styles.noteCard} ${policyStyles.warningCard}`}
+                  role="status"
+                >
                   {warning}
                 </div>
               ))}

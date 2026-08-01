@@ -1,8 +1,18 @@
 import { getDb } from "@/db";
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  isNull,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import {
   apiAuditLogs,
+  administrativeAreas,
   consentEvents,
   itineraries,
   itineraryNodes,
@@ -24,6 +34,7 @@ import {
   timeBudgetBucket,
 } from "@/lib/privacy";
 import type { KtoAudit } from "@/lib/kto/types";
+import { hasExactKtoHealthSourceSet } from "@/lib/kto/health-snapshot";
 import { getTourismCommonDetail } from "@/lib/kto/adapters";
 import type {
   ItineraryRegistration,
@@ -37,6 +48,14 @@ import type {
   JourneyExecutionStepRole,
 } from "@/lib/recovery/execution";
 import {
+  decryptApplicationSnapshot,
+  encryptApplicationSnapshot,
+} from "@/lib/recovery/application-snapshot";
+import {
+  koreaLatitude,
+  koreaLongitude,
+} from "@/lib/validation/numbers";
+import {
   toPrivacySafeContinuityProof,
   toPrivacySafeRecoveryEvidence,
   toPrivacySafeRouteEvidence,
@@ -45,7 +64,14 @@ import type { RecoveryResult } from "@/lib/recovery/types";
 
 export type PersistenceResult =
   | { persisted: true }
-  | { persisted: false; reason: "DB_UNAVAILABLE" };
+  | {
+      persisted: false;
+      reason:
+        | "DB_UNAVAILABLE"
+        | "APPLICATION_SNAPSHOT_UNAVAILABLE"
+        | "RECOVERY_DEADLINE_EXCEEDED"
+        | "INVALID_HEALTH_SNAPSHOT";
+    };
 
 type D1WriteBatch = [
   BatchItem<"sqlite">,
@@ -129,7 +155,18 @@ export async function persistRecovery(params: {
   sessionId: string;
   input: RecoveryRequest;
   result: RecoveryResult;
+  commitDeadlineAt?: number;
 }): Promise<PersistenceResult> {
+  if (
+    params.commitDeadlineAt !== undefined &&
+    (!Number.isFinite(params.commitDeadlineAt) ||
+      Date.now() >= params.commitDeadlineAt)
+  ) {
+    return {
+      persisted: false,
+      reason: "RECOVERY_DEADLINE_EXCEEDED",
+    };
+  }
   try {
     const db = getDb();
     const runExpiry = expiresInDays(
@@ -157,6 +194,38 @@ export async function persistRecovery(params: {
         : Promise.resolve([]),
     ]);
     const bestOption = params.result.options[0];
+    const applicationSnapshots = new Map(
+      await Promise.all(
+        params.result.options.map(async (option) => [
+          option.id,
+          await encryptApplicationSnapshot(
+            {
+              contentId: option.contentId,
+              title: option.title,
+              address: option.address || option.title,
+              latitude: option.latitude,
+              longitude: option.longitude,
+              generatedAt: params.result.generatedAt,
+            },
+            params.result.requestId,
+            option.id,
+          ),
+        ] as const),
+      ),
+    );
+    if (
+      params.result.options.some(
+        (option) => !applicationSnapshots.get(option.id),
+      )
+    ) {
+      /* An applicable option must carry an integrity-protected copy of the
+         exact verified place. Persisting a plaintext/null substitute would
+         make the later Apply action depend on mutable upstream data. */
+      return {
+        persisted: false,
+        reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
+      };
+    }
 
     const writes = sessionWriteBatch({
       db,
@@ -244,6 +313,8 @@ export async function persistRecovery(params: {
             option.continuityProof,
             "continuity",
           ),
+          applicationSnapshotJson:
+            applicationSnapshots.get(option.id) ?? null,
         }),
       );
     }
@@ -266,11 +337,42 @@ export async function persistRecovery(params: {
       );
     }
 
+    if (params.commitDeadlineAt !== undefined) {
+      const commitDeadline = new Date(
+        params.commitDeadlineAt,
+      ).toISOString();
+      /* This is deliberately the final statement in the D1 transaction. If
+         the batch reaches the commit-reserve boundary too late, assigning
+         NULL to the NOT NULL primary key fails and D1 rolls the whole batch
+         back. The route still reports an in-flight response race as unknown. */
+      writes.push(
+        db
+          .update(recoveryRuns)
+          .set({
+            id: sql<string>`CASE
+              WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') <= ${commitDeadline}
+              THEN ${recoveryRuns.id}
+              ELSE NULL
+            END`,
+          })
+          .where(eq(recoveryRuns.id, params.result.requestId)),
+      );
+    }
+
     // Cloudflare D1 executes batch statements sequentially and rolls the
     // complete batch back when any statement fails.
     await db.batch(writes);
     return { persisted: true };
   } catch {
+    if (
+      params.commitDeadlineAt !== undefined &&
+      Date.now() >= params.commitDeadlineAt
+    ) {
+      return {
+        persisted: false,
+        reason: "RECOVERY_DEADLINE_EXCEEDED",
+      };
+    }
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -283,13 +385,22 @@ export type StoredItinerary = ItineraryRegistration & {
   expiresAt: string;
 };
 
+export const MAX_ACTIVE_ITINERARIES_PER_SESSION = 10;
+
 export async function saveItinerary(params: {
   sessionId: string;
   itinerary: ItineraryRegistration;
   analyticsConsent?: boolean;
+  ephemeralLocationNodeIds?: string[];
 }): Promise<
   | { saved: true; itinerary: StoredItinerary }
-  | { saved: false; reason: "NOT_FOUND" | "DB_UNAVAILABLE" }
+  | {
+      saved: false;
+      reason:
+        | "NOT_FOUND"
+        | "INVALID_EPHEMERAL_LOCATION_NODE"
+        | "DB_UNAVAILABLE";
+    }
 > {
   try {
     const db = getDb();
@@ -328,7 +439,26 @@ export async function saveItinerary(params: {
         sequence: node.sequence ?? index,
       }))
       .sort((a, b) => a.sequence - b.sequence);
-    const lockedNodeCount = normalizedNodes.filter(
+    const ephemeralLocationNodeIds = new Set(
+      params.ephemeralLocationNodeIds ?? [],
+    );
+    if (
+      [...ephemeralLocationNodeIds].some((nodeId) => {
+        const node = normalizedNodes.find((item) => item.id === nodeId);
+        return !node || node.locked || node.reservation;
+      })
+    ) {
+      return {
+        saved: false,
+        reason: "INVALID_EPHEMERAL_LOCATION_NODE",
+      };
+    }
+    const storedNodes = normalizedNodes.map((node) =>
+      ephemeralLocationNodeIds.has(node.id)
+        ? { ...node, location: undefined }
+        : node,
+    );
+    const lockedNodeCount = storedNodes.filter(
       (node) => node.locked || node.reservation,
     ).length;
 
@@ -375,6 +505,36 @@ export async function saveItinerary(params: {
           ),
       );
     } else {
+      const newestActiveItineraries = db
+        .select({ id: itineraries.id })
+        .from(itineraries)
+        .where(
+          and(
+            eq(itineraries.sessionId, params.sessionId),
+            eq(itineraries.status, "active"),
+            isNull(itineraries.deletedAt),
+            gt(itineraries.expiresAt, now),
+          ),
+        )
+        .orderBy(desc(itineraries.updatedAt))
+        .limit(MAX_ACTIVE_ITINERARIES_PER_SESSION - 1);
+      /* D1 serializes each batch. Pruning to nine inside the same batch before
+         a new insert keeps the active set at ten even when concurrent creates
+         reached the Worker through different isolates. Cascading foreign keys
+         remove nodes belonging to the replaced oldest itinerary. */
+      writes.push(
+        db
+          .delete(itineraries)
+          .where(
+            and(
+              eq(itineraries.sessionId, params.sessionId),
+              eq(itineraries.status, "active"),
+              isNull(itineraries.deletedAt),
+              gt(itineraries.expiresAt, now),
+              notInArray(itineraries.id, newestActiveItineraries),
+            ),
+          ),
+      );
       writes.push(
         db.insert(itineraries).values(itineraryValues),
       );
@@ -384,7 +544,7 @@ export async function saveItinerary(params: {
         .delete(itineraryNodes)
         .where(eq(itineraryNodes.itineraryId, itineraryId)),
     );
-    for (const node of normalizedNodes) {
+    for (const node of storedNodes) {
       writes.push(
         db.insert(itineraryNodes).values({
           id: `${itineraryId}:${node.id}`,
@@ -416,7 +576,7 @@ export async function saveItinerary(params: {
       itinerary: {
         ...params.itinerary,
         id: itineraryId,
-        nodes: normalizedNodes,
+        nodes: storedNodes,
         status: "active",
         createdAt: existing[0]?.createdAt ?? now,
         updatedAt: now,
@@ -784,7 +944,11 @@ export async function activateRecoveryExecution(params: {
   | { activated: true; execution: JourneyExecution }
   | {
       activated: false;
-      reason: "NOT_FOUND" | "INVALID_STATE" | "DB_UNAVAILABLE";
+      reason:
+        | "NOT_FOUND"
+        | "INVALID_STATE"
+        | "UPSTREAM_UNAVAILABLE"
+        | "DB_UNAVAILABLE";
     }
 > {
   try {
@@ -847,6 +1011,8 @@ export async function activateRecoveryExecution(params: {
         title: recoveryOptions.title,
         scheduleDiffJson: recoveryOptions.scheduleDiffJson,
         changedNodeCount: recoveryOptions.changedNodeCount,
+        applicationSnapshotJson:
+          recoveryOptions.applicationSnapshotJson,
       })
       .from(recoveryOptions)
       .where(
@@ -861,28 +1027,51 @@ export async function activateRecoveryExecution(params: {
     if (!option.contentId) {
       return { activated: false, reason: "INVALID_STATE" };
     }
-    let officialPlace: Record<string, unknown> | undefined;
-    try {
-      officialPlace = (
-        await getTourismCommonDetail(option.contentId, {
-          timeoutMs: 4_000,
-          retry: false,
-        })
-      ).items[0];
-    } catch {
+    const applicationSnapshot = await decryptApplicationSnapshot(
+      option.applicationSnapshotJson,
+      params.runId,
+      params.optionId,
+      { contentId: option.contentId, title: option.title },
+    );
+    if (option.applicationSnapshotJson && !applicationSnapshot) {
+      /* A present but unverifiable envelope is corruption/tampering, not a
+         legacy row. Do not bypass its integrity failure with a live lookup. */
       return { activated: false, reason: "INVALID_STATE" };
     }
-    const optionLatitude = Number(officialPlace?.mapy);
-    const optionLongitude = Number(officialPlace?.mapx);
+    let optionLatitude = applicationSnapshot?.latitude;
+    let optionLongitude = applicationSnapshot?.longitude;
+    let optionAddress = applicationSnapshot?.address;
     if (
-      !officialPlace ||
-      !Number.isFinite(optionLatitude) ||
-      !Number.isFinite(optionLongitude)
+      optionLatitude === undefined ||
+      optionLongitude === undefined ||
+      !optionAddress
     ) {
-      return { activated: false, reason: "INVALID_STATE" };
+      let officialPlace: Record<string, unknown> | undefined;
+      try {
+        officialPlace = (
+          await getTourismCommonDetail(option.contentId, {
+            timeoutMs: 8_000,
+            retry: true,
+          })
+        ).items[0];
+      } catch {
+        return {
+          activated: false,
+          reason: "UPSTREAM_UNAVAILABLE",
+        };
+      }
+      optionLatitude = koreaLatitude(officialPlace?.mapy);
+      optionLongitude = koreaLongitude(officialPlace?.mapx);
+      if (
+        !officialPlace ||
+        optionLatitude === undefined ||
+        optionLongitude === undefined
+      ) {
+        return { activated: false, reason: "INVALID_STATE" };
+      }
+      optionAddress =
+        String(officialPlace.addr1 ?? "").trim() || option.title;
     }
-    const optionAddress =
-      String(officialPlace.addr1 ?? "").trim() || option.title;
 
     const itineraryRows = await db
       .select({ id: itineraries.id })
@@ -926,13 +1115,11 @@ export async function activateRecoveryExecution(params: {
     if (
       disruptedIndex < 0 ||
       nextFixedIndex <= disruptedIndex ||
-      nodeRows
-        .slice(disruptedIndex + 1)
-        .some(
-          (node) =>
-            typeof node.latitude !== "number" ||
-            typeof node.longitude !== "number",
-        )
+      nodeRows.slice(disruptedIndex + 1).some(
+        (node) =>
+          koreaLatitude(node.latitude) === undefined ||
+          koreaLongitude(node.longitude) === undefined,
+      )
     ) {
       return { activated: false, reason: "INVALID_STATE" };
     }
@@ -1010,8 +1197,8 @@ export async function activateRecoveryExecution(params: {
           estimatedArrivalAt: estimatedArrival.get(node.id),
           durationMinutes: node.durationMinutes ?? undefined,
           locationLabel: node.locationLabel ?? node.title,
-          latitude: node.latitude as number,
-          longitude: node.longitude as number,
+          latitude: koreaLatitude(node.latitude) as number,
+          longitude: koreaLongitude(node.longitude) as number,
           locked: node.locked,
           reservation: node.reservation,
             verificationStatus:
@@ -1278,6 +1465,7 @@ export async function updateActiveJourneyExecution(params: {
             metadataJson: JSON.stringify({
               executionId: execution.id,
               stepId: current.id,
+              arrivalEvidence: "self_reported",
             }),
           })
           .onConflictDoNothing({ target: recoveryOutcomes.id }),
@@ -1419,7 +1607,12 @@ export async function recordRecoveryOutcome(params: {
       arrivedOnTime: arrivedOnTime ?? null,
       reasonCode: params.outcome.reasonCode ?? null,
       changedNodeCount: option?.changedNodeCount ?? null,
-      metadataJson: "{}",
+      metadataJson: JSON.stringify({
+        arrivalEvidence:
+          params.outcome.event === "arrived"
+            ? "self_reported"
+            : "not_applicable",
+      }),
     };
     if (isFinal) {
       const inserted = await db
@@ -1455,11 +1648,14 @@ export async function recordRecoveryOutcome(params: {
 export async function persistHealth(
   audits: KtoAudit[],
 ): Promise<PersistenceResult> {
+  if (!hasExactKtoHealthSourceSet(audits)) {
+    return { persisted: false, reason: "INVALID_HEALTH_SNAPSHOT" };
+  }
   try {
     const db = getDb();
     const checkedAt = new Date().toISOString();
-    for (const audit of audits) {
-      await db
+    const writes = audits.map((audit) =>
+      db
         .insert(sourceHealth)
         .values({
           sourceName: audit.apiName,
@@ -1482,8 +1678,11 @@ export async function persistHealth(
             checkedAt,
             errorCode: audit.errorCode ?? null,
           },
-        });
-    }
+        }),
+    ) as unknown as D1WriteBatch;
+    // A health generation is all eight required services or none of them.
+    // D1 rolls the complete batch back when any individual upsert fails.
+    await db.batch(writes);
     return { persisted: true };
   } catch {
     return { persisted: false, reason: "DB_UNAVAILABLE" };
@@ -1532,6 +1731,66 @@ function randomToken(): string {
   return [...bytes]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+export async function isKnownAdministrativeScope(params: {
+  regionCode: string;
+  districtCode: string;
+}): Promise<boolean> {
+  const db = getDb();
+  const rows = await db
+    .select({ code: administrativeAreas.code })
+    .from(administrativeAreas)
+    .where(
+      and(
+        eq(administrativeAreas.code, params.districtCode),
+        eq(administrativeAreas.parentCode, params.regionCode),
+        eq(administrativeAreas.level, "district"),
+        eq(administrativeAreas.active, true),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
+export async function areKnownAdministrativeScopes(
+  scopes: Array<{ regionCode: string; districtCode: string }>,
+): Promise<boolean> {
+  const uniqueScopes = [
+    ...new Map(
+      scopes.map((scope) => [
+        `${scope.regionCode}:${scope.districtCode}`,
+        scope,
+      ]),
+    ).values(),
+  ];
+  if (uniqueScopes.length === 0) return true;
+  const rows = await getDb()
+    .select({
+      code: administrativeAreas.code,
+      parentCode: administrativeAreas.parentCode,
+    })
+    .from(administrativeAreas)
+    .where(
+      and(
+        or(
+          ...uniqueScopes.map((scope) =>
+            and(
+              eq(administrativeAreas.code, scope.districtCode),
+              eq(administrativeAreas.parentCode, scope.regionCode),
+            ),
+          ),
+        ),
+        eq(administrativeAreas.level, "district"),
+        eq(administrativeAreas.active, true),
+      ),
+    );
+  const found = new Set(
+    rows.map((row) => `${row.parentCode}:${row.code}`),
+  );
+  return uniqueScopes.every((scope) =>
+    found.has(`${scope.regionCode}:${scope.districtCode}`),
+  );
 }
 
 export async function persistPolicySnapshot(params: {
@@ -1710,7 +1969,7 @@ export async function createProofShare(params: {
       .orderBy(desc(recoveryOutcomes.occurredAt))
       .limit(10);
     const proof = {
-      schema: "https://ieoga.kr/schemas/recovery-proof/v2",
+      schema: "urn:ieoga:recovery-proof:v2",
       runId: row.runId,
       optionId: row.optionId,
       incident: row.incident,

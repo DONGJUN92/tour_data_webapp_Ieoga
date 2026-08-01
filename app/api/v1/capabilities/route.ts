@@ -1,8 +1,21 @@
 import { publicJsonResponse } from "@/lib/http";
 import { externalProviderStatus } from "@/lib/runtime-readiness";
+import { kakaoLocalConfigured } from "@/lib/location/kakao-local";
+import { kmaConfigured } from "@/lib/weather/kma";
+import {
+  describeProviderCapabilities,
+  PROVIDER_PROBE_STALE_AFTER_MS,
+} from "@/lib/provider-readiness";
 
 export async function GET() {
   const providers = externalProviderStatus();
+  const kakaoConfigured = kakaoLocalConfigured();
+  const domesticWeatherConfigured = kmaConfigured();
+  const providerCapabilities = describeProviderCapabilities({
+    providers,
+    kakaoConfigured,
+    kmaConfigured: domesticWeatherConfigured,
+  });
   return publicJsonResponse(
     {
       scope: "nationwide",
@@ -35,7 +48,7 @@ export async function GET() {
         },
         routeEta: {
           supported: true,
-          currentMethod: "openstreetmap_osrm_walking",
+          currentMethod: providerCapabilities.routeMethod,
           requiredContext:
             "registered_itinerary_with_next_fixed_location",
           unavailableBehavior:
@@ -45,32 +58,41 @@ export async function GET() {
         },
         weatherAutoDetection: {
           supported: true,
-          currentMethod:
-            providers.weather === "managed"
-              ? "kma_ultra_short_nowcast_with_open_meteo_fallback"
-              : "open_meteo_current_conditions",
+          currentMethod: providerCapabilities.weatherMethod,
           requiredContext: "registered_itinerary",
           decisionRole:
             "supporting_evidence_user_selected_incident_takes_priority",
           providerMode: providers.weather,
         },
         reverseGeocoding: {
-          currentMethod: "openstreetmap_nominatim_then_kto_nearest",
+          currentMethod: providerCapabilities.reverseMethod,
           providerMode: providers.reverseGeocoding,
-          coordinatesInUrl: false,
+          browserRequestCoordinatesInUrl: false,
+          upstreamProviderTransport: "https_query_parameters",
         },
         placeSearch: {
           primary: "KorService2.searchKeyword2",
-          currentOriginFallback:
-            "kakao_local_when_configured_then_forward_geocoder",
-          savedStopFallback: "managed_or_self_hosted_forward_geocoder",
+          currentOriginFallback: providerCapabilities.currentOriginFallback,
+          savedStopFallback: providerCapabilities.savedStopFallback,
           manualCoordinatesRequired: false,
+          browserCoordinateTransport: "https_post_body_when_present",
           providerMode: providers.forwardGeocoding,
         },
       },
+      externalProviderReadiness: {
+        statusEndpoint: "/api/v1/health/ready",
+        authenticatedRefreshEndpoint: "/api/v1/ops/health/refresh",
+        requiredEvidence:
+          "fresh_successful_response_contract_probe_for_each_configured_managed_provider",
+        staleAfterMilliseconds: PROVIDER_PROBE_STALE_AFTER_MS,
+        configurationChangeBehavior: "previous_probe_invalidated",
+        sharedPublicReleaseBehavior: "blocked",
+        publicStatusBehavior: "stored_snapshot_only_no_outbound_probe",
+      },
       policyInsights: {
         supported: true,
-        mode: "on_demand_by_official_region_code",
+        mode: "scheduled_versioned_region_pack_by_official_region_code",
+        cacheMissBehavior: "read_only_503_until_operator_sync",
         syntheticBackfill: false,
         missionLoop: {
           supported: true,

@@ -8,6 +8,12 @@
 OpenAPI를 확인하지 못하면 후보를 만들지 않고 장애·데이터 부족 상태를
 응답합니다.
 
+공개 화면은 여행 복구(`/flow`), 지역 회복력(`/policy`), 데이터
+출처(`/sources`)와 개인정보 처리방침(`/privacy`), 이용약관(`/terms`),
+접근성 선언(`/accessibility`)으로 구성됩니다. 검색엔진과 설치형 앱은
+`/sitemap.xml`, `/robots.txt`, `/manifest.webmanifest`에서 동일한 공개
+범위를 확인할 수 있습니다.
+
 ## 제품 범위
 
 ### 여행자 복구
@@ -31,8 +37,15 @@ OpenAPI를 확인하지 못하면 후보를 만들지 않고 장애·데이터 �
 바꾸면 가능한 경우에는 그 최소 조정량만 반사실 증명으로 보여주며,
 사용자 확인 없이 자동 적용하지 않습니다. Open-Meteo 현재 기상은
 일정 복구의 보조 근거로 사용하며 사용자가 선택한 현장 상황을
-우선합니다. 전체 실제 데이터 검증은 20초 응답 예산을 넘기면
-확인되지 않은 후보를 표시하지 않고 재시도 가능한 오류로 종료합니다.
+우선합니다. `POST /api/v1/recover`의 20초는 후보 검색만의 목표 시간이
+아니라 서버가 요청 처리를 시작한 때부터 입력·세션·요청 한도·저장 일정,
+모든 외부 근거와 경로, D1 원자 저장까지를 포함하는 전체 상한입니다.
+상한을 넘으면 HTTP 504 `RECOVERY_DEADLINE_EXCEEDED`로 종료하고 확인되지
+않은 후보를 표시하거나 적용하지 않습니다. 저장 시작 전이면
+`persistence.status: "not_started"`, D1 요청이 진행 중인 응답 경합이면
+`persistence.status: "unknown"`을 반환합니다. `unknown`은 미저장을 뜻하지
+않으므로 결과를 적용하지 말고 응답의 request ID로 상태를 확인하거나
+재시도해야 합니다.
 자동 위치에는 역지오코딩 제공자 출처를, 각 추천안과 적용안에는
 경로 제공자 출처와 확인 시각을 화면에 표시합니다.
 `/api/v1/capabilities`가 배포 버전의 지원 조건과 실패 시 동작을
@@ -108,8 +121,11 @@ Copy-Item .env.example .env.local
 
 ```dotenv
 KTO_SERVICE_KEY=발급받은_일반_인증키
+KMA_SERVICE_KEY=승인받은_기상청_일반_인증키
+SESSION_SIGNING_KEY=32바이트_이상_별도_임의값
 PARTNER_API_KEY=파트너_복구_API용_별도_긴_임의값
 OPS_API_KEY=운영_제어_API용_별도_긴_임의값
+RELEASE_AUDITOR_API_KEY=독립_증거_감사용_별도_긴_임의값
 REVERSE_GEOCODE_URL=관리형_역지오코딩_엔드포인트
 ROUTING_BASE_URL=관리형_OSRM_호환_보행경로_엔드포인트
 ```
@@ -161,6 +177,16 @@ npm.cmd run test
 
 출시 전 수동 검증은 [RELEASE_TEST_GUIDE.md](./RELEASE_TEST_GUIDE.md)를
 따릅니다.
+초행 사용자 20명, 실무자 3인, 6개 권역, K-TRIPBREAK 100과 성능·
+오추천 현장 근거는 [FIELD_EVIDENCE_PLAYBOOK.md](./FIELD_EVIDENCE_PLAYBOOK.md)의
+표본·개인정보·증거물 참조 규칙으로 수집합니다. OPS 제출자는
+`POST /api/v1/ops/evidence`로 메타데이터를 등록하고, 별도 감사자는
+`GET /api/v1/auditor/evidence/{evidenceId}`로 원본 참조와 검토자 정보를
+대조한 뒤 `PATCH`로 승인 또는 반려합니다. OPS 등록 결과의 `validated`는
+형식·기간·표본·임계값 통과만 뜻하며 상태는 `pending`입니다. 독립 감사의
+명시적 `approved` 결정만 출시 증거로 집계하고, 한 번 결정한 증거는
+덮어쓰지 않습니다. 코드 테스트나 문서만으로 현장 증거를 완료 처리하지
+않습니다.
 
 ## 주요 API
 
@@ -169,38 +195,71 @@ npm.cmd run test
 | `GET /api/v1/capabilities` | 실제 지원 범위와 제한 |
 | `GET /api/v1/regions` | 공식 전국 시도 코드 |
 | `GET /api/v1/regions/{areaCode}/districts` | 공식 시군구 코드 |
-| `GET /api/v1/places/search` | 공식 관광지 검색 |
+| `GET·POST /api/v1/places/search` | 공식 관광지 검색. 현재 좌표는 JSON POST만 허용 |
 | `POST /api/v1/recover` | 여행 중단 복구 실행 |
 | `POST /api/v1/share` | 소유 세션의 복구 증명 링크 생성 |
 | `GET /api/v1/insights/regions/{areaCode}` | 정책 근거 및 미션 재평가 |
 | `GET /api/v1/insights/missions` | 공개 가능한 전국 회복력 미션 |
 | `PATCH /api/v1/ops/missions/{missionId}` | 운영 미션 상태 변경 |
 | `POST /api/v1/ops/missions/revalidate` | 동일 지역 범위 즉시 재검증 |
+| `POST /api/v1/ops/evidence` | 운영 토큰으로 현장 증거 메타데이터 등록·임계값 검사 |
+| `GET /api/v1/auditor/evidence/{evidenceId}` | 독립 감사자가 제출 증거 원본 참조·검토자 확인 |
+| `PATCH /api/v1/auditor/evidence/{evidenceId}` | 독립 감사자의 일회성 승인·반려 결정 |
 | `DELETE /api/v1/privacy/session` | 현재 익명 세션 데이터 삭제 |
 | `GET /api/v1/health/live` | 프로세스 생존 상태 |
-| `GET /api/v1/health/ready` | Secret·D1·R2 및 저장된 8종 점검 상태 |
-| `POST /api/v1/ops/health/refresh` | 인증된 8종 OpenAPI 정밀 점검 |
+| `GET /api/v1/health/ready` | Secret·D1·R2, 저장된 8종·외부 제공자 실호출 점검 상태 |
+| `POST /api/v1/ops/health/refresh` | 인증된 8종 OpenAPI·외부 제공자 응답 계약 정밀 점검 |
 
-`/api/v1/partner/*`는 `PARTNER_API_KEY`, `/api/v1/ops/*`는 별도의
-`OPS_API_KEY` Bearer 인증이 필요합니다. 파트너 키로 운영 제어
-API를 호출할 수 없습니다.
+KTO 준비 상태는 필수 8종의 이름이 정확히 한 번씩 존재하고,
+각 항목이 6시간 이내이며 오류가 없을 때만 `ready`입니다. 표시
+시각과 스케줄러의 재점검 판정은 8건 중 가장 오래된
+`checkedAt`을 사용합니다. 갱신은 8건을 하나의 D1 배치로
+저장하므로 일부만 최신으로 보이는 중간 상태를 출시 근거로
+사용하지 않습니다.
+
+`/api/v1/partner/*`는 `PARTNER_API_KEY`, `/api/v1/ops/*`는
+`OPS_API_KEY`, `/api/v1/auditor/*`는 `RELEASE_AUDITOR_API_KEY` Bearer
+인증이 필요합니다. 세 키와 `SESSION_SIGNING_KEY`는 각각 CSPRNG로 생성한
+32바이트 이상 값이며 모두 서로 달라야 합니다. 서버는 최소 길이와 알려진
+placeholder·낮은 문자 다양성·반복 패턴을 차단하지만 실제 엔트로피까지
+증명하지는 못하므로 생성 절차도 배포 체크리스트에서 확인합니다. 최소 품질을
+위반하거나 재사용된 키의 인증 API는 실패로 닫히고 출시 증거와 준비 상태는
+`release_blocker`·`degraded`로 남습니다. 인증된
+파트너 키는 원문이 아닌 SHA-256
+해시로 D1 클라이언트 레지스트리에 연결되며, 키 단위 분당 60회와
+클라이언트별 일일 한도(기본 500회)를 원자적으로 적용합니다. 비활성·
+해지 클라이언트나 사용량 저장소를 확인할 수 없는 요청은 실패로 닫고,
+IP를 바꾸거나 Worker 인스턴스를 나누어도 키 할당량은 늘어나지 않습니다.
 
 ## 관리형 외부 제공자
 
 공사 OpenAPI 외의 보조 데이터는 기본값이 공개 공유 엔드포인트이며, 이
-상태에서는 준비 상태가 `degraded`로 표시됩니다. 아래를 설정하면 각
-항목이 `managed`로 전환됩니다.
+상태에서는 준비 상태가 `degraded`로 표시됩니다. 관리형 제공자를
+1순위로 추가했더라도 호출 가능한 체인에 공개 fallback이 남아 있으면
+정식 출시 요건을 충족한 것으로 간주하지 않습니다. 역·정방향 지오코딩,
+도보 경로, 날씨를 각각 관리형 엔드포인트로 닫아야 하며 최종 판정은
+`/api/v1/health/ready`의 제공자별 상태와 `releaseRequirement`를
+기준으로 합니다.
+
+관리형 URL 문자열이 있다는 사실만으로는 출시 준비로 판정하지 않습니다.
+인증된 운영 점검 또는 예약 작업이 서울의 고정 좌표·질의로 역지오코딩,
+정방향 지오코딩, 모든 도보 경로 엔드포인트, 날씨의 실제 JSON 응답 계약을
+검증하고 D1에 저장합니다. 현재 구성 지문과 일치하는 6시간 이내 성공
+스냅샷이 네 항목 모두 있어야 하며, URL·질의 인증정보는 저장하지 않습니다.
 
 | 항목 | 환경변수 | 미설정 시 |
 |---|---|---|
-| 역지오코딩·장소검색 | `KAKAO_REST_API_KEY` | 공개 Nominatim |
+| 역지오코딩·장소검색 | `KAKAO_REST_API_KEY`, `REVERSE_GEOCODE_URL`, `FORWARD_GEOCODE_URL` | 공개 Nominatim |
 | 도보 경로 | `ROUTING_BASE_URL` | 공개 OSRM |
-| 날씨 | `KMA_SERVICE_KEY` | 공개 Open-Meteo |
+| 날씨 | `KMA_SERVICE_KEY`, `WEATHER_API_URL` | 공개 Open-Meteo |
 
 ### 기상청 단기예보 (날씨)
 
-`KMA_SERVICE_KEY`를 설정하면 국내 공식 기상자료가 1순위가 되고 Open-Meteo는
-장애 시 대체 경로로만 남습니다. 값은 `KTO_SERVICE_KEY`와 같은 공공데이터포털
+`KMA_SERVICE_KEY`를 설정하면 국내 공식 기상자료가 1순위가 됩니다.
+`WEATHER_API_URL`을 비워 두면 장애 시 공개 Open-Meteo가 대체 경로로
+남으므로 키 설정만으로 출시 요건이 충족되지는 않습니다. 관리형 날씨
+대체 엔드포인트까지 설정한 뒤 준비 상태의 보수 판정을 확인합니다. 값은
+`KTO_SERVICE_KEY`와 같은 공공데이터포털
 일반 인증키이지만, **자동으로 빌려 쓰지 않고 별도로 적어야 동작합니다.**
 포털이 데이터셋별로 활용신청을 따로 받기 때문에, 승인 없이 자동 사용하면
 날씨 조회마다 5초를 버리고 실패하며 준비 상태에는 응답하지 않는 관리형
@@ -223,7 +282,11 @@ data.go.kr에서 `기상청_단기예보 ((구)_동네예보) 조회서비스`�
 
 ### 카카오 (역지오코딩·장소검색)
 
-`KAKAO_REST_API_KEY` 하나로 두 가지가 함께 관리형으로 바뀝니다.
+`KAKAO_REST_API_KEY` 하나로 역지오코딩과 장소검색의 1순위 관리형 호출을
+설정합니다. 하지만 `REVERSE_GEOCODE_URL`과 `FORWARD_GEOCODE_URL`을 비워
+두면 뒤쪽 공개 Nominatim 경로가 그대로 남으므로 준비 상태는 정식 출시를
+차단합니다. 공개 fallback까지 제거하려면 두 경로도 관리형 또는 자체 운영
+Nominatim 호환 엔드포인트로 설정합니다.
 [Kakao Developers](https://developers.kakao.com)에서 애플리케이션을
 만들고 REST API 키를 발급받습니다.
 
@@ -240,8 +303,10 @@ data.go.kr에서 `기상청_단기예보 ((구)_동네예보) 조회서비스`�
 ### 도보 경로
 
 `ROUTING_BASE_URL`은 OSRM 호환 엔드포인트를 쉼표로 구분해 순서대로
-받습니다. 앞에서부터 시도하고 실패하면 다음으로 넘어가며, 공개
-제공자가 항상 마지막에 자동으로 붙습니다.
+받습니다. 앞에서부터 시도하고 실패하면 다음으로 넘어갑니다. 값이 있으면
+그 목록이 전체 호출 체인이며 공개 제공자는 자동으로 추가되지 않습니다.
+공개 OSRM을 목록에 직접 넣은 경우에는 fallback 여부를 숨기지 않고 준비
+상태를 `public_shared`로 판정합니다.
 
 ```dotenv
 # 자체 운영 OSRM
@@ -287,8 +352,10 @@ npx.cmd wrangler deploy --config wrangler.json
 
 ```powershell
 npx.cmd wrangler secret put KTO_SERVICE_KEY --name ieoga-national-travel-resilience
+npx.cmd wrangler secret put SESSION_SIGNING_KEY --name ieoga-national-travel-resilience
 npx.cmd wrangler secret put PARTNER_API_KEY --name ieoga-national-travel-resilience
 npx.cmd wrangler secret put OPS_API_KEY --name ieoga-national-travel-resilience
+npx.cmd wrangler secret put RELEASE_AUDITOR_API_KEY --name ieoga-national-travel-resilience
 ```
 
 `KTO_SERVICE_KEY`가 없으면 `/api/v1/health/ready`가 `configured: false`와
@@ -299,10 +366,13 @@ npx.cmd wrangler secret put OPS_API_KEY --name ieoga-national-travel-resilience
 1. 공공데이터포털에서 노출 이력이 없는 KTO 인증키를 준비합니다.
 2. 실제 D1 데이터베이스와 R2 버킷을 만들고 배포 설정에 연결합니다.
 3. 모든 D1 마이그레이션을 운영 데이터베이스에 적용합니다.
-4. `KTO_SERVICE_KEY`, `PARTNER_API_KEY`, `OPS_API_KEY`를 서로 다른
-   배포 Secret으로 설정합니다.
-5. 관리형 역지오코딩·보행 경로 엔드포인트를 연결하고 준비 상태가
-   공유 공개 제공자 사용으로 저하되지 않는지 확인합니다.
+4. `KTO_SERVICE_KEY`를 설정하고 `SESSION_SIGNING_KEY`, `PARTNER_API_KEY`,
+   `OPS_API_KEY`, `RELEASE_AUDITOR_API_KEY`를 각각 CSPRNG로 생성한
+   32바이트 이상의 예측 불가능하고 서로 다른 배포 Secret으로 설정합니다.
+   readiness의 최소 품질 통과만으로 엔트로피가 증명된다고 간주하지 않습니다.
+5. 정방향·역방향 지오코딩, 보행 경로, 날씨의 관리형 제공자를 연결하고
+   공개 fallback 포함 여부까지 반영한 준비 상태가 `ready`,
+   `releaseRequirement`가 `satisfied`인지 확인합니다.
 6. 8종 OpenAPI 상태, 전국 지역코드, 복구, 정책 조회, 미션 재검증을
    운영 도메인에서 확인합니다.
 7. API 호출량·오류율·지연시간·D1/R2 저장 실패를 모니터링합니다.

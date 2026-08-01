@@ -354,7 +354,23 @@ test("ready-for-recheck transition is blocked until an operator records evidence
   });
 
   assert.equal(mission?.status, "ready_for_recheck");
-  assert.deepEqual(mission?.actionEvidence, evidence);
+  assert.deepEqual(mission?.actionEvidence, {
+    actionSummary: evidence.actionSummary,
+    evidenceCount: 2,
+    occurredAt: evidence.occurredAt,
+  });
+  assert.equal(
+    JSON.stringify(mission?.actionEvidence).includes(
+      "api-audit:policy-fix-2026-07-17",
+    ),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(mission?.actionEvidence).includes(
+      "관광데이터 운영자",
+    ),
+    false,
+  );
   const writes = JSON.stringify(fake.executedStatements);
   assert.match(writes, /action_recorded/);
   assert.match(writes, /api-audit:policy-fix-2026-07-17/);
@@ -514,4 +530,129 @@ test("0006 migration backfills executable contracts for existing missions", asyn
     assert.equal(row.scenario_failure, row.failure_category);
   }
   db.close();
+});
+
+test("0007 migration creates authenticated evidence and durable rate windows", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE recovery_options (id text PRIMARY KEY NOT NULL);",
+  );
+  const migration = await source(
+    "drizzle/0007_field_evidence_registry.sql",
+  );
+  db.exec(migration.replaceAll("--> statement-breakpoint", ""));
+
+  const tables = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    )
+    .all()
+    .map((row) => row.name);
+  assert.ok(tables.includes("field_evidence_registry"));
+  assert.ok(tables.includes("durable_rate_limit_windows"));
+
+  const evidenceColumns = db
+    .prepare("PRAGMA table_info(field_evidence_registry)")
+    .all()
+    .map((row) => row.name);
+  for (const column of [
+    "evidence_type",
+    "sample_size",
+    "regions_json",
+    "metrics_json",
+    "artifact_reference",
+    "reviewers_json",
+    "measured_at",
+    "reviewed_at",
+    "validated",
+  ]) {
+    assert.ok(evidenceColumns.includes(column), column);
+  }
+  assert.ok(
+    db
+      .prepare("PRAGMA table_info(recovery_options)")
+      .all()
+      .some((row) => row.name === "application_snapshot_json"),
+  );
+  db.close();
+});
+
+test("0008 migration makes independent field evidence audit durable", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE field_evidence_registry (id text PRIMARY KEY NOT NULL, evidence_type text NOT NULL);",
+  );
+  const migration = await source(
+    "drizzle/0008_independent_evidence_audit.sql",
+  );
+  db.exec(migration.replaceAll("--> statement-breakpoint", ""));
+
+  const columns = db
+    .prepare("PRAGMA table_info(field_evidence_registry)")
+    .all();
+  const byName = new Map(columns.map((column) => [column.name, column]));
+  assert.equal(byName.get("independent_audit_status")?.notnull, 1);
+  assert.equal(byName.get("independent_audit_status")?.dflt_value, "'pending'");
+  for (const column of ["approved_at", "approved_by", "audit_notes"]) {
+    assert.ok(byName.has(column), column);
+  }
+  const indexes = db
+    .prepare("PRAGMA index_list(field_evidence_registry)")
+    .all()
+    .map((row) => row.name);
+  assert.ok(indexes.includes("field_evidence_audit_status_idx"));
+  db.close();
+});
+
+test("policy sync always prioritizes aggregate region packs and recovers leases", async () => {
+  const sync = await source("lib/sync/policy-sync.ts");
+
+  assert.match(sync, /districtCode:\s*"_all"/);
+  assert.match(
+    sync,
+    /CASE WHEN \$\{syncPartitions\.districtCode\} = '_all' THEN 0 ELSE 1 END/,
+  );
+  assert.match(sync, /eq\(syncPartitions\.status,\s*"running"\)/);
+  assert.match(sync, /eq\(syncPartitions\.nextRunAt,\s*leaseUntil\)/);
+  assert.match(sync, /failedRegionCodes/);
+  assert.match(sync, /resumeTargets/);
+  assert.match(sync, /isNotNull\(administrativeAreas\.sourceUpdatedAt\)/);
+  assert.match(sync, /districts = await getDistricts\(regionCode\)/);
+  assert.match(sync, /catch \{[\s\S]*continue;/);
+});
+
+test("policy region list truthfully describes read-only scheduled packs", async () => {
+  const route = await source("app/api/v1/insights/regions/route.ts");
+  assert.match(route, /scheduled_region_pack/);
+  assert.match(route, /scheduled_versioned_region_pack/);
+  assert.match(route, /운영 동기화가 생성한 최신 검증 지역팩/);
+  assert.doesNotMatch(route, /선택하면[^\n]*실시간 조회/);
+});
+
+test("0007 Drizzle snapshot matches its migration additions", async () => {
+  const snapshot = JSON.parse(
+    await source("drizzle/meta/0007_snapshot.json"),
+  );
+  assert.ok(snapshot.tables.durable_rate_limit_windows);
+  assert.ok(snapshot.tables.field_evidence_registry);
+  assert.ok(
+    snapshot.tables.recovery_options.columns.application_snapshot_json,
+  );
+  assert.equal(snapshot.version, "6");
+});
+
+test("0008 Drizzle snapshot matches independent audit additions", async () => {
+  const snapshot = JSON.parse(
+    await source("drizzle/meta/0008_snapshot.json"),
+  );
+  const table = snapshot.tables.field_evidence_registry;
+  assert.equal(
+    table.columns.independent_audit_status.default,
+    "'pending'",
+  );
+  assert.equal(table.columns.independent_audit_status.notNull, true);
+  assert.ok(table.columns.approved_at);
+  assert.ok(table.columns.approved_by);
+  assert.ok(table.columns.audit_notes);
+  assert.ok(table.indexes.field_evidence_audit_status_idx);
 });

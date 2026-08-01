@@ -1,4 +1,5 @@
 import { getStoredHealthSnapshot, persistHealth } from "@/lib/db/repository";
+import { evaluateStoredKtoHealth } from "./health-snapshot";
 import { checkAllKtoServices } from "./health";
 
 /* The contest verifies that KTO OpenAPI calls actually reach the agency's
@@ -19,10 +20,13 @@ let lastAttemptAt = 0;
 export async function latestHealthCheckedAt(): Promise<string | undefined> {
   try {
     const snapshot = await getStoredHealthSnapshot();
-    return snapshot
-      .map((source) => source.checkedAt)
-      .sort()
-      .at(-1);
+    const evaluation = evaluateStoredKtoHealth(
+      snapshot,
+      Number.POSITIVE_INFINITY,
+    );
+    return evaluation.exactSourceSet && evaluation.staleSources.length === 0
+      ? evaluation.oldestCheckedAt
+      : undefined;
   } catch {
     return undefined;
   }
@@ -35,7 +39,8 @@ export function isOlderThan(
   if (!checkedAt) return true;
   const parsed = Date.parse(checkedAt);
   if (!Number.isFinite(parsed)) return true;
-  return Date.now() - parsed > maxAgeMs;
+  const now = Date.now();
+  return parsed > now + 5 * 60_000 || now - parsed > maxAgeMs;
 }
 
 /* Probes all eight services and stores the result. Returns false when the
@@ -65,7 +70,14 @@ export async function refreshKtoHealth(options?: {
   lastAttemptAt = Date.now();
   const task = (async () => {
     const result = await checkAllKtoServices();
-    if (result.sources.length) await persistHealth(result.sources);
+    if (result.sources.length) {
+      const persistence = await persistHealth(result.sources);
+      if (!persistence.persisted) {
+        throw new Error(
+          `KTO_HEALTH_PERSISTENCE_FAILED:${persistence.reason}`,
+        );
+      }
+    }
     return result;
   })();
   inFlight = task;

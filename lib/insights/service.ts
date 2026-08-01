@@ -4,12 +4,19 @@ import {
 } from "@/lib/kto/adapters";
 import { previousCompleteMonth } from "@/lib/kto/registry";
 import { KtoError, type KtoAudit } from "@/lib/kto/types";
+import { strictFiniteNumber } from "@/lib/validation/numbers";
 
 export const POLICY_CALCULATION_VERSION = "policy-evidence-2026.07-v1";
 
-function numberValue(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
+function numberValue(
+  value: unknown,
+  options: {
+    minimum?: number;
+    maximum?: number;
+    integer?: boolean;
+  } = {},
+): number | null {
+  return strictFiniteNumber(value, options) ?? null;
 }
 
 export type PolicyInsightPayload = {
@@ -79,10 +86,20 @@ export async function buildPolicyInsight(params: {
     sourceLedger.push(hubSettled.value.audit);
     hubs = hubSettled.value.items.slice(0, 20).map((item) => ({
       name: String(item.hubTatsNm ?? ""),
-      rank: numberValue(item.hubRank),
+      rank: numberValue(item.hubRank, {
+        minimum: 1,
+        maximum: 100_000,
+        integer: true,
+      }),
       category: String(item.hubCtgryMclsNm ?? ""),
-      latitude: numberValue(item.mapY),
-      longitude: numberValue(item.mapX),
+      latitude: numberValue(item.mapY, {
+        minimum: 32,
+        maximum: 39.8,
+      }),
+      longitude: numberValue(item.mapX, {
+        minimum: 124,
+        maximum: 132,
+      }),
     }));
     const first = hubSettled.value.items[0];
     regionName = String(first?.areaNm ?? "");
@@ -136,7 +153,10 @@ export async function buildPolicyInsight(params: {
           entry.item?.[entry.indicator.nameField] ??
             entry.indicator.label,
         ),
-        value: numberValue(rawValue),
+        value: numberValue(rawValue, {
+          minimum: 0,
+          maximum: 1_000_000_000,
+        }),
         valueRaw: rawValue,
         source: entry.indicator.service,
         operation: entry.indicator.operation,

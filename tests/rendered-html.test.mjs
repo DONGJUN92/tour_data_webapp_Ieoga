@@ -139,7 +139,7 @@ test("capabilities endpoint publishes the nationwide, privacy-minimal production
   assert.equal(payload.travelerRecovery.routeEta.supported, true);
   assert.equal(
     payload.travelerRecovery.routeEta.currentMethod,
-    "openstreetmap_osrm_walking",
+    "shared_public_osrm_compatible",
   );
   assert.equal(
     payload.travelerRecovery.routeEta.unavailableBehavior,
@@ -147,7 +147,27 @@ test("capabilities endpoint publishes the nationwide, privacy-minimal production
   );
   assert.equal(
     payload.travelerRecovery.weatherAutoDetection.currentMethod,
-    "open_meteo_current_conditions",
+    "shared_public_open_meteo",
+  );
+  assert.equal(
+    payload.travelerRecovery.reverseGeocoding.currentMethod,
+    "shared_public_nominatim_then_kto_nearest",
+  );
+  assert.equal(
+    payload.travelerRecovery.reverseGeocoding.browserRequestCoordinatesInUrl,
+    false,
+  );
+  assert.equal(
+    payload.travelerRecovery.reverseGeocoding.upstreamProviderTransport,
+    "https_query_parameters",
+  );
+  assert.equal(
+    payload.externalProviderReadiness.statusEndpoint,
+    "/api/v1/health/ready",
+  );
+  assert.equal(
+    payload.externalProviderReadiness.sharedPublicReleaseBehavior,
+    "blocked",
   );
   assert.equal(payload.policyInsights.syntheticBackfill, false);
   assert.equal(payload.policyInsights.missionLoop.supported, true);
@@ -181,6 +201,68 @@ test("live location resolution keeps coordinates out of URLs and publishes provi
   assert.doesNotMatch(
     product,
     /tab === "insights"[\s\S]{0,120}loadInsightRegions\(/,
+  );
+});
+
+test("bridge appointment window crosses KST midnight without changing the promised duration", async () => {
+  const {
+    appointmentAfterMinutesInKorea,
+    appointmentMinutesFromNow,
+    MAX_APPOINTMENT_MINUTES,
+    MIN_APPOINTMENT_MINUTES,
+  } = await import("../app/product-app-model.ts");
+  const now = new Date("2026-07-31T13:30:00.000Z"); // 22:30 in Korea
+
+  assert.deepEqual(appointmentAfterMinutesInKorea(now, 150), {
+    date: "2026-08-01",
+    time: "01:00",
+  });
+  assert.equal(
+    appointmentMinutesFromNow("2026-08-01", "01:00", now.getTime()),
+    150,
+  );
+  assert.equal(MIN_APPOINTMENT_MINUTES, 15);
+  assert.equal(MAX_APPOINTMENT_MINUTES, 24 * 60);
+});
+
+test("bridge input rejects blank, zero, and overseas coordinates", async () => {
+  const { parseKoreaCoordinate } = await import(
+    "../app/product-app-model.ts"
+  );
+
+  assert.equal(parseKoreaCoordinate("", 32, 39.8), undefined);
+  assert.equal(parseKoreaCoordinate("  ", 32, 39.8), undefined);
+  assert.equal(parseKoreaCoordinate("0", 32, 39.8), undefined);
+  assert.equal(parseKoreaCoordinate("40.7128", 32, 39.8), undefined);
+  assert.equal(parseKoreaCoordinate("37.5665", 32, 39.8), 37.5665);
+  assert.equal(parseKoreaCoordinate("126.9780", 124, 132), 126.978);
+});
+
+test("current-origin place search sends optional coordinates only in a POST body", async () => {
+  const product = await source("app/ProductApp.tsx");
+  const searchOrigin =
+    product.match(
+      /async function searchOriginPlace\([\s\S]*?(?=\n  function selectOriginPlace)/,
+    )?.[0] ?? "";
+
+  assert.ok(searchOrigin, "searchOriginPlace source must be present");
+  assert.match(searchOrigin, /purpose:\s*"current_origin"/);
+  assert.match(searchOrigin, /parseKoreaCoordinate\(latitude,\s*32,\s*39\.8\)/);
+  assert.match(searchOrigin, /parseKoreaCoordinate\(longitude,\s*124,\s*132\)/);
+  assert.match(
+    searchOrigin,
+    /fetchJson\("\/api\/v1\/places\/search",\s*\{[\s\S]*?method:\s*"POST"/,
+  );
+  assert.match(searchOrigin, /body:\s*JSON\.stringify\(searchInput\)/);
+  assert.match(searchOrigin, /latitude:\s*currentLatitude/);
+  assert.match(searchOrigin, /longitude:\s*currentLongitude/);
+  assert.doesNotMatch(
+    searchOrigin,
+    /query\.set\(\s*["'](?:latitude|longitude)["']/,
+  );
+  assert.doesNotMatch(
+    searchOrigin,
+    /\/api\/v1\/places\/search\?/,
   );
 });
 
@@ -237,7 +319,9 @@ test("official legal-dong codes normalize between TourAPI and analysis APIs", as
   const {
     analysisRegionCode,
     analysisDistrictCode,
+    districtBelongsToRegion,
     isOfficialRegionCode,
+    isPlausibleOfficialDistrictCode,
     rawDistrictCode,
     previousCompleteMonth,
     priorMonth,
@@ -254,7 +338,14 @@ test("official legal-dong codes normalize between TourAPI and analysis APIs", as
   assert.equal(analysisDistrictCode("36110", "36110"), "36110");
   assert.equal(rawDistrictCode("36110", "36110"), undefined);
   assert.equal(isOfficialRegionCode("36110"), true);
+  assert.equal(isOfficialRegionCode("11"), true);
+  assert.equal(isOfficialRegionCode("99"), false);
+  assert.equal(isOfficialRegionCode("99110"), false);
   assert.equal(isOfficialRegionCode("3611"), false);
+  assert.equal(isPlausibleOfficialDistrictCode("11110"), true);
+  assert.equal(isPlausibleOfficialDistrictCode("99110"), false);
+  assert.equal(districtBelongsToRegion("11", "11110"), true);
+  assert.equal(districtBelongsToRegion("11", "26110"), false);
   assert.equal(analysisDistrictCode(undefined, "110"), undefined);
   assert.equal(rawDistrictCode(undefined, undefined), undefined);
   assert.equal(priorMonth("202601"), "202512");
@@ -380,6 +471,35 @@ test("recovery request schema enforces Korea bounds and hard input limits", asyn
     recoveryRequestSchema.safeParse({
       ...valid,
       origin: { ...valid.origin, areaCode: "KR" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    recoveryRequestSchema.safeParse({
+      ...valid,
+      origin: { ...valid.origin, areaCode: "99" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    recoveryRequestSchema.safeParse({
+      ...valid,
+      origin: {
+        ...valid.origin,
+        areaCode: "11",
+        sigunguCode: "26110",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    recoveryRequestSchema.safeParse({
+      ...valid,
+      origin: {
+        ...valid.origin,
+        areaCode: undefined,
+        sigunguCode: "11110",
+      },
     }).success,
     false,
   );
@@ -660,6 +780,36 @@ test("mocked OpenAPI recovery preserves hard-constraint monotonicity and redacts
     assert.ok(distanceTight.options.length <= loose.options.length);
     assert.ok(timeTight.options.length <= loose.options.length);
     assert.ok(indoorTight.options.length <= loose.options.length);
+    assert.ok(
+      indoorTight.options.every((option) =>
+        ["14", "38", "39"].includes(option.contentTypeId),
+      ),
+    );
+    assert.ok(
+      indoorTight.rejectionSummary.some(
+        (entry) =>
+          entry.reasonCode === "INDOOR_UNVERIFIED" &&
+          entry.count >= 1,
+      ),
+    );
+    const accessibilityConditional = await recoverTrip(
+      { ...baseRequest, audience: "wheelchair" },
+      "request-accessibility-conditional",
+    );
+    assert.ok(
+      accessibilityConditional.options.every(
+        (option) =>
+          option.confirmationRequired ===
+          (option.evidenceGaps.length > 0),
+      ),
+    );
+    if (
+      accessibilityConditional.options.some(
+        (option) => option.confirmationRequired,
+      )
+    ) {
+      assert.notEqual(accessibilityConditional.status, "verified");
+    }
     assert.ok(distanceTight.rejectedCount >= loose.rejectedCount);
     assert.ok(timeTight.rejectedCount >= loose.rejectedCount);
     assert.equal(

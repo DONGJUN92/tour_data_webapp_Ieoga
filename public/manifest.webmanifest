@@ -1,0 +1,50 @@
+{
+  "id": "/",
+  "name": "이어가 - 여행 중단 회복",
+  "short_name": "이어가",
+  "description": "비, 지연, 혼잡으로 흔들린 국내 여행을 다음 고정 일정까지 안전하게 이어 줍니다.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f7f3ea",
+  "theme_color": "#174a3a",
+  "lang": "ko",
+  "categories": ["travel", "navigation", "lifestyle"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "지금 여행 복구",
+      "short_name": "여행 복구",
+      "description": "현재 여행 문제에 맞는 대안을 찾습니다.",
+      "url": "/flow",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "지역 회복력",
+      "short_name": "지역 회복력",
+      "description": "관광 회복력 지표와 근거를 확인합니다.",
+      "url": "/policy",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

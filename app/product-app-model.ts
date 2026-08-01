@@ -124,6 +124,15 @@ export type PlaceSearchResult = {
 export type RecoveryOption = {
   id: string;
   strategyLabel?: string;
+  evidenceGaps?: Array<{
+    code?:
+      | "INDOOR_UNVERIFIED"
+      | "ACCESSIBILITY_UNVERIFIED"
+      | "CONCENTRATION_UNVERIFIED"
+      | string;
+    note?: string;
+  }>;
+  confirmationRequired?: boolean;
   contentId?: string;
   title: string;
   address?: string;
@@ -304,6 +313,74 @@ export function todayInKorea(): string {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+export const MIN_APPOINTMENT_MINUTES = 15;
+export const MAX_APPOINTMENT_MINUTES = 24 * 60;
+
+export function appointmentAfterMinutesInKorea(
+  now: Date,
+  minutes: number,
+): { date: string; time: string } {
+  const target = new Date(now.getTime() + minutes * 60_000);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(target);
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}`,
+  };
+}
+
+export function appointmentMinutesFromNow(
+  date: string,
+  time: string,
+  nowMs = Date.now(),
+): number | null {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+    !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)
+  ) {
+    return null;
+  }
+  const target = Date.parse(`${date}T${time}:00+09:00`);
+  if (!Number.isFinite(target) || !Number.isFinite(nowMs)) return null;
+
+  /* Date.parse normalises impossible calendar dates (for example 02-30)
+     instead of rejecting them. Round-trip through KST so a malformed value
+     can never become a different, apparently valid appointment. */
+  const normalized = appointmentAfterMinutesInKorea(new Date(target), 0);
+  if (normalized.date !== date || normalized.time !== time) return null;
+
+  return Math.floor((target - nowMs) / 60_000);
+}
+
+export function parseKoreaCoordinate(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === "string" && value.trim() === "") ||
+    (typeof value !== "string" && typeof value !== "number")
+  ) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : undefined;
+}
+
 export function practiceJourneySchedule(): {
   date: string;
   firstTime: string;
@@ -353,10 +430,7 @@ export function practiceJourneySchedule(): {
 }
 
 export function minutesUntil(date: string, time: string): number | null {
-  if (!date || !time) return null;
-  const target = new Date(`${date}T${time}:00+09:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  return Math.floor((target.getTime() - Date.now()) / 60_000);
+  return appointmentMinutesFromNow(date, time);
 }
 
 export function formatStopTime(time: string): string {
@@ -419,9 +493,37 @@ export function formatIsoTime(value?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function dateTimePartsInKorea(
+  value: string,
+): { date: string; time: string } | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(parsed);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  const year = valueOf("year");
+  const month = valueOf("month");
+  const day = valueOf("day");
+  const hour = valueOf("hour");
+  const minute = valueOf("minute");
+  return year && month && day && hour && minute
+    ? { date: `${year}-${month}-${day}`, time: `${hour}:${minute}` }
+    : null;
 }
 
 export function normalizeJourneyPlan(payload: unknown): JourneyPlan | null {
@@ -450,12 +552,25 @@ export function normalizeJourneyPlan(payload: unknown): JourneyPlan | null {
     ].includes(rawType)
       ? (rawType as JourneyStop["type"])
       : "visit";
-    const latitude = Number(location?.latitude);
-    const longitude = Number(location?.longitude);
+    const latitude =
+      typeof location?.latitude === "number"
+        ? location.latitude
+        : typeof location?.latitude === "string" &&
+            location.latitude.trim() !== ""
+          ? Number(location.latitude)
+          : Number.NaN;
+    const longitude =
+      typeof location?.longitude === "number"
+        ? location.longitude
+        : typeof location?.longitude === "string" &&
+            location.longitude.trim() !== ""
+          ? Number(location.longitude)
+          : Number.NaN;
+    const kstParts = dateTimePartsInKorea(startAt);
     return [
       {
         id: readText(node, ["id"]) || `stored-stop-${index}`,
-        time: startAt.match(/T(\d{2}:\d{2})/)?.[1] ?? "",
+        time: kstParts?.time ?? startAt.match(/T(\d{2}:\d{2})/)?.[1] ?? "",
         type,
         title,
         address: readText(location, ["label", "address"]),
@@ -470,10 +585,14 @@ export function normalizeJourneyPlan(payload: unknown): JourneyPlan | null {
   });
   if (stops.length < 2) return null;
   const firstStart = readText(asRecord(nodes[0]), ["startAt"]);
+  const firstStartKst = dateTimePartsInKorea(firstStart);
   return {
     id: readText(itinerary, ["id"]) || "stored-journey",
     title: readText(itinerary, ["title"]) || "나의 여행",
-    date: firstStart.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? "",
+    date:
+      firstStartKst?.date ??
+      firstStart.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ??
+      "",
     audience:
       AUDIENCES.some((item) => item.value === itinerary.audience)
         ? (itinerary.audience as Audience)
@@ -756,10 +875,18 @@ export async function fetchJson(url: string, init?: RequestInit): Promise<unknow
   if (!response.ok) {
     const record = asRecord(payload);
     const nestedError = asRecord(record?.error);
-    throw new Error(
+    const message =
       readText(nestedError, ["message", "detail"]) ||
-        readText(record, ["message", "detail"]) ||
-        `요청에 실패했습니다. (${response.status})`,
+      readText(record, ["message", "detail"]) ||
+      `요청에 실패했습니다. (${response.status})`;
+    const requestId =
+      response.headers.get("x-request-id") ||
+      readText(record, ["requestId"]) ||
+      readText(nestedError, ["requestId"]);
+    throw new Error(
+      requestId && !message.includes(requestId)
+        ? `${message} · Request ID ${requestId}`
+        : message,
     );
   }
   return payload;

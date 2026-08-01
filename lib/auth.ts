@@ -1,4 +1,5 @@
-import { getRuntimeSecret } from "./runtime-env";
+import { releaseAuditorStatus } from "./release/auditor";
+import { getOperationalSecret } from "./secret-policy";
 
 async function digest(value: string): Promise<Uint8Array> {
   const bytes = new TextEncoder().encode(value);
@@ -26,9 +27,12 @@ type AuthenticationResult =
 
 async function authenticateBearer(
   authorization: string | null,
-  secretName: "PARTNER_API_KEY" | "OPS_API_KEY",
+  secretName:
+    | "PARTNER_API_KEY"
+    | "OPS_API_KEY"
+    | "RELEASE_AUDITOR_API_KEY",
 ): Promise<AuthenticationResult> {
-  const expected = getRuntimeSecret(secretName);
+  const expected = getOperationalSecret(secretName);
   if (!expected) return "missing_configuration";
   const match = authorization?.match(/^Bearer\s+(.+)$/i);
   if (!match) return "unauthorized";
@@ -47,4 +51,13 @@ export function authenticateOps(
   authorization: string | null,
 ): Promise<AuthenticationResult> {
   return authenticateBearer(authorization, "OPS_API_KEY");
+}
+
+export function authenticateReleaseAuditor(
+  authorization: string | null,
+): Promise<AuthenticationResult> {
+  if (!releaseAuditorStatus().releaseReady) {
+    return Promise.resolve("missing_configuration");
+  }
+  return authenticateBearer(authorization, "RELEASE_AUDITOR_API_KEY");
 }

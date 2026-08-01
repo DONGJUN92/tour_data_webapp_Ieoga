@@ -1,8 +1,9 @@
-import { and, asc, eq, lte, or } from "drizzle-orm";
+import { and, asc, eq, isNotNull, lte, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   administrativeAreas,
   apiAuditLogs,
+  durableRateLimitWindows,
   itineraries,
   proofShares,
   recoveryRuns,
@@ -16,6 +17,10 @@ import {
 import { buildPolicyInsight } from "@/lib/insights/service";
 import { refreshResilienceMissions } from "@/lib/insights/missions";
 import { getDistricts, getRegions } from "@/lib/kto/adapters";
+import {
+  hasOfficialRegionAggregateCoverage,
+  KTO_OFFICIAL_REGION_CODES,
+} from "@/lib/kto/registry";
 import { putRegionPack } from "@/lib/storage/region-packs";
 
 function inHours(hours: number): string {
@@ -54,6 +59,9 @@ export async function purgeExpiredData(): Promise<{
     .delete(apiAuditLogs)
     .where(lte(apiAuditLogs.calledAt, auditCutoff))
     .returning({ id: apiAuditLogs.id });
+  await db
+    .delete(durableRateLimitWindows)
+    .where(lte(durableRateLimitWindows.expiresAt, now));
   return {
     sessions: sessionsDeleted.length,
     runs: runs.length,
@@ -63,19 +71,31 @@ export async function purgeExpiredData(): Promise<{
   };
 }
 
-export async function bootstrapPolicyPartitions(): Promise<{
+export type PolicyBootstrapResult = {
   regionCount: number;
   districtCount: number;
-}> {
+  failedRegionCodes: string[];
+};
+
+export async function bootstrapPolicyPartitions(
+  targetRegionCodes: Iterable<string> = KTO_OFFICIAL_REGION_CODES,
+): Promise<PolicyBootstrapResult> {
   const db = getDb();
   const regionResult = await getRegions();
+  const targets = new Set(targetRegionCodes);
+  const failedRegionCodes = new Set(targets);
+  let regionCount = 0;
   let districtCount = 0;
 
   for (const region of regionResult.items) {
     const regionCode = String(region.code ?? "");
     const regionName = String(region.name ?? "");
-    if (!regionCode || !regionName) continue;
+    if (!targets.has(regionCode) || !regionName) continue;
 
+    /* Store the aggregate before fetching districts. A transient failure in
+       one district list must not discard this region or prevent later
+       official regions from being bootstrapped. sourceUpdatedAt becomes the
+       durable completion marker only after the district phase succeeds. */
     await db
       .insert(administrativeAreas)
       .values({
@@ -83,7 +103,7 @@ export async function bootstrapPolicyPartitions(): Promise<{
         name: regionName,
         level: "region",
         codeVersion: "TourAPI-2026-07",
-        sourceUpdatedAt: new Date().toISOString(),
+        sourceUpdatedAt: null,
       })
       .onConflictDoUpdate({
         target: administrativeAreas.code,
@@ -91,24 +111,35 @@ export async function bootstrapPolicyPartitions(): Promise<{
           name: regionName,
           active: true,
           codeVersion: "TourAPI-2026-07",
-          sourceUpdatedAt: new Date().toISOString(),
+          sourceUpdatedAt: null,
           updatedAt: new Date().toISOString(),
         },
       });
 
-    const districts = await getDistricts(regionCode);
-    if (!districts.items.length) {
-      await db
-        .insert(syncPartitions)
-        .values({
-          id: regionCode,
-          regionCode,
-          districtCode: "_all",
+    await db
+      .insert(syncPartitions)
+      .values({
+        id: regionCode,
+        regionCode,
+        districtCode: "_all",
+        regionName,
+        status: "pending",
+        nextRunAt: new Date().toISOString(),
+      })
+      .onConflictDoUpdate({
+        target: syncPartitions.id,
+        set: {
           regionName,
-          status: "pending",
-          nextRunAt: new Date().toISOString(),
-        })
-        .onConflictDoNothing();
+          updatedAt: new Date().toISOString(),
+        },
+      });
+
+    let districts: Awaited<ReturnType<typeof getDistricts>>;
+    try {
+      districts = await getDistricts(regionCode);
+    } catch {
+      /* Leave the completion marker empty and continue. The next cron targets
+         only incomplete official regions and resumes this exact one. */
       continue;
     }
 
@@ -161,11 +192,22 @@ export async function bootstrapPolicyPartitions(): Promise<{
           },
         });
     }
+
+    await db
+      .update(administrativeAreas)
+      .set({
+        sourceUpdatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(administrativeAreas.code, regionCode));
+    failedRegionCodes.delete(regionCode);
+    regionCount += 1;
   }
 
   return {
-    regionCount: regionResult.items.length,
+    regionCount,
     districtCount,
+    failedRegionCodes: [...failedRegionCodes].sort(),
   };
 }
 
@@ -173,7 +215,8 @@ export async function runPolicySync(options: {
   batchSize?: number;
   bootstrapIfEmpty?: boolean;
 } = {}): Promise<{
-  bootstrapped?: { regionCount: number; districtCount: number };
+  bootstrapped?: PolicyBootstrapResult;
+  bootstrapError?: "BOOTSTRAP_SOURCE_UNAVAILABLE";
   attempted: number;
   succeeded: number;
   failed: number;
@@ -186,10 +229,44 @@ export async function runPolicySync(options: {
 }> {
   const db = getDb();
   await purgeExpiredData();
-  const first = await db.select({ id: syncPartitions.id }).from(syncPartitions).limit(1);
-  let bootstrapped: { regionCount: number; districtCount: number } | undefined;
-  if (!first.length && options.bootstrapIfEmpty !== false) {
-    bootstrapped = await bootstrapPolicyPartitions();
+  const aggregatePartitions = await db
+    .select({ regionCode: syncPartitions.regionCode })
+    .from(syncPartitions)
+    .where(eq(syncPartitions.districtCode, "_all"));
+  const completedBootstrapRegions = await db
+    .select({ code: administrativeAreas.code })
+    .from(administrativeAreas)
+    .where(
+      and(
+        eq(administrativeAreas.level, "region"),
+        isNotNull(administrativeAreas.sourceUpdatedAt),
+      ),
+    );
+  const aggregateCodes = new Set(
+    aggregatePartitions.map((partition) => partition.regionCode),
+  );
+  const completedCodes = new Set(
+    completedBootstrapRegions.map((region) => region.code),
+  );
+  const completedOfficialCodes = KTO_OFFICIAL_REGION_CODES.filter(
+    (code) => aggregateCodes.has(code) && completedCodes.has(code),
+  );
+  const resumeTargets = KTO_OFFICIAL_REGION_CODES.filter(
+    (code) => !aggregateCodes.has(code) || !completedCodes.has(code),
+  );
+  let bootstrapped: PolicyBootstrapResult | undefined;
+  let bootstrapError: "BOOTSTRAP_SOURCE_UNAVAILABLE" | undefined;
+  if (
+    !hasOfficialRegionAggregateCoverage(completedOfficialCodes) &&
+    options.bootstrapIfEmpty !== false
+  ) {
+    try {
+      bootstrapped = await bootstrapPolicyPartitions(resumeTargets);
+    } catch {
+      /* Existing due partitions remain processable when the region source is
+         transiently down. Bootstrap resumes independently on the next cron. */
+      bootstrapError = "BOOTSTRAP_SOURCE_UNAVAILABLE";
+    }
   }
 
   const now = new Date().toISOString();
@@ -203,10 +280,15 @@ export async function runPolicySync(options: {
           eq(syncPartitions.status, "pending"),
           eq(syncPartitions.status, "ready"),
           eq(syncPartitions.status, "failed"),
+          eq(syncPartitions.status, "running"),
         ),
       ),
     )
-    .orderBy(asc(syncPartitions.nextRunAt), asc(syncPartitions.id))
+    .orderBy(
+      sql`CASE WHEN ${syncPartitions.districtCode} = '_all' THEN 0 ELSE 1 END`,
+      asc(syncPartitions.nextRunAt),
+      asc(syncPartitions.id),
+    )
     .limit(Math.min(Math.max(options.batchSize ?? 2, 1), 4));
 
   const partitions: Array<{
@@ -217,14 +299,31 @@ export async function runPolicySync(options: {
   }> = [];
 
   for (const partition of due) {
-    await db
+    /* nextRunAt doubles as a renewable lease deadline while running. The
+       conditional update is the claim: only one concurrent worker can replace
+       the exact due state. A crashed worker becomes claimable again after the
+       lease expires instead of leaving the partition permanently running. */
+    const leaseUntil = new Date(
+      Date.now() + 20 * 60_000 + Math.floor(Math.random() * 1_000),
+    ).toISOString();
+    const claimed = await db
       .update(syncPartitions)
       .set({
         status: "running",
         lastAttemptAt: new Date().toISOString(),
+        nextRunAt: leaseUntil,
+        lastErrorCode: null,
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(syncPartitions.id, partition.id));
+      .where(
+        and(
+          eq(syncPartitions.id, partition.id),
+          eq(syncPartitions.status, partition.status),
+          eq(syncPartitions.nextRunAt, partition.nextRunAt),
+        ),
+      )
+      .returning({ id: syncPartitions.id });
+    if (!claimed.length) continue;
 
     try {
       const payload = await buildPolicyInsight({
@@ -270,7 +369,7 @@ export async function runPolicySync(options: {
       });
       const missionRefresh = await refreshResilienceMissions(payload);
 
-      await db
+      const finalized = await db
         .update(syncPartitions)
         .set({
           status: "ready",
@@ -280,7 +379,18 @@ export async function runPolicySync(options: {
           lastErrorCode: null,
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(syncPartitions.id, partition.id));
+        .where(
+          and(
+            eq(syncPartitions.id, partition.id),
+            eq(syncPartitions.status, "running"),
+            eq(syncPartitions.nextRunAt, leaseUntil),
+          ),
+        )
+        .returning({ id: syncPartitions.id });
+      if (!finalized.length) {
+        partitions.push({ id: partition.id, status: "failed" });
+        continue;
+      }
       partitions.push({
         id: partition.id,
         status: "succeeded",
@@ -297,13 +407,20 @@ export async function runPolicySync(options: {
           lastErrorCode: "SYNC_FAILED",
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(syncPartitions.id, partition.id));
+        .where(
+          and(
+            eq(syncPartitions.id, partition.id),
+            eq(syncPartitions.status, "running"),
+            eq(syncPartitions.nextRunAt, leaseUntil),
+          ),
+        );
       partitions.push({ id: partition.id, status: "failed" });
     }
   }
 
   return {
     bootstrapped,
+    bootstrapError,
     attempted: partitions.length,
     succeeded: partitions.filter((item) => item.status === "succeeded").length,
     failed: partitions.filter((item) => item.status === "failed").length,

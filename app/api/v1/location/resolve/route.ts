@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import { jsonResponse } from "@/lib/http";
 import { resolveLocation } from "@/lib/location/resolver";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
@@ -28,6 +29,32 @@ export async function POST(request: NextRequest) {
       { status: 429 },
     );
     response.headers.set("Retry-After", String(rate.retryAfterSeconds));
+    return response;
+  }
+
+  const durableRate = await allowDurableRequest(
+    request,
+    "location-resolve",
+    20,
+  );
+  if (!durableRate.allowed) {
+    const response = jsonResponse(
+      {
+        error: {
+          code: durableRate.unavailable
+            ? "RATE_LIMIT_UNAVAILABLE"
+            : "RATE_LIMITED",
+          message: durableRate.unavailable
+            ? "위치 확인 요청 한도를 검증할 수 없어 안전하게 중단했습니다."
+            : "위치 확인 요청이 많습니다. 잠시 후 다시 시도해주세요.",
+        },
+      },
+      { status: durableRate.unavailable ? 503 : 429 },
+    );
+    response.headers.set(
+      "Retry-After",
+      String(durableRate.retryAfterSeconds),
+    );
     return response;
   }
 

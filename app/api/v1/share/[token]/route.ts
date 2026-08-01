@@ -3,7 +3,11 @@ import {
   getProofShare,
   revokeProofShare,
 } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
@@ -41,12 +45,13 @@ export async function DELETE(
   request: NextRequest,
   context: { params: Promise<{ token: string }> },
 ) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
   const { token } = await context.params;
-  const sessionId = request.cookies.get("ieoga_session")?.value;
+  const sessionId = readSessionId(request);
   if (
     !validToken(token) ||
-    !sessionId ||
-    !/^[a-f0-9-]{32,40}$/i.test(sessionId)
+    !sessionId
   ) {
     return jsonResponse(
       { error: { code: "UNAUTHORIZED", message: "공유를 취소할 권한이 없습니다." } },

@@ -11,6 +11,41 @@ export const KTO_MOBILE_APP = "IEOGA";
    written to D1 or any durable store. */
 export const KTO_BURST_CACHE_TTL_SECONDS = 300;
 
+/* TourAPI's official top-level area codes for the 2026 contest data
+   contract. Bootstrap completeness is checked against the exact set, not a
+   single arbitrary row, so a worker that failed midway resumes on its next
+   scheduled execution. */
+export const KTO_OFFICIAL_REGION_CODES = [
+  "11",
+  "26",
+  "27",
+  "28",
+  "29",
+  "30",
+  "31",
+  "36",
+  "41",
+  "43",
+  "44",
+  "46",
+  "47",
+  "48",
+  "50",
+  "51",
+  "52",
+] as const;
+
+const KTO_OFFICIAL_REGION_CODE_SET = new Set<string>(
+  KTO_OFFICIAL_REGION_CODES,
+);
+
+export function hasOfficialRegionAggregateCoverage(
+  regionCodes: Iterable<string>,
+): boolean {
+  const available = new Set(regionCodes);
+  return KTO_OFFICIAL_REGION_CODES.every((code) => available.has(code));
+}
+
 export const KTO_SERVICES: Record<
   KtoServiceName,
   { label: string; role: string; primaryOperation: string }
@@ -136,7 +171,30 @@ export function priorMonth(baseYm: string): string {
 }
 
 export function isOfficialRegionCode(value: string): boolean {
-  return /^(?:\d{2}|\d{5})$/.test(value);
+  if (!/^(?:\d{2}|\d{5})$/.test(value)) return false;
+  return KTO_OFFICIAL_REGION_CODE_SET.has(value.slice(0, 2));
+}
+
+export function isPlausibleOfficialDistrictCode(value: string): boolean {
+  return (
+    /^\d{5}$/.test(value) &&
+    KTO_OFFICIAL_REGION_CODE_SET.has(value.slice(0, 2))
+  );
+}
+
+export function districtBelongsToRegion(
+  regionCode: string,
+  districtCode: string,
+): boolean {
+  if (
+    !isOfficialRegionCode(regionCode) ||
+    !isPlausibleOfficialDistrictCode(districtCode)
+  ) {
+    return false;
+  }
+  return regionCode.length === 5
+    ? districtCode === regionCode
+    : districtCode.startsWith(regionCode);
 }
 
 export function analysisRegionCode(

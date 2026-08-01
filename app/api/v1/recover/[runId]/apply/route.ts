@@ -1,6 +1,10 @@
 import { NextRequest } from "next/server";
 import { activateRecoveryExecution } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
 import { recoveryApplySchema } from "@/lib/recovery/schema";
 
@@ -10,12 +14,13 @@ export async function POST(
   request: NextRequest,
   context: { params: Promise<{ runId: string }> },
 ) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
   const { runId } = await context.params;
-  const sessionId = request.cookies.get("ieoga_session")?.value;
+  const sessionId = readSessionId(request);
   if (
     !/^[a-zA-Z0-9_-]{8,80}$/.test(runId) ||
-    !sessionId ||
-    !/^[a-f0-9-]{32,40}$/i.test(sessionId)
+    !sessionId
   ) {
     return jsonResponse(
       {
@@ -85,6 +90,8 @@ export async function POST(
               ? "이 세션의 복구안이나 원래 일정을 찾지 못했습니다."
               : activated.reason === "INVALID_STATE"
                 ? "검증된 전체 경로를 실행 일정으로 만들 수 없습니다. 일정을 다시 확인해 주세요."
+                : activated.reason === "UPSTREAM_UNAVAILABLE"
+                  ? "적용 직전 공식 장소 정보를 다시 확인하지 못했습니다. 잠시 후 재시도해 주세요."
                 : "현재 복구 일정을 적용하지 못했습니다.",
         },
       },

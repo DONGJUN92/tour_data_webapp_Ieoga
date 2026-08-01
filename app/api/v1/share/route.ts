@@ -1,7 +1,12 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createProofShare } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import { allowDurableRequest } from "@/lib/durable-rate-limit";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +16,10 @@ const shareSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const sessionId = request.cookies.get("ieoga_session")?.value;
-  if (!sessionId || !/^[a-f0-9-]{32,40}$/i.test(sessionId)) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
+  const sessionId = readSessionId(request);
+  if (!sessionId) {
     return jsonResponse(
       {
         error: {
@@ -22,6 +29,28 @@ export async function POST(request: NextRequest) {
       },
       { status: 401 },
     );
+  }
+  const rate = await allowDurableRequest(
+    request,
+    "proof-share-create",
+    10,
+  );
+  if (!rate.allowed) {
+    const response = jsonResponse(
+      {
+        error: {
+          code: rate.unavailable
+            ? "RATE_LIMIT_UNAVAILABLE"
+            : "RATE_LIMITED",
+          message: rate.unavailable
+            ? "공유 생성 한도를 확인할 수 없어 안전하게 중단했습니다."
+            : "공유 생성 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      },
+      { status: rate.unavailable ? 503 : 429 },
+    );
+    response.headers.set("Retry-After", String(rate.retryAfterSeconds));
+    return response;
   }
 
   let body: unknown;
@@ -66,10 +95,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return jsonResponse({
+  const response = jsonResponse({
     status: "created",
     url: `/share/${result.token}`,
     expiresAt: result.expiresAt,
     proof: result.proof,
   });
+  response.headers.set(
+    "X-RateLimit-Remaining",
+    String(rate.remaining),
+  );
+  return response;
 }

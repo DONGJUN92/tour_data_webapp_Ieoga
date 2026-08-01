@@ -1,17 +1,27 @@
 import { NextRequest } from "next/server";
 import {
+  areKnownAdministrativeScopes,
   getOwnedSessionItinerary,
   persistRecovery,
 } from "@/lib/db/repository";
 import {
+  beforeDeadline,
+  DeadlineExceededError,
+} from "@/lib/deadline";
+import { allowDurableRequest } from "@/lib/durable-rate-limit";
+import {
   getOrCreateSession,
   getRequestId,
   jsonResponse,
+  requireSessionSigning,
   setSessionCookie,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
 import { recoverTrip } from "@/lib/recovery/engine";
-import { recoveryRequestSchema } from "@/lib/recovery/schema";
+import {
+  recoveryAdministrativeScopes,
+  recoveryRequestSchema,
+} from "@/lib/recovery/schema";
 
 export const dynamic = "force-dynamic";
 /* Ceiling for the whole recovery, not a target. Measured directly against the
@@ -23,12 +33,55 @@ export const dynamic = "force-dynamic";
    five seconds — the wider ceiling only changes what happens on the tail,
    where returning a verified answer late beats returning nothing. */
 const RECOVERY_RESPONSE_BUDGET_MS = 20_000;
-
-class RecoveryDeadlineError extends Error {}
+const PERSISTENCE_COMMIT_RESERVE_MS = 2_000;
+const MAX_CLIENT_CLOCK_SKEW_MS = 5 * 60_000;
 
 export async function POST(request: NextRequest) {
   const deadlineAt = Date.now() + RECOVERY_RESPONSE_BUDGET_MS;
+  const commitDeadlineAt = deadlineAt - PERSISTENCE_COMMIT_RESERVE_MS;
   const requestId = getRequestId(request);
+  const deadlineController = new AbortController();
+  let persistenceStarted = false;
+  const deadlineResponse = (
+    currentSession?: ReturnType<typeof getOrCreateSession>,
+  ) => {
+    deadlineController.abort();
+    const persistenceStatus = persistenceStarted
+      ? "unknown"
+      : "not_started";
+    const response = jsonResponse(
+      {
+        requestId,
+        persistence: {
+          status: persistenceStatus,
+          runId: requestId,
+        },
+        error: {
+          code: "RECOVERY_DEADLINE_EXCEEDED",
+          message:
+            persistenceStatus === "unknown"
+              ? "20초 응답 기한을 넘겨 저장 결과를 확정할 수 없습니다. 이 결과를 적용하지 말고 요청 ID로 상태를 확인하거나 잠시 후 다시 시도해 주세요."
+              : "20초 응답 기한 안에 검증을 마치지 못해 저장을 시작하지 않았습니다. 확인하지 않은 후보는 표시하지 않습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      },
+      { status: 504 },
+    );
+    response.headers.set("X-Request-ID", requestId);
+    response.headers.set(
+      "X-Recovery-Persisted",
+      persistenceStatus === "unknown" ? "unknown" : "false",
+    );
+    response.headers.set("Retry-After", "3");
+    if (currentSession?.isNew) {
+      setSessionCookie(response, currentSession.id);
+    }
+    return response;
+  };
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) {
+    signingUnavailable.headers.set("X-Request-ID", requestId);
+    return signingUnavailable;
+  }
   const rate = allowRequest(requestRateKey(request, "recover"), 15);
   if (!rate.allowed) {
     const response = jsonResponse(
@@ -44,11 +97,47 @@ export async function POST(request: NextRequest) {
     response.headers.set("Retry-After", String(rate.retryAfterSeconds));
     return response;
   }
+  let durableRate: Awaited<ReturnType<typeof allowDurableRequest>>;
+  try {
+    durableRate = await beforeDeadline(
+      allowDurableRequest(request, "recover", 15),
+      deadlineAt,
+    );
+  } catch (error) {
+    if (error instanceof DeadlineExceededError) return deadlineResponse();
+    throw error;
+  }
+  if (!durableRate.allowed) {
+    const response = jsonResponse(
+      {
+        requestId,
+        error: {
+          code: durableRate.unavailable
+            ? "RATE_LIMIT_UNAVAILABLE"
+            : "RATE_LIMITED",
+          message: durableRate.unavailable
+            ? "복구 요청 한도를 확인할 수 없어 안전하게 중단했습니다."
+            : "복구 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      },
+      { status: durableRate.unavailable ? 503 : 429 },
+    );
+    response.headers.set(
+      "Retry-After",
+      String(durableRate.retryAfterSeconds),
+    );
+    return response;
+  }
+  const rateRemaining = Math.min(
+    rate.remaining,
+    durableRate.remaining,
+  );
 
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
+    body = await beforeDeadline(request.json(), deadlineAt);
+  } catch (error) {
+    if (error instanceof DeadlineExceededError) return deadlineResponse();
     return jsonResponse(
       {
         requestId,
@@ -79,6 +168,29 @@ export async function POST(request: NextRequest) {
 
   const session = getOrCreateSession(request);
   const submittedItinerary = parsed.data.itinerary;
+  const serverIncidentAt = new Date().toISOString();
+  if (submittedItinerary.occurredAt) {
+    const clockSkew = Math.abs(
+      Date.parse(submittedItinerary.occurredAt) -
+        Date.parse(serverIncidentAt),
+    );
+    if (clockSkew > MAX_CLIENT_CLOCK_SKEW_MS) {
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "INCIDENT_TIME_SKEWED",
+            message:
+              "기기 시각이 서버 시각과 5분 이상 차이 납니다. 자동 시각 설정을 확인한 뒤 다시 시도해 주세요.",
+            serverTime: serverIncidentAt,
+          },
+        },
+        { status: 409 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
+  }
   if (!submittedItinerary.id) {
     return jsonResponse(
       {
@@ -93,10 +205,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const owned = await getOwnedSessionItinerary({
-    sessionId: session.id,
-    itineraryId: submittedItinerary.id,
-  });
+  let owned: Awaited<ReturnType<typeof getOwnedSessionItinerary>>;
+  try {
+    owned = await beforeDeadline(
+      getOwnedSessionItinerary({
+        sessionId: session.id,
+        itineraryId: submittedItinerary.id,
+      }),
+      deadlineAt,
+    );
+  } catch (error) {
+    if (error instanceof DeadlineExceededError) {
+      return deadlineResponse(session);
+    }
+    throw error;
+  }
   if (!owned.found) {
     return jsonResponse(
       {
@@ -121,7 +244,7 @@ export async function POST(request: NextRequest) {
       timezone: owned.itinerary.timezone,
       audience: owned.itinerary.audience,
       nodes: owned.itinerary.nodes,
-      occurredAt: submittedItinerary.occurredAt,
+      occurredAt: serverIncidentAt,
       disruptedNodeId: submittedItinerary.disruptedNodeId,
       nextFixedNodeId: submittedItinerary.nextFixedNodeId,
     },
@@ -144,79 +267,92 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const deadlineResponse = () => {
-    const response = jsonResponse(
-      {
-        requestId,
-        error: {
-          code: "RECOVERY_DEADLINE_EXCEEDED",
-          message:
-            "20초 안에 실제 데이터 검증과 안전한 저장을 끝내지 못했습니다. 확인되지 않은 후보는 표시하지 않았습니다. 잠시 후 다시 실행해 주세요.",
+  const administrativeScopes = recoveryAdministrativeScopes(
+    authoritative.data,
+  );
+  if (administrativeScopes.length > 0) {
+    let knownOriginScope: boolean;
+    try {
+      knownOriginScope = await beforeDeadline(
+        areKnownAdministrativeScopes(administrativeScopes),
+        deadlineAt,
+      );
+    } catch (error) {
+      if (error instanceof DeadlineExceededError) {
+        return deadlineResponse(session);
+      }
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "REGION_REFERENCE_UNAVAILABLE",
+            message:
+              "공식 행정구역 기준표를 확인할 수 없어 복구를 시작하지 않았습니다.",
+          },
         },
-      },
-      { status: 504 },
-    );
-    response.headers.set("X-Request-ID", requestId);
-    response.headers.set("Retry-After", "3");
-    if (session.isNew) setSessionCookie(response, session.id);
-    return response;
-  };
-  const deadlineController = new AbortController();
-  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        { status: 503 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
+    if (!knownOriginScope) {
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "UNKNOWN_REGION_SCOPE",
+            message:
+              "현재 위치 또는 일정 장소의 시군구를 최신 공식 행정구역 기준표에서 확인하지 못했습니다.",
+          },
+        },
+        { status: 400 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
+  }
+
   let result: Awaited<ReturnType<typeof recoverTrip>>;
   try {
-    result = await Promise.race([
+    result = await beforeDeadline(
       recoverTrip(authoritative.data, requestId, {
         deadlineAt,
         signal: deadlineController.signal,
       }),
-      new Promise<never>((_, reject) => {
-        deadlineTimer = setTimeout(
-          () => {
-            deadlineController.abort();
-            reject(new RecoveryDeadlineError());
-          },
-          Math.max(1, deadlineAt - Date.now()),
-        );
-      }),
-    ]);
+      deadlineAt,
+    );
   } catch (error) {
-    if (!(error instanceof RecoveryDeadlineError)) throw error;
-    if (deadlineTimer) clearTimeout(deadlineTimer);
-    return deadlineResponse();
+    if (!(error instanceof DeadlineExceededError)) throw error;
+    return deadlineResponse(session);
   }
   if (deadlineController.signal.aborted || Date.now() >= deadlineAt) {
-    if (deadlineTimer) clearTimeout(deadlineTimer);
-    return deadlineResponse();
+    return deadlineResponse(session);
   }
 
-  let persistenceTimer: ReturnType<typeof setTimeout> | undefined;
   let persistence: Awaited<ReturnType<typeof persistRecovery>>;
+  if (Date.now() >= commitDeadlineAt) {
+    return deadlineResponse(session);
+  }
+  persistenceStarted = true;
   try {
-    persistence = await Promise.race([
+    persistence = await beforeDeadline(
       persistRecovery({
         sessionId: session.id,
         input: authoritative.data,
         result,
+        commitDeadlineAt,
       }),
-      new Promise<never>((_, reject) => {
-        persistenceTimer = setTimeout(
-          () => {
-            deadlineController.abort();
-            reject(new RecoveryDeadlineError());
-          },
-          Math.max(1, deadlineAt - Date.now()),
-        );
-      }),
-    ]);
+      deadlineAt,
+    );
   } catch (error) {
-    if (!(error instanceof RecoveryDeadlineError)) throw error;
-    return deadlineResponse();
-  } finally {
-    if (deadlineTimer) clearTimeout(deadlineTimer);
-    if (persistenceTimer) clearTimeout(persistenceTimer);
+    if (!(error instanceof DeadlineExceededError)) throw error;
+    return deadlineResponse(session);
   }
+  if (Date.now() >= deadlineAt) return deadlineResponse(session);
   if (!persistence.persisted) {
+    if (persistence.reason === "RECOVERY_DEADLINE_EXCEEDED") {
+      return deadlineResponse(session);
+    }
     const response = jsonResponse(
       {
         requestId,
@@ -234,7 +370,7 @@ export async function POST(request: NextRequest) {
       { status: 503 },
     );
     response.headers.set("X-Request-ID", requestId);
-    response.headers.set("X-RateLimit-Remaining", String(rate.remaining));
+    response.headers.set("X-RateLimit-Remaining", String(rateRemaining));
     response.headers.set("X-Recovery-Persisted", "false");
     return response;
   }
@@ -252,7 +388,7 @@ export async function POST(request: NextRequest) {
     },
   );
   response.headers.set("X-Request-ID", requestId);
-  response.headers.set("X-RateLimit-Remaining", String(rate.remaining));
+  response.headers.set("X-RateLimit-Remaining", String(rateRemaining));
   response.headers.set("X-Recovery-Persisted", "true");
   if (session.isNew) setSessionCookie(response, session.id);
   return response;

@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import styles from "../flow/flow.module.css";
 
 /* Data transparency, as a sequence rather than one dense reference page:
-   which agency services this product runs on, whether they answered just now,
-   and what the service keeps about the reader. The middle screen doubles as
-   the OpenAPI usage evidence a reviewer needs to see. */
+   which agency services this product runs on, what the latest scheduled
+   operator probe recorded, and what the service keeps about the reader. */
 
 type Step = "catalog" | "status" | "privacy";
 const STEPS: Step[] = ["catalog", "status", "privacy"];
@@ -169,15 +169,20 @@ export default function SourcesFlow() {
   return (
     <div className={styles.shell}>
       <div className={styles.top}>
-        <button
-          type="button"
-          className={styles.back}
-          onClick={() => go(STEPS[Math.max(0, stepIndex - 1)], true)}
-          disabled={stepIndex === 0}
-          aria-label="이전으로"
-        >
-          ←
-        </button>
+        {stepIndex === 0 ? (
+          <Link className={styles.back} href="/" aria-label="이어가 홈으로">
+            ←
+          </Link>
+        ) : (
+          <button
+            type="button"
+            className={styles.back}
+            onClick={() => go(STEPS[stepIndex - 1], true)}
+            aria-label="이전으로"
+          >
+            ←
+          </button>
+        )}
         <div className={styles.progress} aria-hidden="true">
           {STEPS.map((entry, index) => (
             <span
@@ -194,14 +199,16 @@ export default function SourcesFlow() {
         </div>
       </div>
 
-      <div
+      <main
         key={step}
-        className={`${styles.screen} ${goingBack ? styles.screenBack : ""}`}
+        className={`${styles.screen} ${styles.screenFocusTarget} ${goingBack ? styles.screenBack : ""}`}
+        tabIndex={0}
+        aria-labelledby="sources-screen-title"
       >
         {step === "catalog" && (
           <>
             <span className={styles.eyebrow}>데이터 출처</span>
-            <h1 className={styles.title}>
+            <h1 id="sources-screen-title" className={styles.title}>
               이어가는 공사 데이터
               <br />
               8종 위에서 작동합니다
@@ -234,9 +241,9 @@ export default function SourcesFlow() {
 
         {step === "status" && (
           <>
-            <span className={styles.eyebrow}>실시간 상태</span>
-            <h1 className={styles.title}>
-              방금 응답한 서비스는
+            <span className={styles.eyebrow}>운영 점검 스냅샷</span>
+            <h1 id="sources-screen-title" className={styles.title}>
+              최근 점검에서 응답한 서비스는
               <br />
               {liveCount}종입니다
             </h1>
@@ -273,9 +280,10 @@ export default function SourcesFlow() {
                 </div>
               ))}
               <div className={styles.noteCard}>
-                이 값은 저장된 요약이 아니라 예약 점검이 실제로 호출한
-                결과입니다. 기록이 오래되면 이 화면을 여는 시점에 다시
-                호출합니다.
+                이 값은 예약된 운영 점검이 실제 OpenAPI를 호출해 저장한
+                최신 요약입니다. 이 공개 화면을 반복해서 열어도 공사 API를
+                다시 호출하지 않으며, 오래된 기록은 다음 운영 점검에서
+                갱신합니다.
               </div>
             </div>
           </>
@@ -284,7 +292,7 @@ export default function SourcesFlow() {
         {step === "privacy" && (
           <>
             <span className={styles.eyebrow}>개인정보</span>
-            <h1 className={styles.title}>
+            <h1 id="sources-screen-title" className={styles.title}>
               위치는 계산에만 쓰고
               <br />
               보관하지 않습니다
@@ -322,7 +330,7 @@ export default function SourcesFlow() {
             </div>
           </>
         )}
-      </div>
+      </main>
 
       <div className={styles.foot}>
         {step !== "privacy" ? (
@@ -331,7 +339,9 @@ export default function SourcesFlow() {
             className={styles.cta}
             onClick={() => go(STEPS[stepIndex + 1])}
           >
-            {step === "catalog" ? "지금 응답하는지 확인" : "내 데이터는 어떻게 되나요"}
+            {step === "catalog"
+              ? "최근 운영 점검 확인"
+              : "내 데이터는 어떻게 되나요"}
           </button>
         ) : (
           <button type="button" className={styles.cta} onClick={deleteSession}>

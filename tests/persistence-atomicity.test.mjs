@@ -11,22 +11,35 @@ register(new URL("./alias-loader.mjs", import.meta.url));
 const { env } = await import("./cloudflare-workers.stub.mjs");
 const {
   activateRecoveryExecution,
+  areKnownAdministrativeScopes,
   createProofShare,
+  persistHealth,
   persistRecovery,
   saveItinerary,
 } = await import("../lib/db/repository.ts");
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+const { REQUIRED_KTO_HEALTH_SOURCES } = await import(
+  "../lib/kto/health-snapshot.ts"
+);
 
 async function source(relativePath) {
   return readFile(path.join(ROOT, relativePath), "utf8");
 }
 
 class FakeD1 {
-  constructor({ failBatch = false, allResults = [] } = {}) {
+  constructor({
+    failBatch = false,
+    allResults = [],
+    batchDelayMs = 0,
+    enforceCommitDeadline = false,
+  } = {}) {
     this.failBatch = failBatch;
     this.allResults = [...allResults];
+    this.batchDelayMs = batchDelayMs;
+    this.enforceCommitDeadline = enforceCommitDeadline;
     this.batchCalls = 0;
     this.batchedStatements = [];
+    this.committedStatements = [];
     this.executedStatements = [];
   }
 
@@ -59,7 +72,27 @@ class FakeD1 {
   async batch(statements) {
     this.batchCalls += 1;
     this.batchedStatements = statements;
+    if (this.batchDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.batchDelayMs));
+    }
     if (this.failBatch) throw new Error("D1_BATCH_FAILED");
+    const finalStatement = statements.at(-1);
+    if (
+      this.enforceCommitDeadline &&
+      /strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\)/i.test(
+        finalStatement?.sql ?? "",
+      )
+    ) {
+      const deadline = finalStatement.params?.find(
+        (value) =>
+          typeof value === "string" &&
+          /^\d{4}-\d{2}-\d{2}T/.test(value),
+      );
+      if (!deadline || Date.now() >= Date.parse(deadline)) {
+        throw new Error("D1_COMMIT_DEADLINE_GUARD");
+      }
+    }
+    this.committedStatements = [...statements];
     return statements.map(() => ({
       success: true,
       results: [],
@@ -301,6 +334,15 @@ test("saveItinerary atomically replaces the header and complete node set", async
     ),
   );
   assert.ok(
+    fake.batchedStatements.some(
+      (statement) =>
+        /delete from "itineraries"/i.test(statement.sql) &&
+        /not in/i.test(statement.sql) &&
+        statement.params.includes(9),
+    ),
+    "new itinerary batch must replace rows older than the newest nine",
+  );
+  assert.ok(
     fake.batchedStatements.some((statement) =>
       /delete from "itinerary_nodes"/i.test(statement.sql),
     ),
@@ -311,6 +353,52 @@ test("saveItinerary atomically replaces the header and complete node set", async
     ).length,
     2,
   );
+});
+
+test("saveItinerary never persists a declared ephemeral current-origin location", async () => {
+  const fake = new FakeD1();
+  env.DB = fake;
+  const transientItinerary = itinerary();
+  transientItinerary.nodes[0].location = {
+    latitude: 37.5665,
+    longitude: 126.978,
+    label: "일회성 현재 위치",
+    areaCode: "11",
+    sigunguCode: "11110",
+  };
+
+  const result = await saveItinerary({
+    sessionId: "00000000-0000-4000-8000-000000000222",
+    itinerary: transientItinerary,
+    ephemeralLocationNodeIds: ["changeable"],
+  });
+
+  assert.equal(result.saved, true);
+  if (!result.saved) return;
+  assert.equal(result.itinerary.nodes[0].location, undefined);
+  const nodeInserts = fake.batchedStatements.filter((statement) =>
+    /insert into "itinerary_nodes"/i.test(statement.sql),
+  );
+  assert.equal(nodeInserts.length, 2);
+  const transientBinds = JSON.stringify(nodeInserts[0].params);
+  assert.doesNotMatch(transientBinds, /37\.5665|126\.978|일회성 현재 위치/);
+  const fixedBinds = JSON.stringify(nodeInserts[1].params);
+  assert.match(fixedBinds, /37\.57|126\.98|예약 장소/);
+});
+
+test("locked nodes cannot be mislabeled as ephemeral", async () => {
+  const fake = new FakeD1();
+  env.DB = fake;
+  const result = await saveItinerary({
+    sessionId: "00000000-0000-4000-8000-000000000222",
+    itinerary: itinerary(),
+    ephemeralLocationNodeIds: ["fixed"],
+  });
+  assert.deepEqual(result, {
+    saved: false,
+    reason: "INVALID_EPHEMERAL_LOCATION_NODE",
+  });
+  assert.equal(fake.batchCalls, 0);
 });
 
 test("a D1 batch failure is returned as an unpersisted recovery", async () => {
@@ -324,6 +412,111 @@ test("a D1 batch failure is returned as an unpersisted recovery", async () => {
     reason: "DB_UNAVAILABLE",
   });
   assert.equal(fake.batchCalls, 1);
+});
+
+test("a delayed D1 batch rolls back at the commit deadline", async () => {
+  const fake = new FakeD1({
+    batchDelayMs: 80,
+    enforceCommitDeadline: true,
+  });
+  env.DB = fake;
+
+  const result = await persistRecovery({
+    ...recoveryParams(),
+    commitDeadlineAt: Date.now() + 50,
+  });
+
+  assert.deepEqual(result, {
+    persisted: false,
+    reason: "RECOVERY_DEADLINE_EXCEEDED",
+  });
+  assert.equal(fake.batchCalls, 1);
+  assert.equal(fake.committedStatements.length, 0);
+  assert.match(
+    fake.batchedStatements.at(-1)?.sql ?? "",
+    /ELSE NULL/i,
+  );
+});
+
+test("administrative scope validation requires every stored official district", async () => {
+  env.DB = new FakeD1({
+    allResults: [
+      [
+        ["11110", "11"],
+        ["26350", "26"],
+      ],
+    ],
+  });
+  assert.equal(
+    await areKnownAdministrativeScopes([
+      { regionCode: "11", districtCode: "11110" },
+      { regionCode: "26", districtCode: "26350" },
+      { regionCode: "11", districtCode: "11110" },
+    ]),
+    true,
+  );
+
+  env.DB = new FakeD1({
+    allResults: [[ ["11110", "11"] ]],
+  });
+  assert.equal(
+    await areKnownAdministrativeScopes([
+      { regionCode: "11", districtCode: "11110" },
+      { regionCode: "26", districtCode: "26350" },
+    ]),
+    false,
+  );
+});
+
+function completeHealthAudits() {
+  return REQUIRED_KTO_HEALTH_SOURCES.map((apiName) => ({
+    apiName,
+    operation: "contractProbe",
+    status: "success",
+    latencyMs: 10,
+    resultCount: 1,
+    totalCount: 1,
+    fieldsUsed: ["code"],
+  }));
+}
+
+test("KTO health persistence is one all-or-nothing eight-source batch", async () => {
+  const fake = new FakeD1();
+  env.DB = fake;
+  assert.deepEqual(await persistHealth(completeHealthAudits()), {
+    persisted: true,
+  });
+  assert.equal(fake.batchCalls, 1);
+  assert.equal(fake.batchedStatements.length, 8);
+  assert.equal(fake.executedStatements.length, 0);
+  const checkedAtValues = fake.batchedStatements.map((statement) =>
+    statement.params?.find(
+      (value) =>
+        typeof value === "string" &&
+        /^\d{4}-\d{2}-\d{2}T/.test(value),
+    ),
+  );
+  assert.equal(new Set(checkedAtValues).size, 1);
+});
+
+test("KTO health batch failure cannot leave a partial fresh generation", async () => {
+  const fake = new FakeD1({ failBatch: true });
+  env.DB = fake;
+  assert.deepEqual(await persistHealth(completeHealthAudits()), {
+    persisted: false,
+    reason: "DB_UNAVAILABLE",
+  });
+  assert.equal(fake.batchCalls, 1);
+  assert.equal(fake.committedStatements.length, 0);
+
+  const incomplete = completeHealthAudits().slice(0, 7);
+  const rejected = new FakeD1();
+  env.DB = rejected;
+  assert.deepEqual(await persistHealth(incomplete), {
+    persisted: false,
+    reason: "INVALID_HEALTH_SNAPSHOT",
+  });
+  assert.equal(rejected.batchCalls, 0);
 });
 
 function executionQueryResults() {
@@ -363,6 +556,7 @@ function executionQueryResults() {
           "공식 대체 장소",
           scheduleDiff,
           1,
+          null,
         ],
       ],
       [[itineraryId]],
@@ -634,31 +828,185 @@ test("execution activation batch failure leaves the application uncommitted", as
   assert.equal(fake.batchCalls, 1);
 });
 
-test("recovery persistence strips exact route and location coordinates from D1 bind values", async () => {
-  const fake = new FakeD1();
+test("execution activation uses the encrypted verified snapshot without a second KTO dependency", async () => {
+  const previousSigningKey = process.env.SESSION_SIGNING_KEY;
+  process.env.SESSION_SIGNING_KEY =
+    "m7Q2vK9xD4pL8rT1wN6cF3hJ0sA5uE2zB7gY4kM";
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw new Error("upstream must not be called");
+  };
+  try {
+    const { encryptApplicationSnapshot } = await import(
+      "../lib/recovery/application-snapshot.ts"
+    );
+    const fixture = executionQueryResults();
+    fixture.allResults[2][0][5] =
+      await encryptApplicationSnapshot(
+        {
+          contentId: "candidate-1",
+          title: "공식 대체 장소",
+          address: "서울 종로구",
+          latitude: 37.57,
+          longitude: 126.98,
+          generatedAt: "2026-07-16T01:30:00.000Z",
+        },
+        fixture.runId,
+        fixture.optionId,
+      );
+    const fake = new FakeD1({ allResults: fixture.allResults });
+    env.DB = fake;
+
+    const result = await activateRecoveryExecution({
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      optionId: fixture.optionId,
+    });
+
+    assert.equal(result.activated, true);
+    assert.equal(fetchCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousSigningKey === undefined) {
+      delete process.env.SESSION_SIGNING_KEY;
+    } else {
+      process.env.SESSION_SIGNING_KEY = previousSigningKey;
+    }
+  }
+});
+
+test("execution activation distinguishes an unavailable detail fallback", async () => {
+  const fixture = executionQueryResults();
+  const fake = new FakeD1({ allResults: fixture.allResults });
+  env.DB = fake;
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.KTO_SERVICE_KEY;
+  process.env.KTO_SERVICE_KEY = "execution-test-key";
+  globalThis.fetch = async () => {
+    throw new Error("KTO unavailable");
+  };
+  try {
+    const result = await activateRecoveryExecution({
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      optionId: fixture.optionId,
+    });
+    assert.deepEqual(result, {
+      activated: false,
+      reason: "UPSTREAM_UNAVAILABLE",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.KTO_SERVICE_KEY;
+    else process.env.KTO_SERVICE_KEY = originalKey;
+  }
+});
+
+test("execution activation rejects original waypoints outside Korea bounds", async () => {
+  const fixture = executionQueryResults();
+  fixture.allResults[4][1][9] = 0;
+  const fake = new FakeD1({ allResults: fixture.allResults });
   env.DB = fake;
 
-  const result = await persistRecovery(
-    recoveryParamsWithRawRouteGeometry(),
+  const result = await withOfficialKtoDetail(() =>
+    activateRecoveryExecution({
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      optionId: fixture.optionId,
+    }),
   );
 
-  assert.deepEqual(result, { persisted: true });
-  const serializedBinds = JSON.stringify(
-    fake.batchedStatements.flatMap(
-      (statement) => statement.params ?? [],
-    ),
-  );
-  assert.match(serializedBinds, /distanceMeters/);
-  for (const forbidden of [
-    "geometry",
-    "routeGeometry",
-    "coordinates",
-    "latitude",
-    "longitude",
-    "37.56789",
-    "126.98123",
-  ]) {
-    assert.doesNotMatch(serializedBinds, new RegExp(forbidden, "i"));
+  assert.deepEqual(result, {
+    activated: false,
+    reason: "INVALID_STATE",
+  });
+  assert.equal(fake.batchCalls, 0);
+});
+
+test("execution activation never bypasses a corrupt encrypted snapshot", async () => {
+  const fixture = executionQueryResults();
+  fixture.allResults[2][0][5] = JSON.stringify({
+    version: 1,
+    iv: "tampered",
+    ciphertext: "tampered",
+  });
+  const fake = new FakeD1({ allResults: fixture.allResults });
+  env.DB = fake;
+
+  const result = await activateRecoveryExecution({
+    sessionId: fixture.sessionId,
+    runId: fixture.runId,
+    optionId: fixture.optionId,
+  });
+
+  assert.deepEqual(result, {
+    activated: false,
+    reason: "INVALID_STATE",
+  });
+  assert.equal(fake.batchCalls, 0);
+});
+
+test("recovery persistence fails closed when no stable snapshot key exists", async () => {
+  const previousSession = process.env.SESSION_SIGNING_KEY;
+  const previousOps = process.env.OPS_API_KEY;
+  delete process.env.SESSION_SIGNING_KEY;
+  delete process.env.OPS_API_KEY;
+  const fake = new FakeD1();
+  env.DB = fake;
+  try {
+    const result = await persistRecovery(
+      recoveryParamsWithRawRouteGeometry(),
+    );
+    assert.deepEqual(result, {
+      persisted: false,
+      reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
+    });
+    assert.equal(fake.batchCalls, 0);
+  } finally {
+    if (previousSession === undefined) delete process.env.SESSION_SIGNING_KEY;
+    else process.env.SESSION_SIGNING_KEY = previousSession;
+    if (previousOps === undefined) delete process.env.OPS_API_KEY;
+    else process.env.OPS_API_KEY = previousOps;
+  }
+});
+
+test("recovery persistence strips exact route and location coordinates from D1 bind values", async () => {
+  const previousSigningKey = process.env.SESSION_SIGNING_KEY;
+  process.env.SESSION_SIGNING_KEY =
+    "R5nC1xV8mQ3pT7kD2wL9hF4sJ0aE6uB1zG5yK8dP";
+  const fake = new FakeD1();
+  env.DB = fake;
+  try {
+    const result = await persistRecovery(
+      recoveryParamsWithRawRouteGeometry(),
+    );
+
+    assert.deepEqual(result, { persisted: true });
+    const serializedBinds = JSON.stringify(
+      fake.batchedStatements.flatMap(
+        (statement) => statement.params ?? [],
+      ),
+    );
+    assert.match(serializedBinds, /distanceMeters/);
+    for (const forbidden of [
+      "geometry",
+      "routeGeometry",
+      "coordinates",
+      "latitude",
+      "longitude",
+      "37.56789",
+      "126.98123",
+    ]) {
+      assert.doesNotMatch(serializedBinds, new RegExp(forbidden, "i"));
+    }
+  } finally {
+    if (previousSigningKey === undefined) {
+      delete process.env.SESSION_SIGNING_KEY;
+    } else {
+      process.env.SESSION_SIGNING_KEY = previousSigningKey;
+    }
   }
 });
 
@@ -831,6 +1179,7 @@ test("recover API and UI expose persistence as an action gate", async () => {
     /persistence:\s*\{\s*status:\s*"persisted",\s*runId:\s*result\.requestId/,
   );
   assert.match(route, /X-Recovery-Persisted",\s*"false"/);
+  assert.match(route, /X-Recovery-Persisted[\s\S]{0,100}"unknown"/);
   assert.match(route, /X-Recovery-Persisted",\s*"true"/);
   assert.doesNotMatch(route, /result\.warnings\.push/);
 

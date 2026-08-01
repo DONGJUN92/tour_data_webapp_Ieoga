@@ -1,33 +1,60 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import {
+  areKnownAdministrativeScopes,
   getSessionItineraries,
   saveItinerary,
 } from "@/lib/db/repository";
+import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import {
   getOrCreateSession,
   jsonResponse,
+  readSessionId,
+  requireSessionSigning,
   setSessionCookie,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
+import {
+  analysisDistrictCode,
+  analysisRegionCode,
+} from "@/lib/kto/registry";
 import { itineraryRegistrationSchema } from "@/lib/recovery/schema";
 
 export const dynamic = "force-dynamic";
 
-const wrappedRegistrationSchema = z.object({
-  itinerary: itineraryRegistrationSchema,
-  analyticsConsent: z.boolean().optional(),
-});
-
-function sessionIdFrom(request: NextRequest): string | undefined {
-  const sessionId = request.cookies.get("ieoga_session")?.value;
-  return sessionId && /^[a-f0-9-]{32,40}$/i.test(sessionId)
-    ? sessionId
-    : undefined;
-}
+const wrappedRegistrationSchema = z
+  .object({
+    itinerary: itineraryRegistrationSchema,
+    analyticsConsent: z.boolean().optional(),
+    ephemeralLocationNodeIds: z
+      .array(
+        z.string().trim().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
+      )
+      .max(30)
+      .optional()
+      .default([]),
+  })
+  .superRefine((value, context) => {
+    const nodes = new Map(
+      value.itinerary.nodes.map((node) => [node.id, node]),
+    );
+    for (const [index, nodeId] of value.ephemeralLocationNodeIds.entries()) {
+      const node = nodes.get(nodeId);
+      if (!node || node.locked || node.reservation) {
+        context.addIssue({
+          code: "custom",
+          path: ["ephemeralLocationNodeIds", index],
+          message:
+            "일회성 위치 노드는 일정에 존재하는 변경 가능 노드여야 합니다.",
+        });
+      }
+    }
+  });
 
 export async function GET(request: NextRequest) {
-  const sessionId = sessionIdFrom(request);
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
+  const sessionId = readSessionId(request);
   if (!sessionId) {
     return jsonResponse({
       status: "empty",
@@ -57,6 +84,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
   const rate = allowRequest(requestRateKey(request, "itineraries"), 20);
   if (!rate.allowed) {
     const response = jsonResponse(
@@ -69,6 +98,31 @@ export async function POST(request: NextRequest) {
       { status: 429 },
     );
     response.headers.set("Retry-After", String(rate.retryAfterSeconds));
+    return response;
+  }
+  const durableRate = await allowDurableRequest(
+    request,
+    "itineraries",
+    20,
+  );
+  if (!durableRate.allowed) {
+    const response = jsonResponse(
+      {
+        error: {
+          code: durableRate.unavailable
+            ? "RATE_LIMIT_UNAVAILABLE"
+            : "RATE_LIMITED",
+          message: durableRate.unavailable
+            ? "일정 저장 요청 한도를 확인할 수 없어 안전하게 중단했습니다."
+            : "일정 저장 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      },
+      { status: durableRate.unavailable ? 503 : 429 },
+    );
+    response.headers.set(
+      "Retry-After",
+      String(durableRate.retryAfterSeconds),
+    );
     return response;
   }
 
@@ -131,10 +185,52 @@ export async function POST(request: NextRequest) {
   const analyticsConsent = wrapped.success
     ? wrapped.data.analyticsConsent
     : undefined;
+  const ephemeralNodeIds = new Set(
+    wrapped.success ? wrapped.data.ephemeralLocationNodeIds : [],
+  );
+  const administrativeScopes = itinerary.nodes.flatMap((node) => {
+    if (ephemeralNodeIds.has(node.id) || !node.location) return [];
+    const regionCode = analysisRegionCode(node.location.areaCode);
+    const districtCode = analysisDistrictCode(
+      node.location.areaCode,
+      node.location.sigunguCode,
+    );
+    return regionCode && districtCode
+      ? [{ regionCode, districtCode }]
+      : [];
+  });
+  try {
+    if (!(await areKnownAdministrativeScopes(administrativeScopes))) {
+      return jsonResponse(
+        {
+          error: {
+            code: "UNKNOWN_REGION_SCOPE",
+            message:
+              "일정 장소의 시군구를 최신 공식 행정구역 기준표에서 확인하지 못했습니다.",
+          },
+        },
+        { status: 400 },
+      );
+    }
+  } catch {
+    return jsonResponse(
+      {
+        error: {
+          code: "REGION_REFERENCE_UNAVAILABLE",
+          message:
+            "공식 행정구역 기준표를 확인할 수 없어 일정을 저장하지 않았습니다.",
+        },
+      },
+      { status: 503 },
+    );
+  }
   const saved = await saveItinerary({
     sessionId: session.id,
     itinerary,
     analyticsConsent,
+    ephemeralLocationNodeIds: wrapped.success
+      ? wrapped.data.ephemeralLocationNodeIds
+      : undefined,
   });
   if (!saved.saved) {
     return jsonResponse(
@@ -144,10 +240,19 @@ export async function POST(request: NextRequest) {
           message:
             saved.reason === "NOT_FOUND"
               ? "수정할 일정을 찾지 못했습니다."
+              : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
+                ? "일회성 현재 위치는 변경 가능한 일정 노드에만 지정할 수 있습니다."
               : "현재 일정을 저장하지 못했습니다.",
         },
       },
-      { status: saved.reason === "NOT_FOUND" ? 404 : 503 },
+      {
+        status:
+          saved.reason === "NOT_FOUND"
+            ? 404
+            : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
+              ? 400
+              : 503,
+      },
     );
   }
 
@@ -155,7 +260,10 @@ export async function POST(request: NextRequest) {
     { status: "created", itinerary: saved.itinerary },
     { status: 201 },
   );
-  response.headers.set("X-RateLimit-Remaining", String(rate.remaining));
+  response.headers.set(
+    "X-RateLimit-Remaining",
+    String(Math.min(rate.remaining, durableRate.remaining)),
+  );
   if (session.isNew) setSessionCookie(response, session.id);
   return response;
 }

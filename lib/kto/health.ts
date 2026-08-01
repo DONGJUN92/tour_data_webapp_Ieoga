@@ -172,13 +172,13 @@ export async function checkAllKtoServices(): Promise<{
     uniqueSources.set(source.apiName, source);
   }
   const normalized = [...uniqueSources.values()];
-  const errorCount = normalized.filter(
-    (source) => source.status === "error",
+  const successfulCount = normalized.filter(
+    (source) => source.status === "live" || source.status === "empty",
   ).length;
   const overall =
-    errorCount === 0 && normalized.length === 8
+    successfulCount === 8 && normalized.length === 8
       ? "ready"
-      : errorCount < normalized.length
+      : successfulCount > 0
         ? "degraded"
         : "unavailable";
 

@@ -1,0 +1,76 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      # Public test-only material, exactly 32 ASCII bytes. Never reuse it in a
+      # deployed environment.
+      SESSION_SIGNING_KEY: "ieoga-ci-only-session-key-000001"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.21.0"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Reject production dependency vulnerabilities
+        run: npm run audit:production
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build production worker
+        run: npm run build
+
+      - name: Run unit and contract tests
+        run: npm run test:unit
+
+      - name: Enforce coverage thresholds
+        run: npm run test:coverage
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run viewport, keyboard, and accessibility tests
+        run: npm run test:e2e
+
+      - name: Run Lighthouse quality budgets
+        run: npx --yes @lhci/cli@0.15.1 autorun
+
+      - name: Preserve browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-quality-diagnostics
+          path: |
+            playwright-report
+            test-results
+            .lighthouseci
+          if-no-files-found: ignore
+          retention-days: 7

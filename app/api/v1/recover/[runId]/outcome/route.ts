@@ -1,6 +1,10 @@
 import { NextRequest } from "next/server";
 import { recordRecoveryOutcome } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
 import { recoveryOutcomeSchema } from "@/lib/recovery/schema";
 
@@ -10,12 +14,13 @@ export async function POST(
   request: NextRequest,
   context: { params: Promise<{ runId: string }> },
 ) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
   const { runId } = await context.params;
-  const sessionId = request.cookies.get("ieoga_session")?.value;
+  const sessionId = readSessionId(request);
   if (
     !/^[a-zA-Z0-9_-]{8,80}$/.test(runId) ||
-    !sessionId ||
-    !/^[a-f0-9-]{32,40}$/i.test(sessionId)
+    !sessionId
   ) {
     return jsonResponse(
       {

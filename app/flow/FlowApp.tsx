@@ -1,6 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import type {
+  JourneyExecution,
+  JourneyExecutionStep,
+} from "@/lib/recovery/execution";
+import {
+  MAX_APPOINTMENT_MINUTES,
+  MIN_APPOINTMENT_MINUTES,
+  appointmentAfterMinutesInKorea,
+  appointmentMinutesFromNow,
+  parseKoreaCoordinate,
+} from "../product-app-model";
 import styles from "./flow.module.css";
 
 /* Bridge recovery: the traveller answers three questions (what happened,
@@ -15,6 +27,7 @@ type Step =
   | "appointment"
   | "searching"
   | "options"
+  | "active"
   | "empty"
   | "error";
 
@@ -44,6 +57,9 @@ type PlaceHit = {
   longitude: number;
   areaCode?: string;
   sigunguCode?: string;
+  provider?: "kto" | "kakao_local" | "forward_geocoder";
+  sourceLabel: string;
+  retention: "persistable" | "ephemeral";
 };
 
 /* The engine returns `sources` as plain API names and `dataContributions` as
@@ -62,14 +78,35 @@ type RecoveryOption = {
   id: string;
   title: string;
   address?: string;
+  latitude: number;
+  longitude: number;
+  imageUrl?: string;
   strategyLabel?: string;
   distanceMeters?: number;
   estimatedTravelMinutes?: number;
+  availability?: unknown;
+  indoorSuitability?: unknown;
+  accessibility?: unknown;
+  crowd?: unknown;
+  evidenceGaps?: Array<{ code?: string; note?: string }>;
+  confirmationRequired?: boolean;
   why?: string[];
   sources?: string[];
   dataContributions?: DataContribution[];
   purposePreservation?: { statement?: string };
 };
+
+type Language = "ko" | "en";
+
+class RequestError extends Error {
+  requestId?: string;
+
+  constructor(message: string, requestId?: string) {
+    super(message);
+    this.name = "RequestError";
+    this.requestId = requestId;
+  }
+}
 
 /* The eight KTO services this product is built on. Judging distinguishes
    official tourism data from supporting third-party providers, so the ledger
@@ -103,85 +140,108 @@ function appliedSources(option: RecoveryOption): {
 }
 
 /* Engine reason codes rendered as something a traveller can act on. */
-const REJECTION_LABELS: Record<string, string> = {
-  TIME_LIMIT: "약속 시각까지 왕복이 어려움",
-  DISTANCE_LIMIT: "설정한 이동 거리 초과",
-  TRAVEL_PURPOSE_MISMATCH: "원래 일정의 목적과 맞지 않음",
-  SAME_AS_DISRUPTED_PLACE: "지금 있는 곳과 같은 장소",
-  OFFICIALLY_CLOSED: "그 시각에 운영하지 않음",
-  CONCENTRATION_HIGH: "혼잡할 것으로 예측됨",
-  ROUTE_UNAVAILABLE: "도보 경로를 확인하지 못함",
-  NEXT_FIXED_APPOINTMENT_AT_RISK: "다음 약속 도착이 위태로움",
-  INVALID_COORDINATE: "공식 좌표를 확인하지 못함",
+const REJECTION_LABELS: Record<string, { ko: string; en: string }> = {
+  TIME_LIMIT: {
+    ko: "약속 시각까지 왕복이 어려움",
+    en: "Not enough time before the appointment",
+  },
+  DISTANCE_LIMIT: {
+    ko: "설정한 이동 거리 초과",
+    en: "Beyond your travel-distance limit",
+  },
+  TRAVEL_PURPOSE_MISMATCH: {
+    ko: "원래 일정의 목적과 맞지 않음",
+    en: "Does not preserve the original travel purpose",
+  },
+  SAME_AS_DISRUPTED_PLACE: {
+    ko: "지금 있는 곳과 같은 장소",
+    en: "Same as the disrupted place",
+  },
+  OFFICIALLY_CLOSED: {
+    ko: "그 시각에 운영하지 않음",
+    en: "Officially closed at that time",
+  },
+  CONCENTRATION_HIGH: {
+    ko: "혼잡할 것으로 예측됨",
+    en: "Forecast to be highly concentrated",
+  },
+  ROUTE_UNAVAILABLE: {
+    ko: "도보 경로를 확인하지 못함",
+    en: "Walking route could not be verified",
+  },
+  NEXT_FIXED_APPOINTMENT_AT_RISK: {
+    ko: "다음 약속 도착이 위태로움",
+    en: "Next appointment would be at risk",
+  },
+  INVALID_COORDINATE: {
+    ko: "공식 좌표를 확인하지 못함",
+    en: "Official coordinates could not be verified",
+  },
 };
 
 const INCIDENTS: {
   value: Incident;
   mark: string;
   title: string;
+  titleEn: string;
   sub: string;
+  subEn: string;
 }[] = [
   {
     value: "rain",
     mark: "🌧️",
     title: "비가 와요",
+    titleEn: "It is raining",
     sub: "실내로 바꿀 수 있는 곳을 먼저 찾아요",
+    subEn: "Find a verified indoor alternative first",
   },
   {
     value: "delay",
     mark: "⏱️",
     title: "일정이 밀렸어요",
+    titleEn: "My schedule slipped",
     sub: "다음 약속에 늦지 않는 곳만 찾아요",
+    subEn: "Only show places that protect the next appointment",
   },
   {
     value: "crowd",
     mark: "👥",
     title: "사람이 너무 많아요",
+    titleEn: "It is too crowded",
     sub: "덜 붐빌 것으로 예측된 곳을 찾아요",
+    subEn: "Find a place forecast to be less concentrated",
   },
   {
     value: "less_walk",
     mark: "🦶",
     title: "걷기가 힘들어요",
+    titleEn: "Walking is difficult",
     sub: "이동 부담이 적은 곳을 찾아요",
+    subEn: "Find an option with a lower mobility burden",
   },
 ];
 
-const AUDIENCES: { value: Audience; label: string }[] = [
-  { value: "general", label: "특별한 조건 없음" },
-  { value: "stroller", label: "유모차와 함께" },
-  { value: "wheelchair", label: "휠체어 이용" },
-  { value: "senior", label: "고령자와 함께" },
+const AUDIENCES: { value: Audience; label: string; labelEn: string }[] = [
+  {
+    value: "general",
+    label: "특별한 조건 없음",
+    labelEn: "No additional mobility need",
+  },
+  { value: "stroller", label: "유모차와 함께", labelEn: "With a stroller" },
+  {
+    value: "wheelchair",
+    label: "휠체어 이용",
+    labelEn: "Wheelchair user",
+  },
+  { value: "senior", label: "고령자와 함께", labelEn: "With an older adult" },
 ];
 
 /* The service is Korea-only, so appointment times are always read as KST
    regardless of the device clock. */
 const KST_OFFSET = "+09:00";
 
-function kstNow(): Date {
-  const now = new Date();
-  return new Date(
-    now.toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
-  );
-}
-
-function kstDateString(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
 function kstIso(date: string, time: string): string {
   return `${date}T${time}:00${KST_OFFSET}`;
-}
-
-function defaultAppointmentTime(): string {
-  const later = kstNow();
-  later.setMinutes(later.getMinutes() + 150);
-  return `${String(later.getHours()).padStart(2, "0")}:${String(
-    later.getMinutes(),
-  ).padStart(2, "0")}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -202,23 +262,106 @@ function readText(row: Record<string, unknown> | null, keys: string[]): string {
   return "";
 }
 
-async function postJson(url: string, body: unknown): Promise<unknown> {
+function requestIdFrom(
+  response: Response,
+  payload: Record<string, unknown> | null,
+): string {
+  return (
+    response.headers.get("x-request-id") ||
+    readText(payload, ["requestId"]) ||
+    readText(asRecord(payload?.error), ["requestId"]) ||
+    ""
+  );
+}
+
+function requestErrorText(error: unknown, language: Language): string {
+  const requestError = error as RequestError;
+  const message =
+    requestError?.message ||
+    (language === "ko"
+      ? "요청을 처리하지 못했습니다."
+      : "The request could not be completed.");
+  return requestError?.requestId && !message.includes(requestError.requestId)
+    ? `${message} · ${language === "ko" ? "요청 ID" : "Request ID"} ${requestError.requestId}`
+    : message;
+}
+
+async function postJson(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    const root = asRecord(payload);
     const message =
-      readText(asRecord(asRecord(payload)?.error), ["message"]) ||
+      readText(asRecord(root?.error), ["message"]) ||
       "요청을 처리하지 못했습니다.";
-    throw new Error(message);
+    throw new RequestError(message, requestIdFrom(response, root) || undefined);
   }
   return payload;
 }
 
+function evidenceText(value: unknown, language: Language): string {
+  const record = asRecord(value);
+  const status = readText(record, ["status"]);
+  const note = readText(record, ["note"]);
+  if (note) return note;
+  const labels: Record<string, { ko: string; en: string }> = {
+    confirmed_open: { ko: "운영 확인", en: "Open hours verified" },
+    official_hours_unstructured: {
+      ko: "공식 운영정보 확인 필요",
+      en: "Check the official operating information",
+    },
+    verified: { ko: "공식 정보 확인", en: "Verified by official data" },
+    available: { ko: "예측 정보 있음", en: "Forecast available" },
+    unavailable: { ko: "정보 미확인", en: "Not verified" },
+    type_based: {
+      ko: "콘텐츠 유형 기반 실내 판정",
+      en: "Indoor fit inferred from the content type",
+    },
+    not_required: { ko: "이번 요청의 필수 조건 아님", en: "Not required" },
+  };
+  return labels[status]?.[language] || (status ? status.replaceAll("_", " ") : "—");
+}
+
+function formatKstTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function navigationUrl(step: {
+  title: string;
+  latitude: number;
+  longitude: number;
+}): string {
+  return `https://map.kakao.com/link/to/${encodeURIComponent(step.title)},${step.latitude},${step.longitude}`;
+}
+
+function executionRole(step: JourneyExecutionStep, language: Language): string {
+  const roles = {
+    replacement: { ko: "바뀐 일정", en: "Recovery stop" },
+    next_fixed: { ko: "다음 고정 일정", en: "Next fixed appointment" },
+    preserved: { ko: "보존 일정", en: "Preserved stop" },
+    remaining_original: { ko: "원래 일정", en: "Original itinerary" },
+  };
+  return roles[step.role][language];
+}
+
 export default function FlowApp() {
+  const [language, setLanguage] = useState<Language>("ko");
   const [step, setStep] = useState<Step>("incident");
   const [goingBack, setGoingBack] = useState(false);
 
@@ -231,8 +374,12 @@ export default function FlowApp() {
   const [originHits, setOriginHits] = useState<PlaceHit[]>([]);
   const [originSearchBusy, setOriginSearchBusy] = useState(false);
 
-  const [apptDate] = useState(() => kstDateString(kstNow()));
-  const [apptTime, setApptTime] = useState(defaultAppointmentTime);
+  /* Keep the server and first client render deterministic, then set the
+     promised +150 minute KST default after hydration. This still crosses
+     midnight correctly without a rare minute-boundary hydration mismatch. */
+  const [appointment, setAppointment] = useState({ date: "", time: "" });
+  const apptDate = appointment.date;
+  const apptTime = appointment.time;
   const [apptQuery, setApptQuery] = useState("");
   const [apptHits, setApptHits] = useState<PlaceHit[]>([]);
   const [apptPlace, setApptPlace] = useState<PlaceHit | null>(null);
@@ -246,34 +393,102 @@ export default function FlowApp() {
     Array<{ reasonCode: string; count: number }>
   >([]);
   const [errorText, setErrorText] = useState("");
+  const [errorRequestId, setErrorRequestId] = useState("");
+  const [recoveryRequestId, setRecoveryRequestId] = useState("");
+  const [recoveryPersisted, setRecoveryPersisted] = useState(false);
+  const [selectedOptionId, setSelectedOptionId] = useState("");
+  const [execution, setExecution] = useState<JourneyExecution | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMessage, setActionMessage] = useState("");
+  const [shareMessage, setShareMessage] = useState("");
   const searchAbort = useRef<AbortController | null>(null);
+  const tr = useCallback(
+    (ko: string, en: string) => (language === "ko" ? ko : en),
+    [language],
+  );
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+    return () => {
+      document.documentElement.lang = "ko";
+    };
+  }, [language]);
 
   const go = useCallback((next: Step, back = false) => {
     setGoingBack(back);
     setStep(next);
   }, []);
 
-  const stepIndex = Math.max(0, STEP_ORDER.indexOf(step));
+  const stepIndex =
+    step === "active"
+      ? STEP_ORDER.length - 1
+      : Math.max(0, STEP_ORDER.indexOf(step));
+  const selectedOption =
+    options.find((option) => option.id === selectedOptionId) ?? null;
+  const originSelectionCurrent = Boolean(
+    origin &&
+      (!originQuery.trim() || originQuery.trim() === origin.label.trim()),
+  );
+  const appointmentSelectionCurrent = Boolean(
+    apptPlace && apptQuery.trim() === apptPlace.title.trim(),
+  );
+  const verifiedOptionCount = options.filter(
+    (option) =>
+      !option.confirmationRequired &&
+      (option.evidenceGaps?.length ?? 0) === 0,
+  ).length;
+  const currentExecutionStep = execution
+    ? execution.steps.find(
+        (entry) => entry.sequence === execution.currentStepSequence,
+      ) ?? execution.steps.find((entry) => entry.status === "current")
+    : undefined;
+  const nextFixedExecutionStep = execution?.steps.find(
+    (entry) => entry.sequence === execution.nextFixedStepSequence,
+  );
 
   /* The remaining window shrinks in real time, so the clock lives in state
      rather than being read during render. It stays null until mount so the
      server and first client render agree. */
   const [nowMs, setNowMs] = useState<number | null>(null);
   useEffect(() => {
-    const tick = () => setNowMs(Date.now());
-    tick();
-    const timer = window.setInterval(tick, 30_000);
-    return () => window.clearInterval(timer);
+    const initialize = window.setTimeout(() => {
+      const now = new Date();
+      setNowMs(now.getTime());
+      setAppointment((current) =>
+        current.date && current.time
+          ? current
+          : appointmentAfterMinutesInKorea(now, 150),
+      );
+    }, 0);
+    const clock = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => {
+      window.clearTimeout(initialize);
+      window.clearInterval(clock);
+    };
   }, []);
 
   /* Minutes between now and the appointment — the window the engine may
      spend. Null while the clock is still unknown. */
   const availableMinutes = useMemo(() => {
     if (nowMs == null) return null;
-    const target = Date.parse(kstIso(apptDate, apptTime));
-    if (!Number.isFinite(target)) return null;
-    return Math.floor((target - nowMs) / 60_000);
+    return appointmentMinutesFromNow(apptDate, apptTime, nowMs);
   }, [apptDate, apptTime, nowMs]);
+  const appointmentDateBounds = useMemo(() => {
+    if (nowMs == null) return null;
+    const now = new Date(nowMs);
+    return {
+      minimum: appointmentAfterMinutesInKorea(now, 0).date,
+      maximum: appointmentAfterMinutesInKorea(
+        now,
+        MAX_APPOINTMENT_MINUTES,
+      ).date,
+    };
+  }, [nowMs]);
+  const appointmentWindowInvalid =
+    nowMs != null &&
+    (availableMinutes == null ||
+      availableMinutes < MIN_APPOINTMENT_MINUTES ||
+      availableMinutes > MAX_APPOINTMENT_MINUTES);
 
 
   /* The dominant reason decides what to say. A schedule with no room is a
@@ -283,40 +498,56 @@ export default function FlowApp() {
     const top = rejectionSummary[0]?.reasonCode;
     if (availableMinutes != null && availableMinutes < 60) {
       return {
-        headline:
+        headline: tr(
           "약속까지 남은 시간이 짧아 머물 수 있는 곳이 없습니다. 약속 시각을 늦추면 다시 찾아볼 수 있어요.",
+          "There is not enough time for a safe stop. Move the appointment later to search again.",
+        ),
       };
     }
     if (top === "TIME_LIMIT" || top === "NEXT_FIXED_APPOINTMENT_AT_RISK") {
       return {
-        headline:
+        headline: tr(
           "다녀오면 다음 약속에 늦습니다. 약속 시각을 늦추거나 더 가까운 곳을 찾아보세요.",
+          "Every candidate would make you late. Move the appointment later or search from a closer origin.",
+        ),
       };
     }
     if (top === "DISTANCE_LIMIT") {
       return {
-        headline: "이동 거리 조건 안에서는 대안이 없었습니다.",
+        headline: tr(
+          "이동 거리 조건 안에서는 대안이 없었습니다.",
+          "No alternative met your travel-distance limit.",
+        ),
       };
     }
     if (top === "OFFICIALLY_CLOSED") {
       return {
-        headline:
+        headline: tr(
           "그 시간대에 운영하는 곳이 없었습니다. 시간을 바꾸면 결과가 달라질 수 있어요.",
+          "No verified place is open in that time window. Change the time and try again.",
+        ),
       };
     }
     return {
-      headline:
+      headline: tr(
         "억지로 추천하지 않습니다. 확인하지 못한 후보는 보여드리지 않습니다.",
+        "We do not force a recommendation. Unverified candidates stay out of the safe list.",
+      ),
     };
-  }, [rejectionSummary, availableMinutes]);
+  }, [rejectionSummary, availableMinutes, tr]);
 
   const detectOrigin = useCallback(() => {
     if (!navigator.geolocation) {
-      setOriginNote("이 브라우저에서는 위치를 확인할 수 없습니다.");
+      setOriginNote(
+        tr(
+          "이 브라우저에서는 위치를 확인할 수 없습니다.",
+          "This browser cannot access location. Search for the place below.",
+        ),
+      );
       return;
     }
     setOriginBusy(true);
-    setOriginNote("현재 위치를 확인하고 있습니다.");
+    setOriginNote(tr("현재 위치를 확인하고 있습니다.", "Locating you…"));
     navigator.geolocation.getCurrentPosition(
       (position) => {
         /* Coordinates are truncated to five decimals and sent in a POST body,
@@ -331,13 +562,17 @@ export default function FlowApp() {
             setOrigin({
               latitude,
               longitude,
-              label: readText(resolved, ["label"]) || "현재 위치",
+              label:
+                readText(resolved, ["label"]) ||
+                tr("현재 위치", "Current location"),
               areaCode:
                 readText(resolved, ["areaCode", "regionCode"]) || undefined,
               sigunguCode:
                 readText(resolved, ["sigunguCode", "districtCode"]) ||
                 undefined,
             });
+            setOriginQuery("");
+            setOriginHits([]);
             const area = readText(resolved, ["areaName", "regionName"]);
             const district = readText(resolved, ["districtName", "sigunguName"]);
             setOriginNote([area, district].filter(Boolean).join(" ") || "");
@@ -352,24 +587,34 @@ export default function FlowApp() {
       () => {
         setOriginBusy(false);
         setOriginNote(
-          "위치 권한이 거부되었습니다. 아래에서 장소를 직접 검색해 주세요.",
+          tr(
+            "위치 권한이 거부되었습니다. 아래에서 장소를 직접 검색해 주세요.",
+            "Location permission was declined. Search for your current place below.",
+          ),
         );
       },
       { enableHighAccuracy: true, timeout: 10_000 },
     );
-  }, [go]);
+  }, [go, tr]);
 
   /* Both the origin and the appointment steps resolve a typed place name the
      same way, against the official tourism search. */
-  const lookupPlaces = useCallback(async (keyword: string): Promise<PlaceHit[]> => {
-    const response = await fetch(
-      `/api/v1/places/search?keyword=${encodeURIComponent(keyword)}`,
-    );
+  const lookupPlaces = useCallback(async (
+    keyword: string,
+    purpose: "current_origin" | "saved_stop",
+  ): Promise<PlaceHit[]> => {
+    const response = await fetch("/api/v1/places/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword, purpose, fallback: "auto" }),
+    });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(
+      const root = asRecord(payload);
+      throw new RequestError(
         readText(asRecord(asRecord(payload)?.error), ["message"]) ||
-          "장소를 찾지 못했습니다.",
+          tr("장소를 찾지 못했습니다.", "The place search failed."),
+        requestIdFrom(response, root) || undefined,
       );
     }
     const root = asRecord(payload);
@@ -379,9 +624,13 @@ export default function FlowApp() {
     return (rows ?? []).flatMap((item): PlaceHit[] => {
       const row = asRecord(item);
       const title = readText(row, ["title", "name"]);
-      const latitude = Number(row?.latitude ?? row?.mapY);
-      const longitude = Number(row?.longitude ?? row?.mapX);
-      if (!title || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      const rawLatitude = row?.latitude ?? row?.mapY;
+      const rawLongitude = row?.longitude ?? row?.mapX;
+      const latitude = parseKoreaCoordinate(rawLatitude, 32, 39.8);
+      const longitude = parseKoreaCoordinate(rawLongitude, 124, 132);
+      const provider = readText(row, ["provider"]);
+      const retention = readText(row, ["retention"]);
+      if (!title || latitude === undefined || longitude === undefined) {
         return [];
       }
       return [
@@ -393,57 +642,120 @@ export default function FlowApp() {
           areaCode: readText(row, ["regionCode", "areaCode"]) || undefined,
           sigunguCode:
             readText(row, ["districtCode", "sigunguCode"]) || undefined,
+          provider:
+            provider === "kto" ||
+            provider === "kakao_local" ||
+            provider === "forward_geocoder"
+              ? provider
+              : undefined,
+          sourceLabel:
+            readText(row, ["sourceLabel"]) ||
+            (provider === "kto"
+              ? "한국관광공사 국문 관광정보"
+              : "장소 검색 제공자"),
+          retention:
+            retention === "persistable" ? "persistable" : "ephemeral",
         },
       ];
     });
-  }, []);
+  }, [tr]);
 
   const searchOriginPlace = useCallback(async () => {
     const keyword = originQuery.trim();
-    if (!keyword) return;
+    if (keyword.length < 2) {
+      setOriginNote(
+        tr(
+          "현재 장소명이나 주소를 두 글자 이상 입력해 주세요.",
+          "Enter at least two characters for your current place or address.",
+        ),
+      );
+      return;
+    }
     setOriginSearchBusy(true);
     setOriginNote("");
+    setOrigin(null);
     setOriginHits([]);
     try {
-      const hits = await lookupPlaces(keyword);
+      const hits = await lookupPlaces(keyword, "current_origin");
       setOriginHits(hits.slice(0, 6));
       if (!hits.length) {
-        setOriginNote("검색 결과가 없습니다. 다르게 입력해 보세요.");
+        setOriginNote(
+          tr(
+            "검색 결과가 없습니다. 장소명이나 주소를 다르게 입력해 보세요.",
+            "No result. Try a different place name or address.",
+          ),
+        );
       }
     } catch (error) {
-      setOriginNote((error as Error).message);
+      setOriginNote(requestErrorText(error, language));
     } finally {
       setOriginSearchBusy(false);
     }
-  }, [originQuery, lookupPlaces]);
+  }, [originQuery, lookupPlaces, tr, language]);
 
   const searchAppointmentPlace = useCallback(async () => {
     const keyword = apptQuery.trim();
-    if (!keyword) return;
+    if (keyword.length < 2) {
+      setApptNote(
+        tr(
+          "약속 장소명이나 주소를 두 글자 이상 입력해 주세요.",
+          "Enter at least two characters for the appointment place or address.",
+        ),
+      );
+      return;
+    }
     setApptBusy(true);
     setApptNote("");
+    setApptPlace(null);
     setApptHits([]);
     try {
-      const hits = await lookupPlaces(keyword);
+      const hits = (await lookupPlaces(keyword, "saved_stop")).filter(
+        (hit) => hit.retention === "persistable",
+      );
       setApptHits(hits.slice(0, 6));
-      if (!hits.length) setApptNote("검색 결과가 없습니다. 다르게 입력해 보세요.");
+      if (!hits.length) {
+        setApptNote(
+          tr(
+            "일정에 안전하게 저장할 수 있는 공식 관광정보 결과가 없습니다. 다른 장소명이나 주소로 검색해 주세요.",
+            "No official result can be safely stored for the appointment. Try another place name or address.",
+          ),
+        );
+      }
     } catch (error) {
-      setApptNote((error as Error).message);
+      setApptNote(requestErrorText(error, language));
     } finally {
       setApptBusy(false);
     }
-  }, [apptQuery, lookupPlaces]);
+  }, [apptQuery, lookupPlaces, tr, language]);
 
   /* Registers the synthesised two-node itinerary, then runs recovery. The
      traveller sees one "찾는 중" screen while both calls happen. */
   const runRecovery = useCallback(async () => {
-    if (!incident || !origin || !apptPlace) return;
+    if (
+      !incident ||
+      !origin ||
+      !originSelectionCurrent ||
+      !apptPlace ||
+      !appointmentSelectionCurrent ||
+      availableMinutes == null ||
+      availableMinutes < MIN_APPOINTMENT_MINUTES ||
+      availableMinutes > MAX_APPOINTMENT_MINUTES
+    ) {
+      return;
+    }
     searchAbort.current?.abort();
     const controller = new AbortController();
     searchAbort.current = controller;
 
     setApiLog([]);
     setErrorText("");
+    setErrorRequestId("");
+    setRecoveryRequestId("");
+    setRecoveryPersisted(false);
+    setSelectedOptionId("");
+    setExecution(null);
+    setActionMessage("");
+    setShareMessage("");
     go("searching");
 
     const push = (line: string) =>
@@ -462,7 +774,6 @@ export default function FlowApp() {
           startAt: nowIso,
           locked: false,
           reservation: false,
-          location: origin,
         },
         {
           id: "next",
@@ -482,15 +793,21 @@ export default function FlowApp() {
         },
       ];
 
-      push("일정 잠금 조건 등록");
+      push(
+        tr(
+          "일정 잠금 조건 등록",
+          "Registering the protected appointment",
+        ),
+      );
       const registered = await postJson("/api/v1/itineraries", {
+        ephemeralLocationNodeIds: ["now"],
         itinerary: {
           title: "브리지 복구",
           timezone: "Asia/Seoul",
           audience,
           nodes,
         },
-      });
+      }, controller.signal);
       const registeredRoot = asRecord(registered);
       const itineraryId = readText(
         asRecord(registeredRoot?.itinerary) ?? registeredRoot,
@@ -500,25 +817,37 @@ export default function FlowApp() {
         throw new Error("일정을 등록하지 못했습니다. 잠시 후 다시 시도해 주세요.");
       }
 
-      push("KorService2 · 주변 공식 관광지 조회");
-      push("TarRlteTarService1 · 연관 관광지 확인");
-      push("KorWithService2 · 무장애 정보 검증");
-      push("TatsCnctrRateService · 집중률 예측 반영");
+      push(
+        tr(
+          "KorService2 · 주변 공식 관광지 조회",
+          "KorService2 · official nearby places",
+        ),
+      );
+      push(
+        tr(
+          "TarRlteTarService1 · 연관 관광지 확인",
+          "TarRlteTarService1 · related-place evidence",
+        ),
+      );
+      push(
+        tr(
+          "KorWithService2 · 무장애 정보 검증",
+          "KorWithService2 · accessibility evidence",
+        ),
+      );
+      push(
+        tr(
+          "TatsCnctrRateService · 집중률 예측 반영",
+          "TatsCnctrRateService · concentration forecast",
+        ),
+      );
 
       const recovered = await postJson("/api/v1/recover", {
         origin,
         incident,
         audience,
         indoorOnly: incident === "rain",
-        availableMinutes: Math.min(
-          240,
-          Math.max(
-            15,
-            Math.floor(
-              (Date.parse(kstIso(apptDate, apptTime)) - Date.now()) / 60_000,
-            ),
-          ),
-        ),
+        availableMinutes: Math.min(240, availableMinutes),
         maxDistanceMeters: audience === "general" ? 2500 : 1500,
         radiusMeters: 5000,
         safetyBufferMinutes: 15,
@@ -533,7 +862,7 @@ export default function FlowApp() {
           disruptedNodeId: "now",
           nextFixedNodeId: "next",
         },
-      });
+      }, controller.signal);
 
       if (controller.signal.aborted) return;
 
@@ -541,6 +870,14 @@ export default function FlowApp() {
       const list = Array.isArray(root?.options)
         ? (root.options as RecoveryOption[])
         : [];
+      const requestId = readText(root, ["requestId"]);
+      const persistence = asRecord(root?.persistence);
+      setRecoveryRequestId(requestId);
+      setRecoveryPersisted(
+        readText(persistence, ["status"]) === "persisted" &&
+          (readText(persistence, ["runId"]) === requestId ||
+            !readText(persistence, ["runId"])),
+      );
       setRejectedCount(
         typeof root?.rejectedCount === "number" ? root.rejectedCount : 0,
       );
@@ -553,27 +890,278 @@ export default function FlowApp() {
           : [],
       );
       setOptions(list);
+      setSelectedOptionId(
+        list.find(
+          (option) =>
+            !option.confirmationRequired &&
+            (option.evidenceGaps?.length ?? 0) === 0,
+        )?.id ?? "",
+      );
       go(list.length ? "options" : "empty");
     } catch (error) {
       if (controller.signal.aborted) return;
-      setErrorText((error as Error).message);
+      const requestError = error as RequestError;
+      setErrorText(
+        requestError.message ||
+          tr(
+            "일시적인 연결 문제입니다. 같은 조건으로 다시 시도해 주세요.",
+            "A temporary connection problem occurred. Try the same request again.",
+          ),
+      );
+      setErrorRequestId(requestError.requestId ?? "");
       go("error");
     }
   }, [
     incident,
     origin,
+    originSelectionCurrent,
     apptPlace,
+    appointmentSelectionCurrent,
     apptDate,
     apptTime,
+    availableMinutes,
     audience,
     go,
+    tr,
   ]);
+
+  const applySelectedOption = useCallback(async () => {
+    if (!selectedOption) {
+      setActionMessage(
+        tr("검증된 복구안을 먼저 선택해 주세요.", "Select a verified recovery option first."),
+      );
+      return;
+    }
+    if (
+      selectedOption.confirmationRequired ||
+      (selectedOption.evidenceGaps?.length ?? 0) > 0
+    ) {
+      setActionMessage(
+        tr(
+          "공식 근거가 확인되지 않은 후보는 일정에 적용할 수 없습니다.",
+          "An option with an unverified required condition cannot be applied.",
+        ),
+      );
+      return;
+    }
+    if (!recoveryRequestId || !recoveryPersisted) {
+      setActionMessage(
+        tr(
+          "저장된 복구 실행을 확인하지 못했습니다. 같은 조건으로 다시 찾아주세요.",
+          "This recovery run was not persisted. Run the same search again.",
+        ),
+      );
+      return;
+    }
+    setActionBusy(true);
+    setActionMessage(
+      tr("복구 일정을 적용하고 있습니다.", "Applying the recovery itinerary."),
+    );
+    try {
+      const payload = asRecord(
+        await postJson(
+          `/api/v1/recover/${encodeURIComponent(recoveryRequestId)}/apply`,
+          { optionId: selectedOption.id },
+        ),
+      );
+      const nextExecution = asRecord(payload?.execution);
+      if (
+        !nextExecution ||
+        typeof nextExecution.id !== "string" ||
+        !Array.isArray(nextExecution.steps)
+      ) {
+        throw new Error(
+          tr(
+            "적용된 복구 일정의 진행 단계를 확인하지 못했습니다.",
+            "The applied itinerary did not include executable steps.",
+          ),
+        );
+      }
+      setExecution(nextExecution as unknown as JourneyExecution);
+      setActionMessage(
+        tr(
+          "복구안이 적용됐습니다. 아래 길찾기와 도착 확인을 순서대로 진행해 주세요.",
+          "Recovery applied. Follow navigation and confirm each arrival in order.",
+        ),
+      );
+      go("active");
+    } catch (error) {
+      const requestError = error as RequestError;
+      setActionMessage(
+        `${requestError.message}${
+          requestError.requestId
+            ? tr(
+                ` · 요청 ID ${requestError.requestId}`,
+                ` · Request ID ${requestError.requestId}`,
+              )
+            : ""
+        }`,
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }, [
+    selectedOption,
+    recoveryRequestId,
+    recoveryPersisted,
+    go,
+    tr,
+  ]);
+
+  const shareSelectedOption = useCallback(async () => {
+    if (
+      selectedOption?.confirmationRequired ||
+      (selectedOption?.evidenceGaps?.length ?? 0) > 0
+    ) {
+      setShareMessage(
+        tr(
+          "필수 조건의 공식 근거가 모두 확인되기 전에는 복구 증명을 공유할 수 없습니다.",
+          "Proof cannot be shared until every required condition is verified by official evidence.",
+        ),
+      );
+      return;
+    }
+    if (!selectedOption || !recoveryRequestId || !recoveryPersisted) {
+      setShareMessage(
+        tr(
+          "저장이 확인된 복구안만 증명 링크를 만들 수 있습니다.",
+          "A proof link requires a persisted recovery option.",
+        ),
+      );
+      return;
+    }
+    setActionBusy(true);
+    setShareMessage(tr("증명 링크 생성 중…", "Creating proof link…"));
+    try {
+      const payload = asRecord(
+        await postJson("/api/v1/share", {
+          runId: recoveryRequestId,
+          optionId: selectedOption.id,
+        }),
+      );
+      const relativeUrl = readText(payload, ["url"]);
+      if (!relativeUrl) {
+        throw new Error(
+          tr(
+            "공유 링크를 확인하지 못했습니다.",
+            "The proof link was not returned.",
+          ),
+        );
+      }
+      const absoluteUrl = new URL(relativeUrl, window.location.origin).toString();
+      const canNativeShare = typeof navigator.share === "function";
+      if (canNativeShare) {
+        await navigator.share({
+          title: `IEOGA · ${selectedOption.title}`,
+          text: tr(
+            "다음 예약과 원래 목적을 지키는 여행 복구 증명입니다.",
+            "A recovery proof that protects the next appointment and original travel purpose.",
+          ),
+          url: absoluteUrl,
+        });
+        setShareMessage(tr("공유 완료", "Shared"));
+      } else {
+        await navigator.clipboard.writeText(absoluteUrl);
+        setShareMessage(
+          tr("7일 증명 링크를 복사했습니다.", "Copied the 7-day proof link."),
+        );
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setShareMessage(tr("공유를 취소했습니다.", "Sharing cancelled."));
+      } else {
+        const requestError = error as RequestError;
+        setShareMessage(
+          `${requestError.message}${
+            requestError.requestId
+              ? tr(
+                  ` · 요청 ID ${requestError.requestId}`,
+                  ` · Request ID ${requestError.requestId}`,
+                )
+              : ""
+          }`,
+        );
+      }
+    } finally {
+      setActionBusy(false);
+    }
+  }, [
+    selectedOption,
+    recoveryRequestId,
+    recoveryPersisted,
+    tr,
+  ]);
+
+  const confirmCurrentArrival = useCallback(async () => {
+    if (!currentExecutionStep) return;
+    setActionBusy(true);
+    setActionMessage(
+      tr("도착 기록을 저장하고 있습니다.", "Saving your arrival."),
+    );
+    try {
+      const response = await fetch("/api/v1/journey/active", {
+        method: "PATCH",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "arrive_step",
+          stepId: currentExecutionStep.id,
+        }),
+      });
+      const payload = asRecord(await response.json().catch(() => null));
+      const nextExecution = asRecord(payload?.execution);
+      if (!response.ok || !nextExecution || !Array.isArray(nextExecution.steps)) {
+        const message =
+          readText(asRecord(payload?.error), ["message"]) ||
+          tr(
+            "도착 기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            "Arrival could not be saved. Please retry.",
+          );
+        throw new RequestError(
+          message,
+          requestIdFrom(response, payload) || undefined,
+        );
+      }
+      const normalized = nextExecution as unknown as JourneyExecution;
+      setExecution(normalized);
+      setActionMessage(
+        normalized.status === "contract_met" ||
+          normalized.status === "completed"
+          ? tr(
+              "다음 고정 일정 도착을 확인했습니다. 원래 일정으로 안전하게 복귀할 수 있습니다.",
+              "The fixed appointment is confirmed. You can safely resume the original itinerary.",
+            )
+          : tr(
+              "도착을 확인했습니다. 다음 장소로 이어갑니다.",
+              "Arrival confirmed. Continue to the next place.",
+            ),
+      );
+    } catch (error) {
+      const requestError = error as RequestError;
+      setActionMessage(
+        `${requestError.message}${
+          requestError.requestId
+            ? tr(
+                ` · 요청 ID ${requestError.requestId}`,
+                ` · Request ID ${requestError.requestId}`,
+              )
+            : ""
+        }`,
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }, [currentExecutionStep, tr]);
 
   const back = useCallback(() => {
     if (step === "origin") go("incident", true);
     else if (step === "appointment") go("origin", true);
     else if (step === "options" || step === "empty" || step === "error") {
       go("appointment", true);
+    } else if (step === "active") {
+      go("options", true);
     }
   }, [step, go]);
 
@@ -581,18 +1169,38 @@ export default function FlowApp() {
     step !== "incident" && step !== "searching";
 
   return (
-    <div className={styles.shell}>
+    <div className={styles.shell} lang={language}>
       <div className={styles.top}>
-        <button
-          type="button"
-          className={styles.back}
-          onClick={back}
-          disabled={!canGoBack}
-          aria-label="이전 단계로"
+        {step === "incident" ? (
+          <Link
+            className={styles.back}
+            href="/"
+            aria-label={tr("이어가 홈으로", "Go to IEOGA home")}
+          >
+            ←
+          </Link>
+        ) : (
+          <button
+            type="button"
+            className={styles.back}
+            onClick={back}
+            disabled={!canGoBack}
+            aria-label={tr("이전 단계로", "Go to the previous step")}
+          >
+            ←
+          </button>
+        )}
+        <div
+          className={styles.progress}
+          aria-label={tr(
+            `여행 복구 ${Math.min(stepIndex + 1, 5)}단계`,
+            `Recovery step ${Math.min(stepIndex + 1, 5)} of 5`,
+          )}
+          role="progressbar"
+          aria-valuemin={1}
+          aria-valuemax={STEP_ORDER.length}
+          aria-valuenow={Math.min(stepIndex + 1, STEP_ORDER.length)}
         >
-          ←
-        </button>
-        <div className={styles.progress} aria-hidden="true">
           {STEP_ORDER.map((entry, index) => (
             <span
               key={entry}
@@ -606,6 +1214,24 @@ export default function FlowApp() {
             />
           ))}
         </div>
+        <div className={styles.language} aria-label="Language">
+          <button
+            type="button"
+            className={language === "ko" ? styles.languageOn : ""}
+            onClick={() => setLanguage("ko")}
+            aria-pressed={language === "ko"}
+          >
+            KO
+          </button>
+          <button
+            type="button"
+            className={language === "en" ? styles.languageOn : ""}
+            onClick={() => setLanguage("en")}
+            aria-pressed={language === "en"}
+          >
+            EN
+          </button>
+        </div>
       </div>
 
       <div
@@ -614,14 +1240,19 @@ export default function FlowApp() {
       >
         {step === "incident" && (
           <>
-            <span className={styles.eyebrow}>1단계 · 약 10초</span>
+            <span className={styles.eyebrow}>
+              {tr("1단계 · 약 10초", "Step 1 · about 10 seconds")}
+            </span>
             <h1 className={styles.title}>
-              지금 무슨 일이
+              {tr("지금 무슨 일이", "What changed")}
               <br />
-              생겼나요?
+              {tr("생겼나요?", "right now?")}
             </h1>
             <p className={styles.sub}>
-              하나만 눌러주세요. 일정을 미리 등록하지 않아도 됩니다.
+              {tr(
+                "하나만 눌러주세요. 일정을 미리 등록하지 않아도 됩니다.",
+                "Choose one. You do not need to register an itinerary first.",
+              )}
             </p>
             <div className={styles.body}>
               {INCIDENTS.map((entry) => (
@@ -638,8 +1269,12 @@ export default function FlowApp() {
                 >
                   <span className={styles.choiceMark}>{entry.mark}</span>
                   <span className={styles.choiceText}>
-                    <span className={styles.choiceTitle}>{entry.title}</span>
-                    <span className={styles.choiceSub}>{entry.sub}</span>
+                    <span className={styles.choiceTitle}>
+                      {language === "ko" ? entry.title : entry.titleEn}
+                    </span>
+                    <span className={styles.choiceSub}>
+                      {language === "ko" ? entry.sub : entry.subEn}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -649,11 +1284,15 @@ export default function FlowApp() {
 
         {step === "origin" && (
           <>
-            <span className={styles.eyebrow}>2단계</span>
-            <h1 className={styles.title}>지금 어디 계세요?</h1>
+            <span className={styles.eyebrow}>{tr("2단계", "Step 2")}</span>
+            <h1 className={styles.title}>
+              {tr("지금 어디 계세요?", "Where are you now?")}
+            </h1>
             <p className={styles.sub}>
-              위치는 복구 계산에만 쓰고 저장하지 않습니다. 좌표는 소수점
-              다섯 자리로 줄여 전송합니다.
+              {tr(
+                "현재 위치는 복구 계산에만 쓰며 저장하지 않습니다. 좌표는 소수점 다섯 자리로 줄여 전송합니다.",
+                "Live location is used only for this recovery calculation and is not stored. Coordinates are reduced to five decimal places.",
+              )}
             </p>
             <div className={styles.body}>
               <button
@@ -665,24 +1304,41 @@ export default function FlowApp() {
                 <span className={styles.choiceMark}>📍</span>
                 <span className={styles.choiceText}>
                   <span className={styles.choiceTitle}>
-                    {originBusy ? "확인하는 중…" : "현재 위치로 시작"}
+                    {originBusy
+                      ? tr("확인하는 중…", "Locating…")
+                      : tr("현재 위치로 시작", "Use my current location")}
                   </span>
                   <span className={styles.choiceSub}>
-                    {originNote || "권한을 허용하면 행정구역까지 자동 입력돼요"}
+                    {originNote ||
+                      tr(
+                        "권한을 허용하면 행정구역까지 자동 입력돼요",
+                        "Allow once to resolve the current district",
+                      )}
                   </span>
                 </span>
               </button>
               <div className={styles.field}>
                 <label className={styles.label} htmlFor="origin-place">
-                  또는 지금 있는 곳을 검색
+                  {tr(
+                    "또는 지금 있는 곳을 검색",
+                    "Or search for your current place",
+                  )}
                 </label>
                 <input
                   id="origin-place"
                   className={styles.input}
                   type="search"
-                  placeholder="예: 부산역, 광안리해수욕장"
+                  placeholder={tr(
+                    "예: 부산역, 광안리해수욕장",
+                    "e.g. Busan Station",
+                  )}
                   value={originQuery}
-                  onChange={(event) => setOriginQuery(event.target.value)}
+                  onChange={(event) => {
+                    setOriginQuery(event.target.value);
+                    setOrigin(null);
+                    setOriginHits([]);
+                    setOriginNote("");
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -697,7 +1353,12 @@ export default function FlowApp() {
                   onClick={() => void searchOriginPlace()}
                   disabled={originSearchBusy || !originQuery.trim()}
                 >
-                  {originSearchBusy ? "찾는 중…" : "공식 관광정보에서 검색"}
+                  {originSearchBusy
+                    ? tr("찾는 중…", "Searching…")
+                    : tr(
+                        "관광정보·장소 데이터 검색",
+                        "Search tourism and place data",
+                      )}
                 </button>
               </div>
 
@@ -719,7 +1380,14 @@ export default function FlowApp() {
                       areaCode: hit.areaCode,
                       sigunguCode: hit.sigunguCode,
                     });
-                    setOriginNote(`${hit.title}에서 출발합니다.`);
+                    setOriginQuery(hit.title);
+                    setOriginHits([]);
+                    setOriginNote(
+                      tr(
+                        `${hit.title}에서 출발합니다. 출처: ${hit.sourceLabel}. 이 출발 좌표는 일정에 저장하지 않습니다.`,
+                        `Starting from ${hit.title}. Source: ${hit.sourceLabel}. This origin coordinate is not stored in the itinerary.`,
+                      ),
+                    );
                   }}
                 >
                   <span className={styles.choiceMark}>📌</span>
@@ -728,6 +1396,9 @@ export default function FlowApp() {
                     {hit.address && (
                       <span className={styles.choiceSub}>{hit.address}</span>
                     )}
+                    <span className={styles.choiceSub}>
+                      {tr("출처", "Source")} · {hit.sourceLabel}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -737,40 +1408,105 @@ export default function FlowApp() {
 
         {step === "appointment" && (
           <>
-            <span className={styles.eyebrow}>3단계 · 마지막</span>
+            <span className={styles.eyebrow}>
+              {tr("3단계 · 마지막", "Step 3 · final input")}
+            </span>
             <h1 className={styles.title}>
-              몇 시까지
+              {tr("몇 시까지", "Where do you")}
               <br />
-              어디로 가야 하나요?
+              {tr("어디로 가야 하나요?", "need to be, and when?")}
             </h1>
             <p className={styles.sub}>
-              이어가는 이 약속을 지킬 수 있는 복구안만 보여줍니다.
+              {tr(
+                "이어가는 이 약속과 필수 조건을 지킬 수 있는 복구안만 보여줍니다.",
+                "IEOGA only shows recovery options that protect this appointment and every required condition.",
+              )}
             </p>
             <div className={styles.body}>
-              <div className={styles.field}>
-                <label className={styles.label} htmlFor="appt-time">
-                  도착해야 하는 시각
-                </label>
-                <input
-                  id="appt-time"
-                  className={styles.input}
-                  type="time"
-                  value={apptTime}
-                  onChange={(event) => setApptTime(event.target.value)}
-                />
+              <div className={styles.appointmentFields}>
+                <div className={styles.field}>
+                  <label className={styles.label} htmlFor="appt-date">
+                    {tr("도착 날짜", "Arrival date")}
+                  </label>
+                  <input
+                    id="appt-date"
+                    className={styles.input}
+                    type="date"
+                    value={apptDate}
+                    min={appointmentDateBounds?.minimum}
+                    max={appointmentDateBounds?.maximum}
+                    onChange={(event) =>
+                      setAppointment((previous) => ({
+                        ...previous,
+                        date: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className={styles.field}>
+                  <label className={styles.label} htmlFor="appt-time">
+                    {tr("도착 시각", "Arrival time")}
+                  </label>
+                  <input
+                    id="appt-time"
+                    className={styles.input}
+                    type="time"
+                    value={apptTime}
+                    onChange={(event) =>
+                      setAppointment((previous) => ({
+                        ...previous,
+                        time: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
               </div>
+              <p
+                className={`${styles.fieldNote} ${
+                  appointmentWindowInvalid ? styles.fieldError : ""
+                }`}
+                role={appointmentWindowInvalid ? "alert" : undefined}
+              >
+                {appointmentWindowInvalid
+                  ? availableMinutes == null
+                    ? tr(
+                        "유효한 도착 날짜와 시각을 입력해 주세요.",
+                        "Enter a valid arrival date and time.",
+                      )
+                    : availableMinutes < MIN_APPOINTMENT_MINUTES
+                    ? tr(
+                        "현재부터 최소 15분 뒤의 약속을 선택해 주세요.",
+                        "Choose an appointment at least 15 minutes from now.",
+                      )
+                    : tr(
+                        "현재부터 24시간 이내의 약속을 선택해 주세요.",
+                        "Choose an appointment within the next 24 hours.",
+                      )
+                  : tr(
+                      "현재 시각 기준 15분 뒤부터 24시간 이내까지 선택할 수 있습니다.",
+                      "Choose a time from 15 minutes to 24 hours from now.",
+                    )}
+              </p>
 
               <div className={styles.field}>
                 <label className={styles.label} htmlFor="appt-place">
-                  약속 장소
+                  {tr("약속 장소", "Appointment place")}
                 </label>
                 <input
                   id="appt-place"
                   className={styles.input}
                   type="search"
-                  placeholder="예: 부산역, 감천문화마을"
+                  placeholder={tr(
+                    "예: 부산역, 감천문화마을",
+                    "e.g. Busan Station",
+                  )}
                   value={apptQuery}
-                  onChange={(event) => setApptQuery(event.target.value)}
+                  onChange={(event) => {
+                    setApptQuery(event.target.value);
+                    setApptPlace(null);
+                    setApptHits([]);
+                    setApptNote("");
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -785,7 +1521,12 @@ export default function FlowApp() {
                   disabled={apptBusy || !apptQuery.trim()}
                   style={{ marginTop: 0 }}
                 >
-                  {apptBusy ? "찾는 중…" : "공식 관광정보에서 검색"}
+                  {apptBusy
+                    ? tr("찾는 중…", "Searching…")
+                    : tr(
+                        "저장 가능한 관광정보 검색",
+                        "Search storable tourism data",
+                      )}
                 </button>
               </div>
 
@@ -801,7 +1542,17 @@ export default function FlowApp() {
                       ? styles.choiceOn
                       : ""
                   }`}
-                  onClick={() => setApptPlace(hit)}
+                  onClick={() => {
+                    setApptPlace(hit);
+                    setApptQuery(hit.title);
+                    setApptHits([]);
+                    setApptNote(
+                      tr(
+                        `${hit.title}을 약속 장소로 선택했습니다. 출처: ${hit.sourceLabel}.`,
+                        `${hit.title} is selected as the appointment place. Source: ${hit.sourceLabel}.`,
+                      ),
+                    );
+                  }}
                 >
                   <span className={styles.choiceMark}>📌</span>
                   <span className={styles.choiceText}>
@@ -809,12 +1560,17 @@ export default function FlowApp() {
                     {hit.address && (
                       <span className={styles.choiceSub}>{hit.address}</span>
                     )}
+                    <span className={styles.choiceSub}>
+                      {tr("출처", "Source")} · {hit.sourceLabel}
+                    </span>
                   </span>
                 </button>
               ))}
 
               <div className={styles.field} style={{ marginTop: 10 }}>
-                <span className={styles.label}>이동 조건</span>
+                <span className={styles.label}>
+                  {tr("이동 조건", "Mobility condition")}
+                </span>
                 {AUDIENCES.map((entry) => (
                   <button
                     key={entry.value}
@@ -826,7 +1582,9 @@ export default function FlowApp() {
                     onClick={() => setAudience(entry.value)}
                   >
                     <span className={styles.choiceText}>
-                      <span className={styles.choiceTitle}>{entry.label}</span>
+                      <span className={styles.choiceTitle}>
+                        {language === "ko" ? entry.label : entry.labelEn}
+                      </span>
                     </span>
                   </button>
                 ))}
@@ -840,12 +1598,15 @@ export default function FlowApp() {
             <div className={styles.spinner} />
             <div>
               <h1 className={styles.title} style={{ fontSize: 22 }}>
-                지킬 것을 먼저 잠그고
+                {tr("지킬 것을 먼저 잠그고", "Protecting what must stay")}
                 <br />
-                대안을 검증하고 있어요
+                {tr("대안을 검증하고 있어요", "and verifying alternatives")}
               </h1>
               <p className={styles.sub}>
-                한국관광공사 공식 데이터로 확인합니다
+                {tr(
+                  "한국관광공사 공식 데이터로 확인합니다",
+                  "Checking official Korea Tourism Organization data",
+                )}
               </p>
             </div>
             <div className={styles.apiLog}>
@@ -861,22 +1622,74 @@ export default function FlowApp() {
 
         {step === "options" && (
           <>
-            <span className={`${styles.eyebrow}`}>복구안</span>
+            <span className={styles.eyebrow}>
+              {tr("검증 결과", "Verification result")}
+            </span>
             <h1 className={styles.title}>
-              {apptTime}까지 도착할 수 있는
+              {tr(
+                `${apptTime}까지 조건을 확인한`,
+                `${verifiedOptionCount} verified option${
+                  verifiedOptionCount === 1 ? "" : "s"
+                } for arrival by ${apptTime}`,
+              )}
               <br />
-              {options.length}곳을 찾았어요
+              {language === "ko"
+                ? `${verifiedOptionCount}곳을 찾았어요`
+                : "are ready"}
             </h1>
             <p className={styles.sub}>
-              {rejectedCount > 0
-                ? `조건을 지키지 못한 ${rejectedCount}곳은 자동으로 제외했습니다.`
-                : "모두 약속 시각과 이동 조건을 통과한 후보입니다."}
+              {tr(
+                `조건을 지키지 못한 ${rejectedCount}곳은 제외했습니다.${
+                  options.length - verifiedOptionCount > 0
+                    ? ` 공식 근거가 부족한 ${options.length - verifiedOptionCount}곳은 적용할 수 없습니다.`
+                    : ""
+                }`,
+                `${rejectedCount} place${
+                  rejectedCount === 1 ? " was" : "s were"
+                } excluded.${
+                  options.length - verifiedOptionCount > 0
+                    ? ` ${options.length - verifiedOptionCount} unverified option${
+                        options.length - verifiedOptionCount === 1 ? " is" : "s are"
+                      } shown for transparency but cannot be applied.`
+                    : ""
+                }`,
+              )}
             </p>
             <div className={styles.body}>
-              {options.map((option) => (
-                <div key={option.id} className={styles.card}>
+              {options.map((option, optionIndex) => {
+                const requiresConfirmation =
+                  option.confirmationRequired ||
+                  (option.evidenceGaps?.length ?? 0) > 0;
+                const selected = selectedOptionId === option.id;
+                return (
+                <article
+                  key={option.id}
+                  className={`${styles.card} ${
+                    selected ? styles.cardSelected : ""
+                  } ${requiresConfirmation ? styles.cardUnverified : ""}`}
+                >
+                  {option.imageUrl && (
+                    <div className={styles.cardImage}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={option.imageUrl}
+                        alt=""
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        onError={(event) => {
+                          event.currentTarget.parentElement?.remove();
+                        }}
+                      />
+                    </div>
+                  )}
                   <div className={styles.cardTop}>
                     <div>
+                      <span className={styles.rank}>
+                        {tr(
+                          `복구 후보 ${optionIndex + 1}`,
+                          `Recovery option ${optionIndex + 1}`,
+                        )}
+                      </span>
                       <h2 className={styles.cardTitle}>{option.title}</h2>
                       {option.address && (
                         <p className={styles.cardAddr}>{option.address}</p>
@@ -889,6 +1702,41 @@ export default function FlowApp() {
                     )}
                   </div>
 
+                  {requiresConfirmation && (
+                    <section
+                      className={styles.gapAlert}
+                      role="alert"
+                      aria-label={tr(
+                        "공식 근거 확인 필요",
+                        "Official evidence required",
+                      )}
+                    >
+                      <strong>
+                        {tr(
+                          "검증된 복구안이 아닙니다",
+                          "This is not a verified recovery option",
+                        )}
+                      </strong>
+                      <p>
+                        {tr(
+                          "필수 조건을 공식 데이터로 확인하지 못해 일정에 적용할 수 없습니다.",
+                          "A required condition could not be confirmed in official data, so this option cannot be applied.",
+                        )}
+                      </p>
+                      <ul>
+                        {(option.evidenceGaps ?? []).map((gap, gapIndex) => (
+                          <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
+                            {gap.note ||
+                              tr(
+                                "필수 조건의 공식 근거가 없습니다.",
+                                "Official evidence for a required condition is missing.",
+                              )}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+
                   <div className={styles.stats}>
                     <div className={styles.stat}>
                       <div className={styles.statVal}>
@@ -896,7 +1744,9 @@ export default function FlowApp() {
                           ? `${option.estimatedTravelMinutes}분`
                           : "—"}
                       </div>
-                      <div className={styles.statKey}>이동</div>
+                      <div className={styles.statKey}>
+                        {tr("이동", "Travel")}
+                      </div>
                     </div>
                     <div className={styles.stat}>
                       <div className={styles.statVal}>
@@ -904,12 +1754,37 @@ export default function FlowApp() {
                           ? `${(option.distanceMeters / 1000).toFixed(1)}km`
                           : "—"}
                       </div>
-                      <div className={styles.statKey}>거리</div>
+                      <div className={styles.statKey}>
+                        {tr("거리", "Distance")}
+                      </div>
                     </div>
                     <div className={styles.stat}>
-                      <div className={styles.statVal}>1곳</div>
-                      <div className={styles.statKey}>변경</div>
+                      <div className={styles.statVal}>
+                        {requiresConfirmation ? "!" : "✓"}
+                      </div>
+                      <div className={styles.statKey}>
+                        {tr("검증", "Status")}
+                      </div>
                     </div>
+                  </div>
+
+                  <div className={styles.guideFacts}>
+                    <dl>
+                      <dt>{tr("운영 정보", "Opening")}</dt>
+                      <dd>{evidenceText(option.availability, language)}</dd>
+                    </dl>
+                    <dl>
+                      <dt>{tr("실내 조건", "Indoor")}</dt>
+                      <dd>{evidenceText(option.indoorSuitability, language)}</dd>
+                    </dl>
+                    <dl>
+                      <dt>{tr("접근성", "Accessibility")}</dt>
+                      <dd>{evidenceText(option.accessibility, language)}</dd>
+                    </dl>
+                    <dl>
+                      <dt>{tr("혼잡 예측", "Crowd forecast")}</dt>
+                      <dd>{evidenceText(option.crowd, language)}</dd>
+                    </dl>
                   </div>
 
                   {option.purposePreservation?.statement && (
@@ -936,7 +1811,7 @@ export default function FlowApp() {
                             key={`${option.id}-${name}`}
                             className={`${styles.ledgerChip} ${styles.ledgerChipKto}`}
                           >
-                            공사 {name}
+                            {tr("공사", "KTO")} {name}
                           </span>
                         ))}
                         {external.map((name) => (
@@ -944,15 +1819,220 @@ export default function FlowApp() {
                             key={`${option.id}-${name}`}
                             className={styles.ledgerChip}
                           >
-                            보조 {name}
+                            {tr("보조", "Supporting")} {name}
                           </span>
                         ))}
                       </div>
                     );
                   })()}
-                </div>
-              ))}
+
+                  <div className={styles.cardActions}>
+                    <button
+                      type="button"
+                      className={styles.selectButton}
+                      disabled={requiresConfirmation}
+                      aria-pressed={selected}
+                      onClick={() => {
+                        setSelectedOptionId(option.id);
+                        setActionMessage("");
+                        setShareMessage("");
+                      }}
+                    >
+                      {requiresConfirmation
+                        ? tr("공식 확인 전 적용 불가", "Cannot apply until verified")
+                        : selected
+                          ? tr("선택한 복구안", "Selected option")
+                          : tr("이 복구안 선택", "Select this option")}
+                    </button>
+                    <a
+                      href={`https://map.kakao.com/link/map/${encodeURIComponent(option.title)},${option.latitude},${option.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {tr("지도에서 미리 보기 ↗", "Preview on map ↗")}
+                    </a>
+                  </div>
+                </article>
+                );
+              })}
             </div>
+            {(actionMessage || shareMessage) && (
+              <div className={styles.actionStatus} aria-live="polite">
+                {actionMessage && <p>{actionMessage}</p>}
+                {shareMessage && <p>{shareMessage}</p>}
+              </div>
+            )}
+          </>
+        )}
+
+        {step === "active" && execution && selectedOption && (
+          <>
+            {execution.status === "contract_met" ||
+            execution.status === "completed" ? (
+              <div className={styles.state}>
+                <div className={`${styles.stateMark} ${styles.stateGood}`}>
+                  ✓
+                </div>
+                <div>
+                  <span className={styles.eyebrow}>
+                    {tr("복구 계약 완료", "Recovery contract met")}
+                  </span>
+                  <h1 className={styles.title}>
+                    {tr(
+                      "다음 약속을 지키고\n원래 일정으로 돌아왔어요",
+                      "Appointment protected.\nYour original trip resumes.",
+                    )
+                      .split("\n")
+                      .map((line, index) => (
+                        <span key={line}>
+                          {index > 0 && <br />}
+                          {line}
+                        </span>
+                      ))}
+                  </h1>
+                  <p className={styles.sub}>
+                    {tr(
+                      "복구 구간의 도착 기록이 저장됐습니다. 원래 일정은 변경하지 않고 다음 순서부터 계속됩니다.",
+                      "Arrivals in the recovery segment are saved. The original itinerary remains intact and continues from the next stop.",
+                    )}
+                  </p>
+                </div>
+                <div className={styles.completionActions}>
+                  <Link className={styles.ctaLink} href="/">
+                    {tr(
+                      "원래 일정 이어서 보기",
+                      "Resume the original itinerary",
+                    )}
+                  </Link>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void shareSelectedOption()}
+                    disabled={actionBusy}
+                  >
+                    {tr("복구 증명 공유", "Share recovery proof")}
+                  </button>
+                </div>
+                {(actionMessage || shareMessage) && (
+                  <div className={styles.actionStatus} aria-live="polite">
+                    {actionMessage && <p>{actionMessage}</p>}
+                    {shareMessage && <p>{shareMessage}</p>}
+                  </div>
+                )}
+                <p className={styles.proofId}>
+                  {tr("복구 요청 ID", "Recovery request ID")}{" "}
+                  <code>{recoveryRequestId}</code>
+                </p>
+              </div>
+            ) : currentExecutionStep ? (
+              <>
+                <span className={styles.eyebrow}>
+                  {tr("복구 여행 진행 중", "Recovery in progress")}
+                </span>
+                <h1 className={styles.title}>
+                  {executionRole(currentExecutionStep, language)}
+                  <br />
+                  {currentExecutionStep.title}
+                </h1>
+                <p className={styles.sub}>
+                  {currentExecutionStep.locationLabel ||
+                    tr("목적지 위치를 확인해 주세요.", "Check the destination location.")}
+                </p>
+
+                <div className={styles.body}>
+                  <section className={styles.activeCard}>
+                    <div className={styles.activeFacts}>
+                      <dl>
+                        <dt>{tr("도착 예정", "Expected arrival")}</dt>
+                        <dd>
+                          {formatKstTime(
+                            currentExecutionStep.estimatedArrivalAt ??
+                              currentExecutionStep.scheduledAt,
+                          )}
+                        </dd>
+                      </dl>
+                      <dl>
+                        <dt>{tr("지킬 다음 약속", "Protected appointment")}</dt>
+                        <dd>
+                          {nextFixedExecutionStep?.title ??
+                            apptPlace?.title ??
+                            tr("다음 약속", "Next appointment")}{" "}
+                          ·{" "}
+                          {formatKstTime(
+                            nextFixedExecutionStep?.estimatedArrivalAt ??
+                              nextFixedExecutionStep?.scheduledAt ??
+                              kstIso(apptDate, apptTime),
+                          )}
+                        </dd>
+                      </dl>
+                    </div>
+                    <a
+                      className={styles.routeLink}
+                      href={navigationUrl(currentExecutionStep)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {tr(
+                        "카카오맵으로 다음 장소 길찾기",
+                        "Navigate to the next place with Kakao Map",
+                      )}
+                      <span aria-hidden="true">→</span>
+                    </a>
+                    <p className={styles.routeNote}>
+                      {tr(
+                        "지도 앱에서 경로를 확인한 뒤 실제 도착했을 때만 아래 버튼을 눌러주세요.",
+                        "Check the route in the map app, then confirm only after you actually arrive.",
+                      )}
+                    </p>
+                  </section>
+
+                  <ol className={styles.executionList}>
+                    {execution.steps.map((entry) => (
+                      <li
+                        key={entry.id}
+                        className={
+                          entry.status === "current"
+                            ? styles.executionCurrent
+                            : entry.status === "arrived"
+                              ? styles.executionArrived
+                              : ""
+                        }
+                      >
+                        <span aria-hidden="true">
+                          {entry.status === "arrived"
+                            ? "✓"
+                            : entry.status === "current"
+                              ? "→"
+                              : entry.sequence + 1}
+                        </span>
+                        <div>
+                          <small>{executionRole(entry, language)}</small>
+                          <strong>{entry.title}</strong>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+                {actionMessage && (
+                  <div className={styles.actionStatus} role="status">
+                    <p>{actionMessage}</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className={styles.state}>
+                <div className={`${styles.stateMark} ${styles.stateBad}`}>!</div>
+                <h1 className={styles.title}>
+                  {tr(
+                    "진행할 다음 단계를 확인하지 못했습니다.",
+                    "The next executable step could not be found.",
+                  )}
+                </h1>
+                <Link className={styles.ctaLink} href="/">
+                  {tr("저장된 일정에서 다시 열기", "Open the saved itinerary")}
+                </Link>
+              </div>
+            )}
           </>
         )}
 
@@ -961,9 +2041,9 @@ export default function FlowApp() {
             <div className={`${styles.stateMark} ${styles.stateWarn}`}>🔍</div>
             <div>
               <h1 className={styles.title} style={{ fontSize: 22 }}>
-                조건을 지키는 대안이
+                {tr("조건을 지키는 대안이", "No option meets")}
                 <br />
-                지금은 없습니다
+                {tr("지금은 없습니다", "every condition right now")}
               </h1>
               {/* "없다"만 남기면 고장과 구분되지 않는다. 어떤 조건이
                   후보를 걸러냈는지와, 그래서 무엇을 바꾸면 되는지를
@@ -973,23 +2053,37 @@ export default function FlowApp() {
             {!!rejectionSummary.length && (
               <div className={styles.card} style={{ width: "100%" }}>
                 <h2 className={styles.cardTitle} style={{ fontSize: 15 }}>
-                  검토한 {rejectedCount}곳이 제외된 이유
+                  {tr(
+                    `검토한 ${rejectedCount}곳이 제외된 이유`,
+                    `Why ${rejectedCount} reviewed place${
+                      rejectedCount === 1 ? " was" : "s were"
+                    } excluded`,
+                  )}
                 </h2>
                 <ul className={styles.why}>
                   {rejectionSummary.slice(0, 4).map((entry) => (
                     <li key={entry.reasonCode}>
-                      {REJECTION_LABELS[entry.reasonCode] ?? entry.reasonCode}{" "}
-                      · {entry.count}곳
+                      {REJECTION_LABELS[entry.reasonCode]?.[language] ??
+                        entry.reasonCode}{" "}
+                      ·{" "}
+                      {tr(
+                        `${entry.count}곳`,
+                        `${entry.count} place${entry.count === 1 ? "" : "s"}`,
+                      )}
                     </li>
                   ))}
                 </ul>
               </div>
             )}
             <div className={styles.noteCard}>
-              이 결과는 그냥 사라지지 않습니다. `{
-                INCIDENTS.find((entry) => entry.value === incident)?.title
-              }` 상황에서 대안이 없었다는 사실은 익명으로 집계되어, 해당
-              지역의 대체 콘텐츠 공백으로 기록됩니다.
+              {tr(
+                `이 결과는 그냥 사라지지 않습니다. ‘${
+                  INCIDENTS.find((entry) => entry.value === incident)?.title
+                }’ 상황에서 안전한 대안이 없었다는 사실은 동의·공개 기준을 충족할 때만 익명 집계됩니다.`,
+                `This result is not silently discarded. When consent and publication thresholds are met, the lack of a safe alternative for “${
+                  INCIDENTS.find((entry) => entry.value === incident)?.titleEn
+                }” is aggregated without precise location.`,
+              )}
             </div>
           </div>
         )}
@@ -999,9 +2093,24 @@ export default function FlowApp() {
             <div className={`${styles.stateMark} ${styles.stateBad}`}>!</div>
             <div>
               <h1 className={styles.title} style={{ fontSize: 22 }}>
-                복구안을 만들지 못했어요
+                {tr(
+                  "복구안을 만들지 못했어요",
+                  "Recovery could not be created",
+                )}
               </h1>
               <p className={styles.sub}>{errorText}</p>
+              <p className={styles.errorHelp}>
+                {tr(
+                  "연결 상태를 확인한 뒤 같은 조건으로 재시도하세요. 계속 실패하면 아래 요청 ID와 함께 문의해 주세요.",
+                  "Check your connection and retry the same request. If it keeps failing, report the request ID below.",
+                )}
+              </p>
+              {errorRequestId && (
+                <p className={styles.proofId}>
+                  {tr("요청 ID", "Request ID")}{" "}
+                  <code>{errorRequestId}</code>
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -1013,17 +2122,34 @@ export default function FlowApp() {
             type="button"
             className={styles.cta}
             disabled={
-              !apptPlace ||
+              !appointmentSelectionCurrent ||
               availableMinutes == null ||
-              availableMinutes < 15
+              availableMinutes < MIN_APPOINTMENT_MINUTES ||
+              availableMinutes > MAX_APPOINTMENT_MINUTES
             }
             onClick={() => void runRecovery()}
           >
-            {!apptPlace
-              ? "약속 장소를 선택해 주세요"
-              : availableMinutes != null && availableMinutes < 15
-                ? "약속까지 15분 이상 남아야 해요"
-                : "예약을 지키는 복구안 찾기"}
+            {!appointmentSelectionCurrent
+              ? tr(
+                  "약속 장소를 선택해 주세요",
+                  "Select the appointment place",
+                )
+              : availableMinutes != null &&
+                  availableMinutes < MIN_APPOINTMENT_MINUTES
+                ? tr(
+                    "약속까지 15분 이상 남아야 해요",
+                    "At least 15 minutes must remain",
+                  )
+                : availableMinutes != null &&
+                    availableMinutes > MAX_APPOINTMENT_MINUTES
+                  ? tr(
+                      "24시간 이내의 약속을 선택해 주세요",
+                      "Choose an appointment within 24 hours",
+                    )
+                : tr(
+                    "예약을 지키는 복구안 찾기",
+                    "Find a recovery that protects the appointment",
+                  )}
           </button>
         )}
 
@@ -1032,31 +2158,108 @@ export default function FlowApp() {
             type="button"
             className={styles.cta}
             onClick={() => go("appointment")}
-            disabled={!origin}
+            disabled={!originSelectionCurrent}
           >
-            {origin ? "다음" : "현재 위치를 확인하거나 장소를 검색해 주세요"}
+            {originSelectionCurrent
+              ? tr("다음", "Continue")
+              : tr(
+                  "현재 위치를 확인하거나 장소를 검색해 주세요",
+                  "Locate yourself or select a searched place",
+                )}
           </button>
         )}
 
-        {(step === "empty" || step === "error") && (
+        {step === "empty" && (
           <button
             type="button"
             className={styles.cta}
             onClick={() => go("appointment", true)}
           >
-            조건 바꿔서 다시 찾기
+            {tr("조건 바꿔서 다시 찾기", "Change conditions and search again")}
           </button>
         )}
 
-        {step === "options" && (
-          <button
-            type="button"
-            className={styles.cta}
-            onClick={() => go("incident", true)}
-          >
-            처음부터 다시
-          </button>
+        {step === "error" && (
+          <div className={styles.footStack}>
+            <button
+              type="button"
+              className={styles.cta}
+              onClick={() => void runRecovery()}
+            >
+              {tr("같은 조건으로 다시 시도", "Retry the same request")}
+            </button>
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={() => go("appointment", true)}
+            >
+              {tr("조건 바꾸기", "Change conditions")}
+            </button>
+          </div>
         )}
+
+        {step === "options" && (
+          <div className={styles.footStack}>
+            <button
+              type="button"
+              className={styles.cta}
+              onClick={() => void applySelectedOption()}
+              disabled={
+                !selectedOption ||
+                selectedOption.confirmationRequired ||
+                (selectedOption.evidenceGaps?.length ?? 0) > 0 ||
+                actionBusy ||
+                !recoveryPersisted
+              }
+            >
+              {actionBusy
+                ? tr("적용 중…", "Applying…")
+                : selectedOption
+                  ? tr(
+                      `${selectedOption.title}(으)로 이어가기`,
+                      `Continue with ${selectedOption.title}`,
+                    )
+                  : tr(
+                      "검증된 복구안을 선택해 주세요",
+                      "Select a verified recovery option",
+                    )}
+            </button>
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={() => void shareSelectedOption()}
+              disabled={
+                !selectedOption ||
+                selectedOption.confirmationRequired ||
+                (selectedOption.evidenceGaps?.length ?? 0) > 0 ||
+                actionBusy ||
+                !recoveryPersisted
+              }
+            >
+              {tr("선택한 복구 증명 공유", "Share proof for selected option")}
+            </button>
+          </div>
+        )}
+
+        {step === "active" &&
+          execution &&
+          currentExecutionStep &&
+          execution.status !== "contract_met" &&
+          execution.status !== "completed" && (
+            <button
+              type="button"
+              className={styles.cta}
+              onClick={() => void confirmCurrentArrival()}
+              disabled={actionBusy}
+            >
+              {actionBusy
+                ? tr("도착 기록 중…", "Saving arrival…")
+                : tr(
+                    "실제로 이 장소에 도착했어요",
+                    "I have actually arrived here",
+                  )}
+            </button>
+          )}
       </div>
     </div>
   );

@@ -8,6 +8,10 @@ import {
   searchKakaoLocal,
 } from "@/lib/location/kakao-local";
 import { searchForwardGeocoder } from "@/lib/location/forward-geocoder";
+import {
+  koreaLatitude,
+  koreaLongitude,
+} from "@/lib/validation/numbers";
 
 export type PlaceSearchPurpose = "saved_stop" | "current_origin";
 export type PlaceSearchFallback = "auto" | "force";
@@ -94,15 +98,15 @@ export async function searchPlaces(params: {
     });
     ktoStatus = result.items.length ? "live" : "empty";
     ktoPlaces = result.items.flatMap((item): UnifiedPlace[] => {
-      const latitude = Number(item.mapy);
-      const longitude = Number(item.mapx);
+      const latitude = koreaLatitude(item.mapy);
+      const longitude = koreaLongitude(item.mapx);
       const contentId = String(item.contentid ?? "").trim();
       const title = String(item.title ?? "").trim();
       if (
         !contentId ||
         !title ||
-        !Number.isFinite(latitude) ||
-        !Number.isFinite(longitude)
+        latitude === undefined ||
+        longitude === undefined
       ) {
         return [];
       }

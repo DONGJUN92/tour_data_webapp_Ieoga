@@ -1,0 +1,1 @@
+measurement_id,measured_at,commit_sha,deployment_url,device_class,browser,viewport_width,network_profile,flow,repetition,response_ms,largest_contentful_paint_ms,interaction_to_next_paint_ms,cumulative_layout_shift,retry_required,error_code

@@ -33,10 +33,23 @@ export function allowRequest(
   };
 }
 
+export function requestClientIdentity(request: Request): string {
+  /* Cloudflare overwrites cf-connecting-ip at the edge. Do not trust a
+     caller-supplied x-forwarded-for header in production because it lets an
+     attacker rotate the in-process burst bucket at will. This guard is still
+     intentionally a per-isolate burst limiter; durable abuse protection must
+     be configured at the Cloudflare edge. */
+  const cloudflareIp = request.headers.get("cf-connecting-ip")?.trim();
+  const developmentIp =
+    process.env.NODE_ENV !== "production"
+      ? request.headers
+          .get("x-forwarded-for")
+          ?.split(",")[0]
+          ?.trim()
+      : undefined;
+  return cloudflareIp || developmentIp || "unattributed";
+}
+
 export function requestRateKey(request: Request, namespace: string): string {
-  const ip =
-    request.headers.get("cf-connecting-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "local";
-  return `${namespace}:${ip}`;
+  return `${namespace}:${requestClientIdentity(request)}`;
 }

@@ -348,6 +348,139 @@ test("availability confirms the full stay interval, not only arrival time", asyn
   );
 });
 
+test("indoor hard evidence rejects parks even when their broad type looks cultural", async () => {
+  const { hasVerifiedIndoorEvidence } = await import(
+    "../lib/recovery/engine.ts"
+  );
+
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "14",
+      title: "대한민국역사박물관",
+      cat3: "A02060100",
+    }),
+    true,
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "14",
+      title: "세종로공원",
+      cat3: "A02060700",
+    }),
+    false,
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "14",
+      title: "세종 문화 명소",
+    }),
+    false,
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "39",
+      title: "두가헌",
+    }),
+    true,
+  );
+});
+
+test("rain recovery never promotes an outdoor park to a verified option", async () => {
+  const originalFetch = globalThis.fetch;
+  const previous = {
+    kto: process.env.KTO_SERVICE_KEY,
+    routing: process.env.ROUTING_BASE_URL,
+    weather: process.env.WEATHER_API_URL,
+    kma: process.env.KMA_SERVICE_KEY,
+  };
+  process.env.KTO_SERVICE_KEY = "rain-indoor-regression-key";
+  process.env.ROUTING_BASE_URL = "https://rain-routing.test/route";
+  process.env.WEATHER_API_URL = "https://rain-weather.test/forecast";
+  delete process.env.KMA_SERVICE_KEY;
+  globalThis.fetch = async (input) => {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
+    if (url.hostname === "rain-weather.test") {
+      return Response.json({
+        current: {
+          time: "2026-07-16T10:00",
+          temperature_2m: 22,
+          apparent_temperature: 22,
+          precipitation: 2,
+          rain: 2,
+          showers: 0,
+          weather_code: 61,
+          wind_speed_10m: 4,
+        },
+        hourly: { precipitation_probability: [90] },
+      });
+    }
+    if (url.hostname === "rain-routing.test") {
+      throw new Error("an outdoor candidate must be rejected before routing");
+    }
+    const [, service, operation] = url.pathname.match(
+      /\/B551011\/([^/]+)\/([^/]+)$/,
+    ) ?? [];
+    const items =
+      service === "KorService2" && operation === "locationBasedList2"
+        ? [
+            {
+              contentid: "outdoor-park-rain-regression",
+              contenttypeid: "14",
+              title: "세종로공원",
+              cat3: "A02060700",
+              addr1: "서울특별시 종로구",
+              mapx: "126.979",
+              mapy: "37.572",
+              dist: "250",
+              lDongRegnCd: "11",
+              lDongSignguCd: "110",
+            },
+          ]
+        : [];
+    return Response.json(ktoEnvelope(items));
+  };
+
+  try {
+    const { recoverTrip } = await import("../lib/recovery/engine.ts");
+    const input = recoveryRequest({
+      suffix: "6",
+      candidateLongitude: 126.979,
+      occurredAt: "2026-07-16T10:00:00+09:00",
+      middleAt: "2026-07-16T11:10:00+09:00",
+      fixedAt: "2026-07-16T12:00:00+09:00",
+    });
+    delete input.__candidateLongitude;
+    input.incident = "rain";
+    const result = await recoverTrip(input, "rain-outdoor-regression");
+
+    assert.equal(result.options.length, 0);
+    assert.notEqual(result.status, "verified");
+    assert.ok(
+      result.rejectionSummary.some(
+        (entry) =>
+          entry.reasonCode === "INDOOR_UNVERIFIED" && entry.count >= 1,
+      ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries({
+      KTO_SERVICE_KEY: previous.kto,
+      ROUTING_BASE_URL: previous.routing,
+      WEATHER_API_URL: previous.weather,
+      KMA_SERVICE_KEY: previous.kma,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("weather uses canonical precipitation without double-counting rain and showers", async () => {
   const originalFetch = globalThis.fetch;
   const originalWeather = process.env.WEATHER_API_URL;
@@ -414,7 +547,53 @@ test("explicit public OSM URLs remain classified as shared and rate-limited prov
   }
 });
 
-test("recover route enforces one deadline across fetch cancellation and persistence", async () => {
+test("provider readiness reflects each actually reachable fallback chain", async () => {
+  const names = [
+    "KAKAO_REST_API_KEY",
+    "KMA_SERVICE_KEY",
+    "REVERSE_GEOCODE_URL",
+    "FORWARD_GEOCODE_URL",
+    "ROUTING_BASE_URL",
+    "WEATHER_API_URL",
+  ];
+  const previous = Object.fromEntries(
+    names.map((name) => [name, process.env[name]]),
+  );
+  process.env.KAKAO_REST_API_KEY = "managed-kakao-key";
+  process.env.KMA_SERVICE_KEY = "managed-kma-key";
+  delete process.env.REVERSE_GEOCODE_URL;
+  delete process.env.FORWARD_GEOCODE_URL;
+  process.env.ROUTING_BASE_URL =
+    "https://managed-routing.example/route/v1/walking";
+  delete process.env.WEATHER_API_URL;
+  try {
+    const {
+      forwardGeocodeProviderConfig,
+      reverseGeocodeProviderConfig,
+      routingEndpoints,
+      routingProviderConfig,
+      weatherProviderConfig,
+    } = await import("../lib/external-providers.ts");
+    assert.equal(reverseGeocodeProviderConfig().mode, "public_shared");
+    assert.equal(forwardGeocodeProviderConfig().mode, "public_shared");
+    assert.equal(routingProviderConfig().mode, "managed");
+    assert.deepEqual(routingEndpoints(), [
+      "https://managed-routing.example/route/v1/walking",
+    ]);
+    assert.equal(weatherProviderConfig().mode, "public_shared");
+
+    process.env.ROUTING_BASE_URL =
+      "https://managed-routing.example/route/v1/walking,https://routing.openstreetmap.de/routed-foot/route/v1/driving";
+    assert.equal(routingProviderConfig().mode, "public_shared");
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("recover route enforces one deadline from preflight through persistence", async () => {
   const source = await readFile(
     `${ROOT}/app/api/v1/recover/route.ts`,
     "utf8",
@@ -425,11 +604,52 @@ test("recover route enforces one deadline across fetch cancellation and persiste
      upstream latency, which is a legitimate change, so the shape is asserted
      instead: a single declared constant, reused rather than duplicated. */
   assert.match(source, /const RECOVERY_RESPONSE_BUDGET_MS = \d[\d_]*;/);
+  assert.match(source, /const PERSISTENCE_COMMIT_RESERVE_MS = \d[\d_]*;/);
   assert.match(source, /deadlineAt = Date\.now\(\) \+ RECOVERY_RESPONSE_BUDGET_MS/);
+  assert.match(
+    source,
+    /commitDeadlineAt = deadlineAt - PERSISTENCE_COMMIT_RESERVE_MS/,
+  );
   assert.match(source, /deadlineController\.abort\(\)/);
   assert.match(source, /signal:\s*deadlineController\.signal/);
-  assert.match(source, /Promise\.race\(\[\s*persistRecovery\(/);
+  assert.match(source, /beforeDeadline\(\s*allowDurableRequest\(/);
+  assert.match(source, /beforeDeadline\(request\.json\(\), deadlineAt\)/);
+  assert.match(source, /beforeDeadline\(\s*getOwnedSessionItinerary\(/);
+  assert.match(source, /beforeDeadline\(\s*recoverTrip\(/);
+  assert.match(source, /beforeDeadline\(\s*persistRecovery\(/);
+  assert.match(source, /persistRecovery\([\s\S]{0,300}commitDeadlineAt/);
   assert.match(source, /RECOVERY_DEADLINE_EXCEEDED/);
+  assert.match(source, /status:\s*persistenceStatus/);
+  assert.match(source, /persistenceStatus[\s\S]{0,100}\? "unknown"/);
+  assert.doesNotMatch(source, /저장되지 않은 후보/);
+});
+
+test("shared deadline helper resolves fast work and rejects stalled preflight work", async () => {
+  const { beforeDeadline, DeadlineExceededError } = await import(
+    "../lib/deadline.ts"
+  );
+  assert.equal(
+    await beforeDeadline(Promise.resolve("ok"), Date.now() + 100),
+    "ok",
+  );
+  await assert.rejects(
+    beforeDeadline(new Promise(() => {}), Date.now() + 15),
+    DeadlineExceededError,
+  );
+  await assert.rejects(
+    beforeDeadline(Promise.resolve("late"), Date.now() - 1),
+    DeadlineExceededError,
+  );
+  const blockedDeadline = Date.now() + 15;
+  const microtaskWinsBeforeTimer = beforeDeadline(
+    new Promise((resolve) => setTimeout(() => resolve("too-late"), 1)),
+    blockedDeadline,
+  );
+  while (Date.now() < blockedDeadline + 10) {
+    // Deliberately block the event loop so the earlier work timer resolves
+    // before the deadline timer; the absolute-time recheck must still reject.
+  }
+  await assert.rejects(microtaskWinsBeforeTimer, DeadlineExceededError);
 });
 
 test("partner recovery and operator control use different bearer secrets", async () => {

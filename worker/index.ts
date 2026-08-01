@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { refreshKtoHealth } from "../lib/kto/health-refresh";
 import { runPolicySync } from "../lib/sync/policy-sync";
+import { refreshProviderProbes } from "../lib/provider-readiness";
 
 interface Env {
   ASSETS: Fetcher;
@@ -12,6 +13,9 @@ interface Env {
   PARTNER_API_KEY?: string;
   OPS_API_KEY?: string;
   KAKAO_REST_API_KEY?: string;
+  KMA_SERVICE_KEY?: string;
+  SESSION_SIGNING_KEY?: string;
+  RELEASE_AUDITOR_API_KEY?: string;
   REVERSE_GEOCODE_URL?: string;
   FORWARD_GEOCODE_URL?: string;
   ROUTING_BASE_URL?: string;
@@ -56,15 +60,44 @@ const worker = {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("Cross-Origin-Opener-Policy", "same-origin");
+    headers.set("Cross-Origin-Resource-Policy", "same-origin");
+    headers.set("Origin-Agent-Cluster", "?1");
     headers.set("X-Frame-Options", "DENY");
+    headers.set("X-DNS-Prefetch-Control", "off");
+    headers.set("X-Permitted-Cross-Domain-Policies", "none");
     headers.set(
       "Permissions-Policy",
-      "geolocation=(self), camera=(), microphone=(), payment=()",
+      "geolocation=(self), camera=(), microphone=(), payment=(), accelerometer=(), gyroscope=(), magnetometer=(), usb=()",
     );
+    const contentSecurityPolicy = [
+      "default-src 'self'",
+      // Vinext emits the framework bootstrap as inline script and application
+      // styles include React style attributes. Keep these narrowly scoped and
+      // forbid inline event-handler attributes separately.
+      "script-src 'self' 'unsafe-inline'",
+      "script-src-attr 'none'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: https:",
+      "font-src 'self' data:",
+      "connect-src 'self' https://apis.data.go.kr ws: wss:",
+      "worker-src 'self'",
+      "manifest-src 'self'",
+      "media-src 'self'",
+      "frame-src 'none'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      ...(url.protocol === "https:" ? ["upgrade-insecure-requests"] : []),
+    ].join("; ");
     headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://apis.data.go.kr ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      contentSecurityPolicy,
     );
+    if (url.pathname === "/sw.js") {
+      headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+      headers.set("Service-Worker-Allowed", "/");
+    }
     if (url.protocol === "https:") {
       headers.set(
         "Strict-Transport-Security",
@@ -98,6 +131,15 @@ const worker = {
        skips itself when a recent probe already covers the window. */
     ctx.waitUntil(
       refreshKtoHealth().then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    /* Managed auxiliary providers are actively contract-checked as a
+       separate stored snapshot. The helper skips fresh evidence and
+       coalesces concurrent work, so the hourly cron cannot create a storm. */
+    ctx.waitUntil(
+      refreshProviderProbes().then(
         () => undefined,
         () => undefined,
       ),

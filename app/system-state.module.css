@@ -1,0 +1,119 @@
+.shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f7f3ea;
+  color: #142d26;
+}
+
+.card {
+  width: min(100%, 560px);
+  padding: clamp(24px, 6vw, 48px);
+  border: 1px solid #b7c9be;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(20, 45, 38, 0.12);
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  color: #315f50;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.title {
+  margin: 0;
+  color: #102b23;
+  font-size: clamp(1.75rem, 7vw, 2.5rem);
+  line-height: 1.15;
+}
+
+.description {
+  margin: 18px 0 0;
+  color: #344f46;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.primary,
+.secondary {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 20px;
+  border: 2px solid #174a3a;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.primary {
+  background: #174a3a;
+  color: #ffffff;
+}
+
+.secondary {
+  background: #ffffff;
+  color: #174a3a;
+}
+
+.primary:hover,
+.primary:focus-visible {
+  background: #0f3529;
+  border-color: #0f3529;
+}
+
+.secondary:hover,
+.secondary:focus-visible {
+  background: #e8f0eb;
+}
+
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 3px solid #f0a92f;
+  outline-offset: 3px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #174a3a;
+  font-weight: 700;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #b7c9be;
+  border-top-color: #174a3a;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-color: #174a3a;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

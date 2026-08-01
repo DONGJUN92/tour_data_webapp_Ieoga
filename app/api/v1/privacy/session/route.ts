@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteSessionData } from "@/lib/db/repository";
-import { jsonResponse } from "@/lib/http";
+import {
+  jsonResponse,
+  readSessionId,
+  requireSessionSigning,
+} from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
 export async function DELETE(request: NextRequest) {
-  const sessionId = request.cookies.get("ieoga_session")?.value;
-  if (sessionId && /^[a-f0-9-]{32,40}$/i.test(sessionId)) {
+  const signingUnavailable = requireSessionSigning();
+  if (signingUnavailable) return signingUnavailable;
+  const sessionId = readSessionId(request);
+  if (sessionId) {
     const result = await deleteSessionData(sessionId);
     if (!result.persisted) {
       return jsonResponse(

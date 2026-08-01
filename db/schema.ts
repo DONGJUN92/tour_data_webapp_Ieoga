@@ -185,6 +185,7 @@ export const recoveryOptions = sqliteTable(
     routeEvidenceJson: text("route_evidence_json"),
     scheduleDiffJson: text("schedule_diff_json"),
     continuityProofJson: text("continuity_proof_json"),
+    applicationSnapshotJson: text("application_snapshot_json"),
     createdAt: createdAt(),
   },
   (table) => [
@@ -346,6 +347,80 @@ export const sourceHealth = sqliteTable(
     checkedAt: text("checked_at").notNull(),
     errorCode: text("error_code"),
   },
+);
+
+export const providerProbeSnapshots = sqliteTable(
+  "provider_probe_snapshots",
+  {
+    provider: text("provider").primaryKey(),
+    mode: text("mode").notNull(),
+    configurationFingerprint: text("configuration_fingerprint").notNull(),
+    endpointCount: integer("endpoint_count").notNull(),
+    status: text("status").notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    checkedAt: text("checked_at").notNull(),
+    errorCode: text("error_code"),
+  },
+  (table) => [
+    index("provider_probe_status_idx").on(table.status, table.checkedAt),
+  ],
+);
+
+export const fieldEvidenceRegistry = sqliteTable(
+  "field_evidence_registry",
+  {
+    id: text("id").primaryKey(),
+    evidenceType: text("evidence_type").notNull(),
+    sampleSize: integer("sample_size").notNull(),
+    regionsJson: text("regions_json").notNull().default("[]"),
+    metricsJson: text("metrics_json").notNull().default("{}"),
+    artifactReference: text("artifact_reference").notNull(),
+    reviewersJson: text("reviewers_json").notNull().default("[]"),
+    measuredAt: text("measured_at").notNull(),
+    reviewedAt: text("reviewed_at").notNull(),
+    validated: integer("validated", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    validationErrorsJson: text("validation_errors_json")
+      .notNull()
+      .default("[]"),
+    independentAuditStatus: text("independent_audit_status")
+      .notNull()
+      .default("pending"),
+    approvedAt: text("approved_at"),
+    approvedBy: text("approved_by"),
+    auditNotes: text("audit_notes"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("field_evidence_type_date_idx").on(
+      table.evidenceType,
+      table.reviewedAt,
+    ),
+    index("field_evidence_validated_idx").on(
+      table.validated,
+      table.evidenceType,
+    ),
+    index("field_evidence_audit_status_idx").on(
+      table.independentAuditStatus,
+      table.evidenceType,
+    ),
+  ],
+);
+
+export const durableRateLimitWindows = sqliteTable(
+  "durable_rate_limit_windows",
+  {
+    key: text("key").primaryKey(),
+    namespace: text("namespace").notNull(),
+    count: integer("count").notNull().default(1),
+    resetAt: text("reset_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("durable_rate_limit_expiry_idx").on(table.expiresAt),
+  ],
 );
 
 export const regionPolicySnapshots = sqliteTable(

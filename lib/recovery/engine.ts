@@ -27,6 +27,7 @@ import {
   type WalkingRouteEvidence,
 } from "@/lib/mobility/routing";
 import { getWeatherEvidence } from "@/lib/weather/service";
+import { strictFiniteNumber } from "@/lib/validation/numbers";
 import type { RecoveryRequest } from "./schema";
 import type {
   EvidenceGap,
@@ -103,9 +104,12 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function numberValue(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
+function numberInRange(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  return strictFiniteNumber(value, { minimum, maximum });
 }
 
 function normalizeName(value: string): string {
@@ -122,12 +126,48 @@ function normalizedImage(value: unknown): string | undefined {
   return raw.startsWith("http://") ? `https://${raw.slice(7)}` : raw;
 }
 
-function isIndoorType(item: KtoItem): boolean {
+const VERIFIED_INDOOR_CATEGORY_CODES = new Set([
+  "A02060100", // museum
+  "A02060200", // memorial hall
+  "A02060300", // exhibition hall
+  "A02060400", // convention centre
+  "A02060500", // art museum / gallery
+  "A02060600", // performance hall
+  "A02060700", // cultural centre
+  "A02060800", // library
+  "A02060900", // large bookstore
+  "A02061000", // cultural school
+  "A02061100", // cinema
+  "A04010100", // department store
+  "A04010200", // shopping centre
+  "A04010400", // duty-free shop
+]);
+
+export function hasVerifiedIndoorEvidence(item: KtoItem): boolean {
   const contentTypeId = stringValue(item.contenttypeid);
-  const mediumClass = stringValue(item.lclsSystm2);
+  const title = stringValue(item.title);
+  const categoryCode = stringValue(
+    item.cat3 ?? item.lclsSystm3 ?? item.lclsSystm2,
+  );
+  const explicitOutdoor =
+    /공원|산책로|둘레길|트레킹|해변|해수욕장|광장|정원|수목원|숲|산\b|계곡|폭포|캠핑|야영|전망대|유적|고궁|궁궐|성곽|섬|항구|시장/i.test(
+      `${title} ${stringValue(item.cat1)} ${stringValue(item.cat2)} ${categoryCode}`,
+    );
+  if (explicitOutdoor) return false;
+  if (VERIFIED_INDOOR_CATEGORY_CODES.has(categoryCode)) return true;
+
+  /* Food establishments are an indoor TourAPI content class unless the
+     record explicitly describes an outdoor venue above. Culture and shopping
+     are too broad (parks and traditional markets are often classified there),
+     so they additionally require an indoor-specific name. */
+  if (contentTypeId === "39") return true;
+  const explicitIndoorName =
+    /박물관|미술관|전시관|기념관|과학관|도서관|문화관|문화센터|공연장|극장|영화관|아쿠아리움|수족관|백화점|쇼핑몰|면세점|실내|갤러리|체험관/i.test(
+      title,
+    );
   return (
-    ["14", "38", "39"].includes(contentTypeId) ||
-    ["VE03", "VE04", "VE06"].includes(mediumClass)
+    explicitIndoorName &&
+    (contentTypeId === "14" || contentTypeId === "38")
   );
 }
 
@@ -319,7 +359,7 @@ function currentForecastByTitle(items: KtoItem[]): Map<
 
   for (const item of items) {
     const name = normalizeName(stringValue(item.tAtsNm));
-    const rate = numberValue(item.cnctrRate);
+    const rate = numberInRange(item.cnctrRate, 0, 100);
     const baseDate = stringValue(item.baseYmd);
     if (!name || rate === undefined || !baseDate) continue;
     const values = grouped.get(name) ?? [];
@@ -351,7 +391,7 @@ function relatedRankByTitle(
   for (const item of items) {
     if (normalizeName(stringValue(item.tAtsNm)) !== normalizedOrigin) continue;
     const name = normalizeName(stringValue(item.rlteTatsNm));
-    const rank = numberValue(item.rlteRank);
+    const rank = numberInRange(item.rlteRank, 1, 100_000);
     if (!name || rank === undefined) continue;
     const current = ranks.get(name);
     if (current === undefined || rank < current) ranks.set(name, rank);
@@ -1761,8 +1801,8 @@ export async function recoverTrip(
     const contentId = stringValue(item.contentid);
     const contentTypeId = stringValue(item.contenttypeid);
     const title = stringValue(item.title) || "이름 미확인 관광지";
-    const latitude = numberValue(item.mapy);
-    const longitude = numberValue(item.mapx);
+    const latitude = numberInRange(item.mapy, 32, 39.8);
+    const longitude = numberInRange(item.mapx, 124, 132);
     if (!contentId || latitude === undefined || longitude === undefined) {
       rejected.push({
         contentId: contentId || undefined,
@@ -1805,7 +1845,7 @@ export async function recoverTrip(
       continue;
     }
 
-    const apiDistance = numberValue(item.dist);
+    const apiDistance = numberInRange(item.dist, 0, 100_000);
     const distanceMeters =
       apiDistance ??
       haversineMeters(input.origin, {
@@ -1846,27 +1886,24 @@ export async function recoverTrip(
       continue;
     }
 
-    /* Coverage of the supporting datasets is partial — accessibility details
-       and concentration forecasts exist mainly for major sites, and indoor use
-       can only be inferred from the content type. Treating "not stated" as
-       "fails" emptied the result for exactly the travellers who need it most:
-       across ten scenarios these three checks removed 219 candidates and left
-       stroller, wheelchair and crowd journeys with nothing at all.
-
-       The proposal's rule is three-tier — verified, needs confirmation,
-       excluded — so an unconfirmed condition is recorded as a gap rather than
-       a rejection. Verified candidates still rank first, the gap travels with
-       the option through to the response, and nothing is ever presented as
-       checked when it was not. Hard facts (time, distance, confirmed closure)
-       continue to exclude outright. */
-    const indoor = isIndoorType(item);
-    const evidenceGaps: EvidenceGap[] = [];
+    /* Rain/indoor is a safety-critical hard constraint. A candidate whose
+       official content classification does not support indoor use is rejected
+       rather than offered with a caveat. Accessibility and crowd coverage can
+       remain partial, but those gaps stay explicit and force the overall
+       response out of the verified state below. */
+    const indoor = hasVerifiedIndoorEvidence(item);
     if (indoorRequired && !indoor) {
-      evidenceGaps.push({
-        code: "INDOOR_UNVERIFIED",
-        note: "공식 콘텐츠 유형만으로 실내 이용 가능성을 확인하지 못했습니다.",
+      rejected.push({
+        contentId,
+        title,
+        reasonCode: "INDOOR_UNVERIFIED",
+        reason:
+          "공식 관광 콘텐츠 분류에서 실내 이용 가능성을 확인할 수 없어 실내 필수 후보에서 제외했습니다.",
+        distanceMeters,
       });
+      continue;
     }
+    const evidenceGaps: EvidenceGap[] = [];
 
     if (input.audience !== "general" && !accessibleIds.has(contentId)) {
       evidenceGaps.push({
@@ -2041,6 +2078,7 @@ export async function recoverTrip(
   );
   const hasConditionalEvidence = options.some(
     (option) =>
+      option.confirmationRequired ||
       option.availability.status !== "confirmed_open" ||
       (context &&
         option.continuityProof.routeEvidence.status !== "routed") ||

@@ -1,26 +1,64 @@
 import { z } from "zod";
+import {
+  districtBelongsToRegion,
+  isOfficialRegionCode,
+  isPlausibleOfficialDistrictCode,
+} from "@/lib/kto/registry";
 
 const optionalRegionCode = z
   .string()
   .trim()
-  .regex(/^(?:\d{2}|\d{5})$/)
+  .refine(isOfficialRegionCode, "공식 시도 코드를 확인해 주세요.")
   .optional()
   .transform((value) => value || undefined);
 
 const optionalDistrictCode = z
   .string()
   .trim()
-  .regex(/^\d{5}$/)
+  .refine(
+    isPlausibleOfficialDistrictCode,
+    "공식 시군구 코드 형식을 확인해 주세요.",
+  )
   .optional()
   .transform((value) => value || undefined);
 
-const coordinateSchema = z.object({
+const coordinateFields = {
   latitude: z.number().min(32).max(39.8),
   longitude: z.number().min(124).max(132),
   label: z.string().trim().min(1).max(80),
   areaCode: optionalRegionCode,
   sigunguCode: optionalDistrictCode,
-});
+};
+
+function validateCoordinateAdministrativeScope(
+  location: { areaCode?: string; sigunguCode?: string },
+  context: z.RefinementCtx,
+) {
+  if (location.sigunguCode && !location.areaCode) {
+    context.addIssue({
+      code: "custom",
+      path: ["areaCode"],
+      message: "시군구 코드와 함께 공식 시도 코드가 필요합니다.",
+    });
+  } else if (
+    location.areaCode &&
+    location.sigunguCode &&
+    !districtBelongsToRegion(
+      location.areaCode,
+      location.sigunguCode,
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["sigunguCode"],
+      message: "시군구 코드가 선택한 시도에 속하지 않습니다.",
+    });
+  }
+}
+
+const coordinateSchema = z
+  .object(coordinateFields)
+  .superRefine(validateCoordinateAdministrativeScope);
 
 export const itineraryNodeSchema = z
   .object({
@@ -298,9 +336,12 @@ export const recoveryItinerarySchema = itineraryCoreSchema
   });
 
 export const recoveryRequestSchema = z.object({
-  origin: coordinateSchema.extend({
-    label: z.string().trim().min(1).max(80).default("현재 위치"),
-  }),
+  origin: z
+    .object({
+      ...coordinateFields,
+      label: z.string().trim().min(1).max(80).default("현재 위치"),
+    })
+    .superRefine(validateCoordinateAdministrativeScope),
   incident: z.enum(["rain", "delay", "crowd", "less_walk"]),
   availableMinutes: z.number().int().min(15).max(240),
   maxDistanceMeters: z.number().int().min(300).max(20_000),
@@ -351,6 +392,36 @@ export const journeyExecutionActionSchema = z.discriminatedUnion("action", [
 ]);
 
 export type RecoveryRequest = z.infer<typeof recoveryRequestSchema>;
+
+export function recoveryAdministrativeScopes(
+  input: RecoveryRequest,
+): Array<{ regionCode: string; districtCode: string }> {
+  const locations = [
+    input.origin,
+    ...input.itinerary.nodes.flatMap((node) =>
+      node.location ? [node.location] : [],
+    ),
+  ];
+  return [
+    ...new Map(
+      locations.flatMap((location) => {
+        const regionCode = location.areaCode
+          ? location.areaCode.length === 5
+            ? location.areaCode.slice(0, 2)
+            : location.areaCode
+          : undefined;
+        const districtCode = location.sigunguCode ??
+          (location.areaCode?.length === 5
+            ? location.areaCode
+            : undefined);
+        return regionCode && districtCode
+          ? [[`${regionCode}:${districtCode}`, { regionCode, districtCode }] as const]
+          : [];
+      }),
+    ).values(),
+  ];
+}
+
 export type ItineraryRegistration = z.infer<
   typeof itineraryRegistrationSchema
 >;

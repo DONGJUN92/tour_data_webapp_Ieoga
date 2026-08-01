@@ -69,7 +69,7 @@ export function getNearbyTourism(params: {
       mapY: params.latitude,
       radius: params.radius,
       arrange: "E",
-      lDongRegnCd: params.regionCode,
+      lDongRegnCd: analysisRegionCode(params.regionCode),
       lDongSignguCd: rawDistrictCode(
         params.regionCode,
         params.districtCode,
@@ -111,7 +111,7 @@ export function searchTourism(params: {
       numOfRows: params.numOfRows ?? 20,
       keyword: params.keyword,
       arrange: "A",
-      lDongRegnCd: params.regionCode,
+      lDongRegnCd: analysisRegionCode(params.regionCode),
       lDongSignguCd: rawDistrictCode(
         params.regionCode,
         params.districtCode,

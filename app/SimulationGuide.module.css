@@ -43,7 +43,7 @@
 
 .kicker {
   margin-bottom: 8px;
-  color: #3182f6;
+  color: #1b64da;
   font-size: 13px;
   font-weight: 800;
   line-height: 1.4;
@@ -108,7 +108,7 @@
   place-items: center;
   border-radius: 50%;
   background: #f2f4f6;
-  color: #3182f6;
+  color: #1b64da;
   font-size: 14px;
   font-weight: 900;
 }
@@ -152,7 +152,7 @@
   gap: 10px;
   padding: 15px 20px;
   border-radius: 16px;
-  background: #3182f6;
+  background: #1b64da;
   color: #fff;
   font-size: 16px;
   box-shadow: 0 7px 18px rgba(49, 130, 246, 0.2);
@@ -179,7 +179,7 @@
 
 .actionNote {
   margin-top: 10px;
-  color: #8b95a1;
+  color: #4e5968;
   font-size: 12px;
   line-height: 1.55;
 }

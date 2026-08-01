@@ -11,10 +11,10 @@ export async function GET() {
       .map((item) => ({
         code: String(item.code ?? ""),
         name: String(item.name ?? ""),
-        status: "available_on_demand",
+        status: "scheduled_region_pack",
         coverage: null,
         metrics: null,
-        sourceDate: null,
+        sourceDate: result.audit.sourceReferenceDate ?? null,
       }))
       .filter((item) => item.code && item.name);
 
@@ -24,7 +24,8 @@ export async function GET() {
         officialRegionCount: regions.length,
         regions,
         notice:
-          "각 지역을 선택하면 한국관광공사 정책 OpenAPI 4종의 최신 가용 기준월을 실시간 조회합니다. 미조회 지역에 임의 점수를 채우지 않습니다.",
+          "지역 상세는 운영 동기화가 생성한 최신 검증 지역팩을 읽기 전용으로 제공합니다. 준비되지 않은 지역은 실시간 계산하거나 임의 점수로 채우지 않습니다.",
+        detailDelivery: "scheduled_versioned_region_pack",
         source: result.audit,
       },
       { maxAge: 3_600 },

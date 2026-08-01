@@ -131,7 +131,8 @@ export async function getWalkingRoute(
       const response = await fetch(url, {
         headers: {
           Accept: "application/json",
-          "User-Agent": "IEOGA/1.0 (+https://ieoga.kr)",
+          "User-Agent":
+            "IEOGA/1.0 (+https://github.com/DONGJUN92/tour_data_webapp_Ieoga/issues)",
         },
         signal: options.signal
           ? AbortSignal.any([options.signal, controller.signal])

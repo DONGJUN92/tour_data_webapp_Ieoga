@@ -250,7 +250,7 @@ IP를 바꾸거나 Worker 인스턴스를 나누어도 키 할당량은 늘어�
 | 항목 | 환경변수 | 미설정 시 |
 |---|---|---|
 | 역지오코딩·장소검색 | `KAKAO_REST_API_KEY`, `REVERSE_GEOCODE_URL`, `FORWARD_GEOCODE_URL` | 공개 Nominatim |
-| 도보 경로 | `ROUTING_BASE_URL` | 공개 OSRM |
+| 도보 경로 | `TMAP_APP_KEY`, `ROUTING_BASE_URL` | 공개 OSRM |
 | 날씨 | `KMA_SERVICE_KEY`, `WEATHER_API_URL` | 공개 Open-Meteo |
 
 ### 기상청 단기예보 (날씨)
@@ -302,11 +302,37 @@ Nominatim 호환 엔드포인트로 설정합니다.
 
 ### 도보 경로
 
+`TMAP_APP_KEY`를 설정하면 TMAP 보행자 경로안내가 1순위가 됩니다. 국내
+지하상가 연결과 횡단보도를 공개 OSRM보다 정확히 반영하며, 도착 시각이
+"다음 예약을 지킬 수 있는가"의 판정 근거이므로 경로 품질이 곧 판정
+품질입니다. TMAP은 OSRM 호환 규격이 아니라 별도 어댑터이므로
+`ROUTING_BASE_URL`에는 넣을 수 없습니다.
+
+**키가 있다는 것만으로 준비 상태가 `managed`가 되지는 않습니다.**
+판정 기준은 "무엇이 먼저 응답하는가"가 아니라 "호출 가능한 전체 체인에
+공개 공유 서버가 남아 있는가"입니다. 카카오·기상청과 같은 기준입니다.
+따라서 `TMAP_APP_KEY`만 설정하면 뒤에 공개 OSRM이 남아 있어
+`public_shared`입니다. 준비 상태가 `managed`로 바뀌면 예약 점검이 TMAP
+보행자 경로 API를 실제로 호출해 응답 계약까지 검증합니다.
+
 `ROUTING_BASE_URL`은 OSRM 호환 엔드포인트를 쉼표로 구분해 순서대로
 받습니다. 앞에서부터 시도하고 실패하면 다음으로 넘어갑니다. 값이 있으면
 그 목록이 전체 호출 체인이며 공개 제공자는 자동으로 추가되지 않습니다.
 공개 OSRM을 목록에 직접 넣은 경우에는 fallback 여부를 숨기지 않고 준비
 상태를 `public_shared`로 판정합니다.
+
+`none`, `disabled`, `off` 중 하나를 넣으면 OSRM 폴백이 없다고 명시적으로
+선언합니다. TMAP만으로 운영하는 구성을 표현하기 위한 값입니다.
+
+```dotenv
+# TMAP 단독 운영. 공개 OSRM 폴백 없음
+TMAP_APP_KEY=발급받은_REST_앱키
+ROUTING_BASE_URL=none
+```
+
+이 구성에서 TMAP이 실패하면 경로를 확인하지 못한 후보는 그대로
+탈락합니다. 아래에 적힌 대로 의도된 동작이며, 폴백이 필요하면
+`ROUTING_BASE_URL`에 엔드포인트를 명시적으로 넣으십시오.
 
 ```dotenv
 # 자체 운영 OSRM

@@ -105,21 +105,31 @@ export function forwardGeocodeProviderConfig() {
   );
 }
 
-export function routingProviderConfig() {
+export const TMAP_PEDESTRIAN_URL =
+  "https://apis.openapi.sk.com/tmap/routes/pedestrian";
+
+export function tmapPedestrianConfigured(): boolean {
+  return Boolean(getRuntimeSecret("TMAP_APP_KEY"));
+}
+
+/* The complete chain a walking-route request can actually reach, in call
+   order. TMAP is not an OSRM-compatible endpoint and cannot be expressed in
+   ROUTING_BASE_URL, so it is joined here rather than classified on its own.
+   Readiness asks "does a shared public server remain reachable", not "what
+   answers first" — the same rule Kakao and KMA already live under, where a
+   commercial primary does not hide the public fallback behind it. */
+export function walkingRouteChain(): string[] {
   const endpoints = routingEndpoints();
-  /* TMAP 보행자 경로는 OSRM 호환 엔드포인트가 아니라 별도 어댑터이므로
-     ROUTING_BASE_URL로는 설정할 수 없다. 하지만 키가 있으면 그것이 1순위
-     공급자이고 상용 쿼터를 쓰므로, 준비 상태 판정에서 공용 공유 서버 의존이
-     끝났다고 보는 것이 사실에 맞다. OSRM은 그 뒤의 폴백으로만 남는다. */
-  if (getRuntimeSecret("TMAP_APP_KEY")) {
-    return {
-      url: "https://apis.openapi.sk.com/tmap/routes/pedestrian",
-      mode: "managed" as const,
-    };
-  }
+  return tmapPedestrianConfigured()
+    ? [TMAP_PEDESTRIAN_URL, ...endpoints]
+    : endpoints;
+}
+
+export function routingProviderConfig(): { url?: string; mode: ProviderMode } {
+  const chain = walkingRouteChain();
   return {
-    url: endpoints[0],
-    mode: endpoints.some(
+    url: chain[0],
+    mode: chain.some(
       (url) => sameOrigin(url, PUBLIC_OSRM_WALKING_URL),
     )
       ? ("public_shared" as const)
@@ -127,13 +137,21 @@ export function routingProviderConfig() {
   };
 }
 
+/* Operators need a way to say "no OSRM fallback" out loud. Without it the
+   public default is appended forever, so a deployment running entirely on a
+   commercial provider could never be classified as anything but shared —
+   and the honest classification would be unreachable by configuration. */
+const ROUTING_DISABLED_VALUES = new Set(["none", "disabled", "off"]);
+
 /* Walking ETA is a hard gate: a candidate whose arrival cannot be verified is
    rejected rather than guessed. ROUTING_BASE_URL accepts a comma-separated
    list of OSRM-compatible endpoints, tried in order. A configured list is
    authoritative; operators must explicitly include a shared-public fallback,
    allowing readiness to classify the complete reachable chain truthfully. */
 export function routingEndpoints(): string[] {
-  const configured = splitEndpointList(getRuntimeSecret("ROUTING_BASE_URL"));
+  const raw = getRuntimeSecret("ROUTING_BASE_URL")?.trim();
+  if (raw && ROUTING_DISABLED_VALUES.has(raw.toLowerCase())) return [];
+  const configured = splitEndpointList(raw);
   return configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
 }
 

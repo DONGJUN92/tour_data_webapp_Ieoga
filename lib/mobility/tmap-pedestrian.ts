@@ -1,3 +1,4 @@
+import { TMAP_PEDESTRIAN_URL } from "@/lib/external-providers";
 import { getRuntimeSecret } from "@/lib/runtime-env";
 
 /**
@@ -17,10 +18,6 @@ export type TmapRoute = {
   durationMinutes: number;
   geometry: Array<{ latitude: number; longitude: number }>;
 };
-
-export function tmapPedestrianConfigured(): boolean {
-  return Boolean(getRuntimeSecret("TMAP_APP_KEY"));
-}
 
 type TmapFeature = {
   geometry?: {
@@ -87,7 +84,7 @@ export async function getTmapPedestrianRoute(
   const timeout = setTimeout(() => controller.abort(), 3_500);
   try {
     const response = await fetch(
-      "https://apis.openapi.sk.com/tmap/routes/pedestrian?version=1",
+      `${TMAP_PEDESTRIAN_URL}?version=1`,
       {
         method: "POST",
         headers: {

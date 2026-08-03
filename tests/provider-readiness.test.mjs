@@ -440,3 +440,162 @@ test("capabilities describes the configured chain without naming a different pro
     "shared_public_nominatim_then_kto_nearest",
   );
 });
+
+/* A commercial key must not become a release claim on its own. These cover the
+   walking-route chain end to end: how it is classified, and whether the
+   provider that is claimed is the provider that actually gets called. */
+
+function withRoutingEnv(values, run) {
+  const names = ["TMAP_APP_KEY", "ROUTING_BASE_URL"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) {
+    if (values[name] === undefined) delete process.env[name];
+    else process.env[name] = values[name];
+  }
+  return (async () => {
+    try {
+      return await run();
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  })();
+}
+
+function tmapFeatureCollection() {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [126.977, 37.5796] },
+        properties: { totalDistance: 515, totalTime: 420 },
+      },
+      {
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [126.977, 37.5796],
+            [126.9768, 37.5759],
+          ],
+        },
+        properties: {},
+      },
+    ],
+  };
+}
+
+test("a TMAP key alone does not end the dependency on the shared public router", async () => {
+  const { routingProviderConfig, walkingRouteChain, PUBLIC_OSRM_WALKING_URL } =
+    await import("../lib/external-providers.ts");
+  await withRoutingEnv({ TMAP_APP_KEY: "tmap-app-key" }, async () => {
+    /* TMAP answers first, but public OSRM is still reachable behind it. The
+       same rule Kakao and KMA live under has to apply here. */
+    assert.deepEqual(walkingRouteChain(), [
+      "https://apis.openapi.sk.com/tmap/routes/pedestrian",
+      PUBLIC_OSRM_WALKING_URL,
+    ]);
+    assert.equal(routingProviderConfig().mode, "public_shared");
+  });
+});
+
+test("a shared-public walking chain is never probed, whatever leads it", async () => {
+  const { currentProviderConfigurations, probeProviderConfiguration } =
+    await import("../lib/provider-readiness.ts");
+  await withRoutingEnv({ TMAP_APP_KEY: "tmap-app-key" }, async () => {
+    const configuration = currentProviderConfigurations().find(
+      (entry) => entry.provider === "walkingRouting",
+    );
+    const snapshot = await probeProviderConfiguration(configuration, {
+      fetchImpl: () => assert.fail("a shared chain must not be probed"),
+      timeoutMs: 50,
+    });
+    assert.equal(snapshot.status, "blocked");
+    assert.equal(snapshot.errorCode, "PUBLIC_SHARED_BLOCKED");
+  });
+});
+
+test("declaring no OSRM fallback makes a TMAP-only chain classifiable", async () => {
+  const { routingEndpoints, routingProviderConfig, walkingRouteChain } =
+    await import("../lib/external-providers.ts");
+  await withRoutingEnv(
+    { TMAP_APP_KEY: "tmap-app-key", ROUTING_BASE_URL: "none" },
+    async () => {
+      assert.deepEqual(routingEndpoints(), []);
+      assert.deepEqual(walkingRouteChain(), [
+        "https://apis.openapi.sk.com/tmap/routes/pedestrian",
+      ]);
+      assert.equal(routingProviderConfig().mode, "managed");
+    },
+  );
+});
+
+test("a managed TMAP chain is proven by calling TMAP, not an OSRM endpoint", async () => {
+  const { currentProviderConfigurations, probeProviderConfiguration } =
+    await import("../lib/provider-readiness.ts");
+  await withRoutingEnv(
+    { TMAP_APP_KEY: "tmap-app-key", ROUTING_BASE_URL: "none" },
+    async () => {
+      const calls = [];
+      const snapshot = await probeProviderConfiguration(
+        currentProviderConfigurations().find(
+          (entry) => entry.provider === "walkingRouting",
+        ),
+        {
+          fetchImpl: (input, init) => {
+            calls.push({ url: String(input), init });
+            return Promise.resolve(jsonResponse(tmapFeatureCollection()));
+          },
+          timeoutMs: 50,
+        },
+      );
+      assert.equal(snapshot.status, "success");
+      assert.equal(snapshot.mode, "managed");
+      assert.equal(calls.length, 1);
+      assert.match(calls[0].url, /apis\.openapi\.sk\.com/);
+      assert.equal(calls[0].init.method, "POST");
+      assert.equal(calls[0].init.headers.appKey, "tmap-app-key");
+      /* The credential must not travel to the stored evidence. */
+      assert.ok(!JSON.stringify(snapshot).includes("tmap-app-key"));
+    },
+  );
+});
+
+test("a TMAP response without a usable route fails closed", async () => {
+  const { currentProviderConfigurations, probeProviderConfiguration } =
+    await import("../lib/provider-readiness.ts");
+  await withRoutingEnv(
+    { TMAP_APP_KEY: "tmap-app-key", ROUTING_BASE_URL: "none" },
+    async () => {
+      const configuration = currentProviderConfigurations().find(
+        (entry) => entry.provider === "walkingRouting",
+      );
+      /* An OSRM-shaped answer is not evidence that TMAP works. */
+      const wrongShape = await probeProviderConfiguration(configuration, {
+        fetchImpl: () =>
+          Promise.resolve(
+            jsonResponse({ code: "Ok", routes: [{ distance: 515, duration: 420 }] }),
+          ),
+        timeoutMs: 50,
+      });
+      assert.equal(wrongShape.status, "error");
+      assert.equal(wrongShape.errorCode, "INVALID_RESPONSE_CONTRACT");
+
+      const rejected = await probeProviderConfiguration(configuration, {
+        fetchImpl: () =>
+          Promise.resolve(
+            new Response(JSON.stringify({ error: { code: "INVALID_API_KEY" } }), {
+              status: 403,
+              headers: { "content-type": "application/json" },
+            }),
+          ),
+        timeoutMs: 50,
+      });
+      assert.equal(rejected.status, "error");
+      assert.equal(rejected.errorCode, "HTTP_403");
+    },
+  );
+});

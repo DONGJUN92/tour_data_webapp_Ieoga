@@ -1,11 +1,9 @@
 import {
   routingEndpoints,
   routingProviderConfig,
-} from "@/lib/external-providers";
-import {
-  getTmapPedestrianRoute,
   tmapPedestrianConfigured,
-} from "@/lib/mobility/tmap-pedestrian";
+} from "@/lib/external-providers";
+import { getTmapPedestrianRoute } from "@/lib/mobility/tmap-pedestrian";
 
 export type RoutePoint = {
   latitude: number;

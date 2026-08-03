@@ -7,11 +7,13 @@ import {
   PUBLIC_OPEN_METEO_URL,
   PUBLIC_OSRM_WALKING_URL,
   reverseGeocodeProviderConfig,
-  routingEndpoints,
   routingProviderConfig,
+  TMAP_PEDESTRIAN_URL,
+  walkingRouteChain,
   weatherProviderConfig,
   type ProviderMode,
 } from "@/lib/external-providers";
+import { getRuntimeSecret } from "@/lib/runtime-env";
 
 export const PROVIDER_PROBE_REFRESH_INTERVAL_MS = 3 * 3_600_000;
 export const PROVIDER_PROBE_STALE_AFTER_MS = 6 * 3_600_000;
@@ -109,7 +111,10 @@ const TEST_LONGITUDE = 126.977;
 const ROUTE_DESTINATION_LATITUDE = 37.5759;
 const ROUTE_DESTINATION_LONGITUDE = 126.9768;
 const TEST_QUERY = "경복궁";
-const MAX_ROUTING_ENDPOINTS = 4;
+/* Four OSRM-compatible endpoints were already allowed; TMAP joins the same
+   chain, so the ceiling moves with it rather than rejecting a configuration
+   that was valid before the key was added. */
+const MAX_ROUTING_ENDPOINTS = 5;
 
 function canonicalOrigin(value: string | URL): string {
   const url = value instanceof URL ? value : new URL(value);
@@ -156,7 +161,7 @@ export function currentProviderConfigurations(): ProviderConfiguration[] {
     {
       provider: "walkingRouting",
       mode: routing.mode,
-      endpoints: routingEndpoints(),
+      endpoints: walkingRouteChain(),
     },
     {
       provider: "weather",
@@ -274,6 +279,61 @@ function validRoutingContract(payload: unknown): boolean {
   );
 }
 
+/* TMAP answers with a GeoJSON FeatureCollection rather than the OSRM route
+   object, so it needs its own contract. The fields checked are exactly the
+   ones the adapter reads: without a positive distance and time the arrival
+   check has nothing to decide with, and without a drawable line the route
+   cannot be shown as evidence. */
+function validTmapPedestrianContract(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const features = (payload as { features?: unknown }).features;
+  if (!Array.isArray(features) || features.length === 0) return false;
+
+  let distance: unknown;
+  let time: unknown;
+  let lineCoordinates = 0;
+  for (const feature of features) {
+    if (!feature || typeof feature !== "object") continue;
+    const row = feature as {
+      geometry?: { type?: unknown; coordinates?: unknown };
+      properties?: { totalDistance?: unknown; totalTime?: unknown };
+    };
+    if (distance === undefined && row.properties?.totalDistance !== undefined) {
+      distance = row.properties.totalDistance;
+    }
+    if (time === undefined && row.properties?.totalTime !== undefined) {
+      time = row.properties.totalTime;
+    }
+    if (
+      row.geometry?.type === "LineString" &&
+      Array.isArray(row.geometry.coordinates)
+    ) {
+      for (const point of row.geometry.coordinates) {
+        if (
+          Array.isArray(point) &&
+          point.length >= 2 &&
+          finiteCoordinate(point[0], 124, 132) &&
+          finiteCoordinate(point[1], 32, 39.8)
+        ) {
+          lineCoordinates += 1;
+        }
+      }
+    }
+  }
+
+  return (
+    typeof distance === "number" &&
+    Number.isFinite(distance) &&
+    distance > 0 &&
+    typeof time === "number" &&
+    Number.isFinite(time) &&
+    time > 0 &&
+    lineCoordinates >= 2
+  );
+}
+
 function validWeatherContract(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return false;
@@ -306,6 +366,7 @@ function errorCode(error: unknown): string {
       return "INVALID_RESPONSE_CONTRACT";
     }
     if (error.message === "INSECURE_ENDPOINT") return "INSECURE_ENDPOINT";
+    if (error.message === "MISSING_CREDENTIAL") return "MISSING_CREDENTIAL";
     if (error.message === "INSECURE_REDIRECT") return "INSECURE_REDIRECT";
     if (error.message === "MISSING_RESPONSE_URL") {
       return "MISSING_RESPONSE_URL";
@@ -380,6 +441,56 @@ async function fetchJsonWithTimeout(
           : "CROSS_ORIGIN_REDIRECT",
       );
     }
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    return await Promise.race([response.json(), timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+/* TMAP is a POST with a header credential, so it cannot go through the shared
+   GET probe. Claiming the provider is managed without ever calling it is what
+   this whole probe exists to prevent, so the real endpoint is exercised with
+   the same coordinates, timeout and error vocabulary as every other one. */
+async function probeTmapPedestrian(
+  fetchImpl: FetchLike,
+  timeoutMs: number,
+): Promise<unknown> {
+  const appKey = getRuntimeSecret("TMAP_APP_KEY");
+  if (!appKey) throw new Error("MISSING_CREDENTIAL");
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("PROVIDER_PROBE_TIMEOUT"));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetchImpl(`${TMAP_PEDESTRIAN_URL}?version=1`, {
+        method: "POST",
+        headers: {
+          appKey,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          startX: TEST_LONGITUDE,
+          startY: TEST_LATITUDE,
+          endX: ROUTE_DESTINATION_LONGITUDE,
+          endY: ROUTE_DESTINATION_LATITUDE,
+          reqCoordType: "WGS84GEO",
+          resCoordType: "WGS84GEO",
+          startName: "출발",
+          endName: "도착",
+          searchOption: "0",
+        }),
+        signal: controller.signal,
+        cache: "no-store",
+      }),
+      timeoutPromise,
+    ]);
     if (!response.ok) throw new Error(`HTTP_${response.status}`);
     return await Promise.race([response.json(), timeoutPromise]);
   } finally {
@@ -485,17 +596,30 @@ export async function probeProviderConfiguration(
   }
 
   const startedAt = Date.now();
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? PROVIDER_PROBE_TIMEOUT_MS;
   try {
-    const payloads = await Promise.all(
-      configuration.endpoints.map((endpoint) =>
-        fetchJsonWithTimeout(
-          probeUrl(configuration, endpoint),
-          options.fetchImpl ?? fetch,
-          options.timeoutMs ?? PROVIDER_PROBE_TIMEOUT_MS,
-        ),
-      ),
+    const contractsHeld = await Promise.all(
+      configuration.endpoints.map(async (endpoint) => {
+        if (
+          configuration.provider === "walkingRouting" &&
+          endpoint === TMAP_PEDESTRIAN_URL
+        ) {
+          return validTmapPedestrianContract(
+            await probeTmapPedestrian(fetchImpl, timeoutMs),
+          );
+        }
+        return contractValid(
+          configuration.provider,
+          await fetchJsonWithTimeout(
+            probeUrl(configuration, endpoint),
+            fetchImpl,
+            timeoutMs,
+          ),
+        );
+      }),
     );
-    if (payloads.some((payload) => !contractValid(configuration.provider, payload))) {
+    if (contractsHeld.some((held) => !held)) {
       throw new Error("INVALID_RESPONSE_CONTRACT");
     }
     return {

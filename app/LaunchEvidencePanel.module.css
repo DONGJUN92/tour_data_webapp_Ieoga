@@ -185,6 +185,44 @@
   line-height: 1.5;
 }
 
+.checkedAt {
+  margin: 16px 0 0;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: #f7f8fa;
+  display: grid;
+  gap: 6px;
+}
+
+.checkedAt > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.checkedAt dt {
+  color: #4e5968;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.checkedAt dd {
+  margin: 0;
+  color: #1b1e27;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.checkedAt p {
+  margin: 2px 0 0;
+  color: #8b95a1;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
 @media (max-width: 640px) {
   .panel {
     padding: 22px 18px;

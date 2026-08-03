@@ -69,10 +69,18 @@ export type ProviderReadinessReport = {
   providers: Record<ProviderName, ProviderReadinessItem>;
 };
 
+/* This is the machine-readable answer to "what will actually answer my
+   request", so it has to name the provider that answers and stop naming ones
+   that were switched off. Saying `configured_osrm_compatible` while TMAP does
+   the work, or `then_configured_weather` when there is no fallback left, is
+   the same kind of unearned claim the probes exist to prevent. */
 export function describeProviderCapabilities(params: {
   providers: Record<ProviderName, ProviderMode>;
   kakaoConfigured: boolean;
   kmaConfigured: boolean;
+  tmapConfigured: boolean;
+  osrmFallbackPresent: boolean;
+  openMeteoFallbackPresent: boolean;
 }): {
   routeMethod: string;
   weatherMethod: string;
@@ -92,14 +100,25 @@ export function describeProviderCapabilities(params: {
     params.providers.weather === "managed"
       ? "configured_weather"
       : "shared_public_open_meteo";
+  /* Only the trailing OSRM-compatible and Open-Meteo-compatible entries can be
+     the shared public ones, so the chain mode describes them exactly. */
+  const routeChain = [
+    ...(params.tmapConfigured ? ["tmap_pedestrian"] : []),
+    ...(params.osrmFallbackPresent
+      ? [
+          params.providers.walkingRouting === "managed"
+            ? "configured_osrm_compatible"
+            : "shared_public_osrm_compatible",
+        ]
+      : []),
+  ];
+  const weatherChainMethods = [
+    ...(params.kmaConfigured ? ["kma_short_term"] : []),
+    ...(params.openMeteoFallbackPresent ? [weatherFallback] : []),
+  ];
   return {
-    routeMethod:
-      params.providers.walkingRouting === "managed"
-        ? "configured_osrm_compatible"
-        : "shared_public_osrm_compatible",
-    weatherMethod: params.kmaConfigured
-      ? `kma_when_configured_then_${weatherFallback}`
-      : weatherFallback,
+    routeMethod: routeChain.join("_then_") || "none_configured",
+    weatherMethod: weatherChainMethods.join("_then_") || "none_configured",
     reverseMethod: params.kakaoConfigured
       ? `kakao_when_configured_then_${reverseFallback}_then_kto_nearest`
       : `${reverseFallback}_then_kto_nearest`,

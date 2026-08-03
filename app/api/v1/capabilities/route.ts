@@ -1,3 +1,8 @@
+import {
+  openMeteoEndpoint,
+  routingEndpoints,
+  tmapPedestrianConfigured,
+} from "@/lib/external-providers";
 import { publicJsonResponse } from "@/lib/http";
 import { externalProviderStatus } from "@/lib/runtime-readiness";
 import { kakaoLocalConfigured } from "@/lib/location/kakao-local";
@@ -15,6 +20,9 @@ export async function GET() {
     providers,
     kakaoConfigured,
     kmaConfigured: domesticWeatherConfigured,
+    tmapConfigured: tmapPedestrianConfigured(),
+    osrmFallbackPresent: routingEndpoints().length > 0,
+    openMeteoFallbackPresent: openMeteoEndpoint() !== undefined,
   });
   return publicJsonResponse(
     {

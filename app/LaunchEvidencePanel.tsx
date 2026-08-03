@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import styles from "./LaunchEvidencePanel.module.css";
+import { formatDate } from "./product-app-model";
 
 type EvidenceStatus =
   | "verified"
@@ -33,8 +34,39 @@ const STATUS_META: Record<
   release_blocker: { label: "출시 차단", symbol: "!" },
 };
 
+/* 이 화면의 상태가 언제 확인된 것인지는 상태 자체만큼 중요하다. 예약 점검이
+   매시 도는 구조라 표시된 판정이 몇 시간 전 것일 수 있고, 읽는 사람이 그걸
+   알 방법이 없으면 지금 이 순간의 사실로 읽는다. 값은 이미 응답에 들어 있어
+   추가 호출이 없다. */
+type EvidenceRuntime = {
+  sourceHealthCheckedAt?: string | null;
+  providerProbes?: {
+    providers?: Record<string, { checkedAt?: string }>;
+  };
+};
+
+function oldestProbeCheckedAt(runtime: EvidenceRuntime | null): string | undefined {
+  const providers = runtime?.providerProbes?.providers;
+  if (!providers) return undefined;
+  /* 가장 오래된 항목을 쓴다. 하나라도 오래됐으면 전체 판정이 그만큼 오래된
+     것이므로, 가장 최근 시각을 보여 주면 실제보다 최신으로 읽힌다. */
+  let oldest: number | undefined;
+  let label: string | undefined;
+  for (const item of Object.values(providers)) {
+    if (!item?.checkedAt) continue;
+    const at = Date.parse(item.checkedAt);
+    if (!Number.isFinite(at)) continue;
+    if (oldest === undefined || at < oldest) {
+      oldest = at;
+      label = item.checkedAt;
+    }
+  }
+  return label;
+}
+
 export function LaunchEvidencePanel() {
   const [report, setReport] = useState<EvidenceReport | null>(null);
+  const [runtime, setRuntime] = useState<EvidenceRuntime | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">(
     "loading",
   );
@@ -48,14 +80,17 @@ export function LaunchEvidencePanel() {
       });
       const payload = (await response.json()) as {
         report?: EvidenceReport;
+        runtime?: EvidenceRuntime;
       };
       if (!response.ok || !payload.report) {
         throw new Error("launch evidence unavailable");
       }
       setReport(payload.report);
+      setRuntime(payload.runtime ?? null);
       setState("ready");
     } catch {
       setReport(null);
+      setRuntime(null);
       setState("error");
     }
   }
@@ -69,23 +104,29 @@ export function LaunchEvidencePanel() {
       .then(async (response) => {
         const payload = (await response.json()) as {
           report?: EvidenceReport;
+          runtime?: EvidenceRuntime;
         };
         if (!response.ok || !payload.report) {
           throw new Error("launch evidence unavailable");
         }
         if (!live) return;
         setReport(payload.report);
+        setRuntime(payload.runtime ?? null);
         setState("ready");
       })
       .catch(() => {
         if (!live) return;
         setReport(null);
+        setRuntime(null);
         setState("error");
       });
     return () => {
       live = false;
     };
   }, []);
+
+  const sourceCheckedAt = runtime?.sourceHealthCheckedAt ?? undefined;
+  const probeCheckedAt = oldestProbeCheckedAt(runtime);
 
   return (
     <section
@@ -169,6 +210,34 @@ export function LaunchEvidencePanel() {
               );
             })}
           </ul>
+
+          {(sourceCheckedAt || probeCheckedAt) && (
+            <dl className={styles.checkedAt}>
+              {sourceCheckedAt && (
+                <div>
+                  <dt>관광정보 8종 마지막 점검</dt>
+                  <dd>
+                    <time dateTime={sourceCheckedAt}>
+                      {formatDate(sourceCheckedAt)}
+                    </time>
+                  </dd>
+                </div>
+              )}
+              {probeCheckedAt && (
+                <div>
+                  <dt>외부 제공자 마지막 점검</dt>
+                  <dd>
+                    <time dateTime={probeCheckedAt}>
+                      {formatDate(probeCheckedAt)}
+                    </time>
+                  </dd>
+                </div>
+              )}
+              <p>
+                매시 예약 점검이 갱신합니다. 위 판정은 이 시각 기준입니다.
+              </p>
+            </dl>
+          )}
         </>
       )}
     </section>

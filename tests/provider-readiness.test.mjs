@@ -395,7 +395,7 @@ test("0009 migration and Drizzle snapshot contain only provider probe evidence",
   );
 });
 
-test("capabilities describes the configured chain without naming a different provider", async () => {
+test("capabilities names the provider that actually answers", async () => {
   const { describeProviderCapabilities } = await import(
     "../lib/provider-readiness.ts"
   );
@@ -408,12 +408,12 @@ test("capabilities describes the configured chain without naming a different pro
     },
     kakaoConfigured: true,
     kmaConfigured: true,
+    tmapConfigured: false,
+    osrmFallbackPresent: true,
+    openMeteoFallbackPresent: true,
   });
   assert.equal(managed.routeMethod, "configured_osrm_compatible");
-  assert.equal(
-    managed.weatherMethod,
-    "kma_when_configured_then_configured_weather",
-  );
+  assert.equal(managed.weatherMethod, "kma_short_term_then_configured_weather");
   assert.equal(
     managed.reverseMethod,
     "kakao_when_configured_then_configured_reverse_then_kto_nearest",
@@ -432,6 +432,9 @@ test("capabilities describes the configured chain without naming a different pro
     },
     kakaoConfigured: false,
     kmaConfigured: false,
+    tmapConfigured: false,
+    osrmFallbackPresent: true,
+    openMeteoFallbackPresent: true,
   });
   assert.equal(shared.routeMethod, "shared_public_osrm_compatible");
   assert.equal(shared.weatherMethod, "shared_public_open_meteo");
@@ -439,6 +442,70 @@ test("capabilities describes the configured chain without naming a different pro
     shared.reverseMethod,
     "shared_public_nominatim_then_kto_nearest",
   );
+});
+
+test("capabilities stops naming providers that were switched off", async () => {
+  const { describeProviderCapabilities } = await import(
+    "../lib/provider-readiness.ts"
+  );
+  /* TMAP leading a chain that still falls back to the public router. */
+  const leading = describeProviderCapabilities({
+    providers: {
+      reverseGeocoding: "public_shared",
+      forwardGeocoding: "public_shared",
+      walkingRouting: "public_shared",
+      weather: "public_shared",
+    },
+    kakaoConfigured: false,
+    kmaConfigured: true,
+    tmapConfigured: true,
+    osrmFallbackPresent: true,
+    openMeteoFallbackPresent: true,
+  });
+  assert.equal(
+    leading.routeMethod,
+    "tmap_pedestrian_then_shared_public_osrm_compatible",
+  );
+  assert.equal(
+    leading.weatherMethod,
+    "kma_short_term_then_shared_public_open_meteo",
+  );
+
+  /* Both fallbacks declared absent: nothing but the primary may be named. */
+  const soleProviders = describeProviderCapabilities({
+    providers: {
+      reverseGeocoding: "public_shared",
+      forwardGeocoding: "public_shared",
+      walkingRouting: "managed",
+      weather: "managed",
+    },
+    kakaoConfigured: false,
+    kmaConfigured: true,
+    tmapConfigured: true,
+    osrmFallbackPresent: false,
+    openMeteoFallbackPresent: false,
+  });
+  assert.equal(soleProviders.routeMethod, "tmap_pedestrian");
+  assert.equal(soleProviders.weatherMethod, "kma_short_term");
+  assert.ok(!soleProviders.routeMethod.includes("osrm"));
+  assert.ok(!soleProviders.weatherMethod.includes("open_meteo"));
+
+  /* Nothing configured at all must not read as a working provider. */
+  const empty = describeProviderCapabilities({
+    providers: {
+      reverseGeocoding: "public_shared",
+      forwardGeocoding: "public_shared",
+      walkingRouting: "managed",
+      weather: "managed",
+    },
+    kakaoConfigured: false,
+    kmaConfigured: false,
+    tmapConfigured: false,
+    osrmFallbackPresent: false,
+    openMeteoFallbackPresent: false,
+  });
+  assert.equal(empty.routeMethod, "none_configured");
+  assert.equal(empty.weatherMethod, "none_configured");
 });
 
 /* A commercial key must not become a release claim on its own. These cover the

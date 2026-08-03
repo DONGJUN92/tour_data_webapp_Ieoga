@@ -1,4 +1,4 @@
-import { weatherProviderConfig } from "@/lib/external-providers";
+import { openMeteoEndpoint } from "@/lib/external-providers";
 import { getKmaObservation, kmaConfigured } from "./kma";
 
 export type WeatherProvider = "kma_short_term" | "open_meteo";
@@ -98,7 +98,24 @@ export async function getWeatherEvidence(
 
   const observedAt = new Date().toISOString();
   const attribution = OPEN_METEO_ATTRIBUTION;
-  const url = new URL(weatherProviderConfig().url);
+  const endpoint = openMeteoEndpoint();
+  /* The operator can declare that 기상청 is the only weather source. Then a
+     KMA failure is the end of the answer: reporting no evidence is correct,
+     and silently reaching for a provider that was switched off is not. */
+  if (!endpoint) {
+    const unavailable: WeatherEvidence = {
+      status: "unavailable",
+      observedAt,
+      provider: "kma_short_term",
+      reason: kmaConfigured()
+        ? "기상청 단기예보가 응답하지 않았습니다."
+        : "현재 기상 공급자가 설정되지 않았습니다.",
+      attribution: KMA_ATTRIBUTION,
+    };
+    cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value: unavailable });
+    return unavailable;
+  }
+  const url = new URL(endpoint);
   url.searchParams.set("latitude", String(latitude));
   url.searchParams.set("longitude", String(longitude));
   url.searchParams.set(

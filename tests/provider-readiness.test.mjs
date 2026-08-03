@@ -599,3 +599,164 @@ test("a TMAP response without a usable route fails closed", async () => {
     },
   );
 });
+
+/* The weather chain follows the same rule as the walking chain: 기상청 leading
+   it does not hide the public provider standing behind it. */
+
+function withWeatherEnv(values, run) {
+  const names = ["KMA_SERVICE_KEY", "WEATHER_API_URL"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) {
+    if (values[name] === undefined) delete process.env[name];
+    else process.env[name] = values[name];
+  }
+  return (async () => {
+    try {
+      return await run();
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  })();
+}
+
+function kmaNowcast(items) {
+  return {
+    response: {
+      header: { resultCode: "00", resultMsg: "NORMAL_SERVICE" },
+      body: { items: { item: items } },
+    },
+  };
+}
+
+test("a KMA key alone does not end the dependency on the shared public forecast", async () => {
+  const { weatherChain, weatherProviderConfig, PUBLIC_OPEN_METEO_URL } =
+    await import("../lib/external-providers.ts");
+  await withWeatherEnv({ KMA_SERVICE_KEY: "kma-key" }, async () => {
+    assert.deepEqual(weatherChain(), [
+      "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0",
+      PUBLIC_OPEN_METEO_URL,
+    ]);
+    assert.equal(weatherProviderConfig().mode, "public_shared");
+  });
+});
+
+test("declaring no Open-Meteo fallback makes a KMA-only chain classifiable", async () => {
+  const { openMeteoEndpoint, weatherChain, weatherProviderConfig } =
+    await import("../lib/external-providers.ts");
+  await withWeatherEnv(
+    { KMA_SERVICE_KEY: "kma-key", WEATHER_API_URL: "none" },
+    async () => {
+      assert.equal(openMeteoEndpoint(), undefined);
+      assert.deepEqual(weatherChain(), [
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0",
+      ]);
+      assert.equal(weatherProviderConfig().mode, "managed");
+    },
+  );
+});
+
+test("a managed weather chain is proven by calling 기상청, not Open-Meteo", async () => {
+  const { currentProviderConfigurations, probeProviderConfiguration } =
+    await import("../lib/provider-readiness.ts");
+  await withWeatherEnv(
+    { KMA_SERVICE_KEY: "kma-key", WEATHER_API_URL: "none" },
+    async () => {
+      const calls = [];
+      const snapshot = await probeProviderConfiguration(
+        currentProviderConfigurations().find(
+          (entry) => entry.provider === "weather",
+        ),
+        {
+          fetchImpl: (input) => {
+            const url = new URL(input instanceof Request ? input.url : input);
+            calls.push(url);
+            return Promise.resolve(
+              jsonResponse(
+                kmaNowcast([{ category: "T1H", obsrValue: "27.4" }]),
+                url.toString(),
+              ),
+            );
+          },
+          timeoutMs: 50,
+        },
+      );
+      assert.equal(snapshot.status, "success");
+      assert.equal(snapshot.mode, "managed");
+      assert.equal(calls.length, 1);
+      assert.match(calls[0].pathname, /getUltraSrtNcst$/);
+      /* The service key rides in the query and must stay out of the evidence. */
+      assert.equal(calls[0].searchParams.get("serviceKey"), "kma-key");
+      assert.ok(!JSON.stringify(snapshot).includes("kma-key"));
+      assert.deepEqual(snapshot.endpointCount, 1);
+    },
+  );
+});
+
+test("an unapproved KMA key fails closed even though it answers HTTP 200", async () => {
+  const { currentProviderConfigurations, probeProviderConfiguration } =
+    await import("../lib/provider-readiness.ts");
+  await withWeatherEnv(
+    { KMA_SERVICE_KEY: "kma-key", WEATHER_API_URL: "none" },
+    async () => {
+      const configuration = currentProviderConfigurations().find(
+        (entry) => entry.provider === "weather",
+      );
+      /* The portal reports an unapproved service in the body, not the status. */
+      const denied = await probeProviderConfiguration(configuration, {
+        fetchImpl: (input) => {
+          const url = new URL(input instanceof Request ? input.url : input);
+          return Promise.resolve(
+            jsonResponse(
+              {
+                response: {
+                  header: {
+                    resultCode: "30",
+                    resultMsg: "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+                  },
+                },
+              },
+              url.toString(),
+            ),
+          );
+        },
+        timeoutMs: 50,
+      });
+      assert.equal(denied.status, "error");
+      assert.equal(denied.errorCode, "INVALID_RESPONSE_CONTRACT");
+
+      /* An Open-Meteo-shaped answer is not evidence that 기상청 works. */
+      const wrongShape = await probeProviderConfiguration(configuration, {
+        fetchImpl: (input) => {
+          const url = new URL(input instanceof Request ? input.url : input);
+          return Promise.resolve(
+            jsonResponse(
+              { current: { time: "2026-08-03T15:00", temperature_2m: 27.4, weather_code: 1 } },
+              url.toString(),
+            ),
+          );
+        },
+        timeoutMs: 50,
+      });
+      assert.equal(wrongShape.status, "error");
+      assert.equal(wrongShape.errorCode, "INVALID_RESPONSE_CONTRACT");
+    },
+  );
+});
+
+test("weather evidence reports nothing rather than reaching a switched-off provider", async () => {
+  const { getWeatherEvidence } = await import("../lib/weather/service.ts");
+  await withWeatherEnv({ WEATHER_API_URL: "none" }, async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = () => assert.fail("no weather provider may be called");
+    try {
+      const evidence = await getWeatherEvidence(37.1234, 127.1234);
+      assert.equal(evidence.status, "unavailable");
+      assert.match(evidence.reason, /설정되지 않았습니다/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

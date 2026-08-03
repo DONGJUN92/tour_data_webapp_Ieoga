@@ -6,18 +6,24 @@ import {
   PUBLIC_NOMINATIM_SEARCH_URL,
   PUBLIC_OPEN_METEO_URL,
   PUBLIC_OSRM_WALKING_URL,
+  KMA_SHORT_TERM_URL,
   reverseGeocodeProviderConfig,
   routingProviderConfig,
   TMAP_PEDESTRIAN_URL,
   walkingRouteChain,
+  weatherChain,
   weatherProviderConfig,
   type ProviderMode,
 } from "@/lib/external-providers";
 import { getRuntimeSecret } from "@/lib/runtime-env";
+import { toKmaGrid, ultraShortNowcastBase } from "@/lib/weather/kma";
 
 export const PROVIDER_PROBE_REFRESH_INTERVAL_MS = 3 * 3_600_000;
 export const PROVIDER_PROBE_STALE_AFTER_MS = 6 * 3_600_000;
-export const PROVIDER_PROBE_TIMEOUT_MS = 4_000;
+/* 공공데이터포털의 초단기실황은 실측 3.4초가 나온다. 4초로는 정상 응답이
+   간헐적으로 TIMEOUT으로 기록되어 준비 상태가 이유 없이 흔들린다. 이 점검은
+   예약 작업이라 사용자 요청 경로의 예산과 무관하므로 여유를 둔다. */
+export const PROVIDER_PROBE_TIMEOUT_MS = 8_000;
 
 export const PROVIDER_NAMES = [
   "reverseGeocoding",
@@ -166,7 +172,7 @@ export function currentProviderConfigurations(): ProviderConfiguration[] {
     {
       provider: "weather",
       mode: weather.mode,
-      endpoints: [weather.url],
+      endpoints: weatherChain(),
     },
   ];
 }
@@ -334,6 +340,35 @@ function validTmapPedestrianContract(payload: unknown): boolean {
   );
 }
 
+/* 기상청 answers with its own envelope and its own error dialect: a failed
+   call still returns HTTP 200 with a non-"00" resultCode, and errors arrive as
+   XML even when JSON was asked for. Both are treated as a failed contract so
+   an unapproved key can never read as a working provider. T1H is the field the
+   adapter refuses to proceed without. */
+function validKmaNowcastContract(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const envelope = (payload as {
+    response?: {
+      header?: { resultCode?: unknown };
+      body?: { items?: { item?: unknown } };
+    };
+  }).response;
+  if (envelope?.header?.resultCode !== "00") return false;
+  const item = envelope.body?.items?.item;
+  const items = Array.isArray(item) ? item : item ? [item] : [];
+  return items.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const row = entry as { category?: unknown; obsrValue?: unknown };
+    return (
+      row.category === "T1H" &&
+      row.obsrValue !== undefined &&
+      Number.isFinite(Number(row.obsrValue))
+    );
+  });
+}
+
 function validWeatherContract(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return false;
@@ -498,6 +533,27 @@ async function probeTmapPedestrian(
   }
 }
 
+/* The agency is addressed by its own grid and announcement schedule, so the
+   probe reuses the adapter's own rounding rather than a second copy of it.
+   The key travels in the query of this one request and never reaches the
+   stored snapshot, whose endpoint list holds the bare service URL. */
+function kmaProbeUrl(): URL {
+  const serviceKey = getRuntimeSecret("KMA_SERVICE_KEY");
+  if (!serviceKey) throw new Error("MISSING_CREDENTIAL");
+  const { baseDate, baseTime } = ultraShortNowcastBase();
+  const { nx, ny } = toKmaGrid(TEST_LATITUDE, TEST_LONGITUDE);
+  const url = new URL(`${KMA_SHORT_TERM_URL}/getUltraSrtNcst`);
+  url.searchParams.set("serviceKey", serviceKey);
+  url.searchParams.set("dataType", "JSON");
+  url.searchParams.set("pageNo", "1");
+  url.searchParams.set("numOfRows", "60");
+  url.searchParams.set("base_date", baseDate);
+  url.searchParams.set("base_time", baseTime);
+  url.searchParams.set("nx", String(nx));
+  url.searchParams.set("ny", String(ny));
+  return url;
+}
+
 function probeUrl(configuration: ProviderConfiguration, endpoint: string): URL {
   const url = new URL(endpoint);
   switch (configuration.provider) {
@@ -607,6 +663,14 @@ export async function probeProviderConfiguration(
         ) {
           return validTmapPedestrianContract(
             await probeTmapPedestrian(fetchImpl, timeoutMs),
+          );
+        }
+        if (
+          configuration.provider === "weather" &&
+          endpoint === KMA_SHORT_TERM_URL
+        ) {
+          return validKmaNowcastContract(
+            await fetchJsonWithTimeout(kmaProbeUrl(), fetchImpl, timeoutMs),
           );
         }
         return contractValid(

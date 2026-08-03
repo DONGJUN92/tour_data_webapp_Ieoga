@@ -137,11 +137,16 @@ export function routingProviderConfig(): { url?: string; mode: ProviderMode } {
   };
 }
 
-/* Operators need a way to say "no OSRM fallback" out loud. Without it the
+/* Operators need a way to say "no public fallback" out loud. Without it the
    public default is appended forever, so a deployment running entirely on a
-   commercial provider could never be classified as anything but shared —
-   and the honest classification would be unreachable by configuration. */
-const ROUTING_DISABLED_VALUES = new Set(["none", "disabled", "off"]);
+   commercial or official provider could never be classified as anything but
+   shared — and the honest classification would be unreachable by
+   configuration. */
+const FALLBACK_DISABLED_VALUES = new Set(["none", "disabled", "off"]);
+
+function fallbackDisabled(value: string | undefined): boolean {
+  return Boolean(value && FALLBACK_DISABLED_VALUES.has(value.toLowerCase()));
+}
 
 /* Walking ETA is a hard gate: a candidate whose arrival cannot be verified is
    rejected rather than guessed. ROUTING_BASE_URL accepts a comma-separated
@@ -150,14 +155,45 @@ const ROUTING_DISABLED_VALUES = new Set(["none", "disabled", "off"]);
    allowing readiness to classify the complete reachable chain truthfully. */
 export function routingEndpoints(): string[] {
   const raw = getRuntimeSecret("ROUTING_BASE_URL")?.trim();
-  if (raw && ROUTING_DISABLED_VALUES.has(raw.toLowerCase())) return [];
+  if (fallbackDisabled(raw)) return [];
   const configured = splitEndpointList(raw);
   return configured.length ? configured : [PUBLIC_OSRM_WALKING_URL];
 }
 
-export function weatherProviderConfig() {
-  return providerConfig(
-    getRuntimeSecret("WEATHER_API_URL"),
-    PUBLIC_OPEN_METEO_URL,
-  );
+export const KMA_SHORT_TERM_URL =
+  "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0";
+
+export function kmaShortTermConfigured(): boolean {
+  return Boolean(getRuntimeSecret("KMA_SERVICE_KEY"));
+}
+
+/* The Open-Meteo-compatible endpoint the weather fallback calls, or undefined
+   when the operator has declared there is no fallback. Kept separate from the
+   chain below because callers fetch this one directly and must not be handed
+   the agency URL, which speaks a different contract entirely. */
+export function openMeteoEndpoint(): string | undefined {
+  const raw = getRuntimeSecret("WEATHER_API_URL")?.trim();
+  if (fallbackDisabled(raw)) return undefined;
+  return raw || PUBLIC_OPEN_METEO_URL;
+}
+
+/* 기상청 answers first when its key is set, so it leads the chain the same way
+   TMAP leads walking routes. Readiness asks what remains reachable behind it,
+   not what answers first. */
+export function weatherChain(): string[] {
+  const fallback = openMeteoEndpoint();
+  return [
+    ...(kmaShortTermConfigured() ? [KMA_SHORT_TERM_URL] : []),
+    ...(fallback ? [fallback] : []),
+  ];
+}
+
+export function weatherProviderConfig(): { url?: string; mode: ProviderMode } {
+  const chain = weatherChain();
+  return {
+    url: chain[0],
+    mode: chain.some((url) => sameOrigin(url, PUBLIC_OPEN_METEO_URL))
+      ? ("public_shared" as const)
+      : ("managed" as const),
+  };
 }

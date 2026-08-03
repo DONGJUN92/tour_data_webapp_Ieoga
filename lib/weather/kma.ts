@@ -1,3 +1,4 @@
+import { KMA_SHORT_TERM_URL } from "@/lib/external-providers";
 import { getRuntimeSecret } from "@/lib/runtime-env";
 
 /* 기상청 단기예보 adapter.
@@ -8,8 +9,7 @@ import { getRuntimeSecret } from "@/lib/runtime-env";
    round down to. Both are handled here so the rest of the app keeps using one
    weather contract. */
 
-const KMA_BASE_URL =
-  "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0";
+const KMA_BASE_URL = KMA_SHORT_TERM_URL;
 
 /* The portal issues one key per account, so this is usually the same string as
    KTO_SERVICE_KEY — but it is deliberately NOT defaulted to it. Each dataset

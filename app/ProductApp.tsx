@@ -1089,10 +1089,26 @@ export function ProductApp() {
     setHealthState("loading");
     setHealthError("");
     try {
-      const payload = asRecord(await fetchJson("/api/v1/health/ready"));
+      /* readiness는 "준비되지 않음"을 503으로 알린다. 오케스트레이터가 읽는
+         관례이고, 그 응답의 본문은 완전하다. 이걸 요청 실패로 처리하면
+         공사 8종이 멀쩡한데도 화면이 전부 오류로 뒤집힌다. 실제로 그랬다.
+         본문에 readiness 계약(`overall`)이 있으면 상태로 읽는다. */
+      const response = await fetch("/api/v1/health/ready", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = asRecord(await response.json().catch(() => null));
+      const overall = readText(payload, ["overall", "status"]);
+      if (!overall) {
+        const nestedError = asRecord(payload?.error);
+        throw new Error(
+          readText(nestedError, ["message", "detail"]) ||
+            `연결 상태를 확인하지 못했습니다. (${response.status})`,
+        );
+      }
       const sourceHealth = asRecord(payload?.sourceHealth);
       setHealth({
-        overall: readText(payload, ["overall", "status"]) || undefined,
+        overall,
         sources: Array.isArray(payload?.sources)
           ? payload.sources.flatMap((source) => {
               const record = asRecord(source);
@@ -3604,8 +3620,16 @@ export function ProductApp() {
                   const matched = health?.sources?.find((source) =>
                     sourceName(source).toLowerCase().includes(api.id.toLowerCase()),
                   );
+                  /* 점검 기록을 못 불러온 것과 공사 API가 오류인 것은 다른
+                     사실이다. 이전에는 전자를 후자로 표시해, 8종이 정상인데도
+                     전부 `오류`로 보였다. 확인하지 못했으면 확인하지 못했다고
+                     쓴다. 제3자의 상태를 근거 없이 단정하지 않는다. */
                   const currentStatus =
-                    healthState === "error" ? "error" : matched ? sourceStatus(matched) : undefined;
+                    healthState === "error"
+                      ? "unknown"
+                      : matched
+                        ? sourceStatus(matched)
+                        : undefined;
                   return (
                     <article key={api.id}>
                       <span className="api-index">{String(index + 1).padStart(2, "0")}</span>

@@ -1010,3 +1010,41 @@ test("real KTO decoding key is absent from production sources, fixtures, and ren
     "The server-rendered HTML contains the configured KTO key.",
   );
 });
+
+test("a not-ready readiness response is read as a state, never as a failed request", async () => {
+  const product = await source("app/ProductApp.tsx");
+  const loadHealth =
+    product.match(
+      /async function loadHealth\(\)[\s\S]*?(?=\r?\n  async function shareRecoveryOption)/,
+    )?.[0] ?? "";
+
+  assert.ok(loadHealth, "loadHealth source must be present");
+  /* /api/v1/health/ready answers 503 whenever overall !== "ready". Routing it
+     through the throw-on-non-OK helper turned an ordinary degraded state into
+     a total failure of the transparency tab. */
+  assert.doesNotMatch(loadHealth, /fetchJson\(\s*["']\/api\/v1\/health\/ready/);
+  assert.match(loadHealth, /fetch\(\s*["']\/api\/v1\/health\/ready["']/);
+  assert.match(loadHealth, /response\.json\(\)\.catch\(\(\)\s*=>\s*null\)/);
+  /* The readiness contract is the presence of `overall`, not the status code. */
+  assert.match(loadHealth, /readText\(payload,\s*\["overall",\s*"status"\]\)/);
+  assert.doesNotMatch(loadHealth, /response\.ok/);
+});
+
+test("failing to load the check never renders the eight KTO services as errored", async () => {
+  const product = await source("app/ProductApp.tsx");
+  const badge =
+    product.match(
+      /const currentStatus =[\s\S]*?;\r?\n/,
+    )?.[0] ?? "";
+
+  assert.ok(badge, "source status selection must be present");
+  /* "we could not read the check" and "the agency API errored" are different
+     facts about a third party. Only the first one is ours to report. */
+  assert.doesNotMatch(badge, /healthState === "error"\s*\?\s*"error"/);
+  assert.match(badge, /healthState === "error"\s*\?\s*"unknown"/);
+
+  const { statusTone, statusLabel } = await import("../lib/text/status-labels.ts");
+  assert.equal(statusTone("unknown"), "warn");
+  assert.notEqual(statusTone("unknown"), "bad");
+  assert.equal(statusLabel("unknown"), "확인 필요");
+});

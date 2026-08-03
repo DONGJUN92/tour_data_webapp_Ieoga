@@ -27,6 +27,7 @@ import {
   type WalkingRouteEvidence,
 } from "@/lib/mobility/routing";
 import { getWeatherEvidence } from "@/lib/weather/service";
+import { withParticle } from "@/lib/text/korean";
 import { strictFiniteNumber } from "@/lib/validation/numbers";
 import type { RecoveryRequest } from "./schema";
 import type {
@@ -212,7 +213,8 @@ function evaluateAccessibility(
       confirmedFields: [],
       requiredChecks: [],
       supplementalFields: [],
-      note: "별도의 이동 편의 조건을 요청하지 않았습니다.",
+      note: "이동 편의 조건을 따로 요청하지 않았습니다.",
+      noteEn: "You did not request any specific mobility condition.",
     };
   }
 
@@ -224,7 +226,9 @@ function evaluateAccessibility(
       confirmedFields: [],
       requiredChecks: [],
       supplementalFields: [],
-      note: "한국관광공사 무장애여행정보에서 관련 편의정보를 확인하지 못했습니다.",
+      note: "한국관광공사 무장애여행정보에서 이 곳의 편의정보를 찾지 못했습니다.",
+      noteEn:
+        "No barrier-free facility record was found for this place in the official data.",
     };
   }
 
@@ -405,23 +409,33 @@ function disruptedNode(input: RecoveryRequest): ItineraryNode | undefined {
   );
 }
 
+/* `tier`는 "관광·체험을 하려던 사람에게 이 유형이 얼마나 관광다운가"이다.
+   식당·쇼핑을 후보에서 빼면 도심에서 대안이 거의 사라지므로(아래
+   preservesTravelPurpose 주석의 실측) 제외하지 않는다. 대신 순위에서
+   관광 콘텐츠를 앞세워, 박물관이 있는데 간장게장이 1순위로 올라오는 일을
+   막는다. 점수 차이가 없으면 사용자는 고를 근거가 없다. */
 function candidatePurpose(contentTypeId: string): {
   key: string;
   label: string;
+  tier: "sightseeing" | "shopping" | "meal" | "stay" | "unknown";
 } {
-  const purposes: Record<string, { key: string; label: string }> = {
-    "12": { key: "nature", label: "자연 관광" },
-    "14": { key: "culture", label: "문화·전시 관람" },
-    "15": { key: "festival", label: "축제·공연 관람" },
-    "25": { key: "course", label: "여행 코스 체험" },
-    "28": { key: "activity", label: "레포츠·체험" },
-    "32": { key: "stay", label: "숙박" },
-    "38": { key: "shopping", label: "쇼핑·시장 방문" },
-    "39": { key: "meal", label: "식사" },
+  const purposes: Record<
+    string,
+    { key: string; label: string; tier: "sightseeing" | "shopping" | "meal" | "stay" }
+  > = {
+    "12": { key: "nature", label: "자연 관광", tier: "sightseeing" },
+    "14": { key: "culture", label: "문화·전시 관람", tier: "sightseeing" },
+    "15": { key: "festival", label: "축제·공연 관람", tier: "sightseeing" },
+    "25": { key: "course", label: "여행 코스 체험", tier: "sightseeing" },
+    "28": { key: "activity", label: "레포츠·체험", tier: "sightseeing" },
+    "32": { key: "stay", label: "숙박", tier: "stay" },
+    "38": { key: "shopping", label: "쇼핑·시장 방문", tier: "shopping" },
+    "39": { key: "meal", label: "식사", tier: "meal" },
   };
   return purposes[contentTypeId] ?? {
     key: "visit",
     label: "관광 방문",
+    tier: "unknown",
   };
 }
 
@@ -487,7 +501,8 @@ function buildTravelPurposeProof(params: {
       replacementTitle: params.replacementTitle,
       evidenceSource: "TarRlteTarService1",
       relatedRank: params.relatedRank,
-      statement: `${originalStopTitle}에서 하려던 여행 경험과 실제 연계 방문 데이터가 있는 장소입니다.`,
+      statement: `${withParticle(originalStopTitle, "와/과")} 함께 방문한 기록이 실제로 있는 곳입니다.`,
+      statementEn: `Official data records real visits to this place together with ${originalStopTitle}.`,
     };
   }
 
@@ -502,18 +517,37 @@ function buildTravelPurposeProof(params: {
       originalStopTitle,
       replacementTitle: params.replacementTitle,
       evidenceSource: "KorService2",
-      statement: `${original.label} 일정의 활동 유형을 바꾸지 않고 같은 목적의 장소로 복구합니다.`,
+      statement: `${original.label} 일정을 같은 종류의 장소로 이어갑니다. 활동은 바뀌지 않습니다.`,
+      statementEn: `Your ${original.label} stop continues at a place of the same kind — the activity does not change.`,
+    };
+  }
+
+  /* 관광·체험을 하려던 사람에게 관광 콘텐츠를 제안하는 경우에만 "목적을
+     유지한다"고 말한다. 식사·쇼핑으로 바뀐 후보에 같은 문장을 쓰면 화면에
+     "관광·체험 → 식사"라고 표시하면서 목적을 유지했다고 주장하는 모순이
+     생긴다. 바뀐 것은 바뀐 대로 쓴다. */
+  if (replacement.tier === "sightseeing" || replacement.tier === "unknown") {
+    return {
+      status: "supported_visit_category",
+      originalPurpose: original.label,
+      replacementPurpose: replacement.label,
+      originalStopTitle,
+      replacementTitle: params.replacementTitle,
+      evidenceSource: "KorService2",
+      statement: `${withParticle(originalStopTitle, "와/과")} 같은 관광·체험 목적으로 이어지는 공식 관광 콘텐츠입니다.`,
+      statementEn: `Official tourism content that continues the same sightseeing intent as ${originalStopTitle}.`,
     };
   }
 
   return {
-    status: "supported_visit_category",
+    status: "changed_visit_category",
     originalPurpose: original.label,
     replacementPurpose: replacement.label,
     originalStopTitle,
     replacementTitle: params.replacementTitle,
     evidenceSource: "KorService2",
-    statement: `${originalStopTitle}의 관광·체험 목적을 유지하는 공식 관광 콘텐츠 유형입니다.`,
+    statement: `원래 하려던 ${original.label} 대신 ${replacement.label} 장소입니다. 남은 시간과 조건 안에서 갈 수 있는 공식 관광정보로 제안합니다.`,
+    statementEn: `This is a ${replacement.label} place instead of the ${original.label} you planned. It is offered because it is reachable within your remaining time and conditions.`,
   };
 }
 
@@ -616,12 +650,24 @@ function scoreCandidate(
     0,
     100 - (candidate.distanceMeters / input.radiusMeters) * 100,
   );
+  /* 같은 `supported_visit_category`에 84점을 일괄로 주면 박물관과 식당의
+     총점이 88 대 86처럼 붙어서 사용자가 고를 근거가 사라진다. 유형별로
+     벌린다. */
+  const replacementTier = candidatePurpose(candidate.contentTypeId).tier;
+  const categoryScore =
+    replacementTier === "sightseeing"
+      ? 92
+      : replacementTier === "unknown"
+        ? 80
+        : replacementTier === "shopping"
+          ? 70
+          : 58;
   const purposeScore =
     candidate.purposePreservation.status === "verified_related_place"
       ? Math.max(76, 102 - (candidate.relatedRank ?? 1) * 1.2)
       : candidate.purposePreservation.status === "verified_activity_type"
         ? 96
-        : 84;
+        : categoryScore;
   const crowdScore =
     candidate.crowdRate === undefined
       ? 50
@@ -1220,60 +1266,90 @@ async function enrichForContinuity(params: {
   };
 }
 
+/* 여행 목적 문장은 카드에 전용 블록(purpose-contract)이 따로 있다. 예전에는
+   이 목록의 첫 항목으로도 넣어서 같은 문장이 카드마다 두 번 찍혔다.
+   또한 영어 화면에서 이 목록만 한국어로 남았으므로 두 언어를 함께 만든다. */
 function buildWhy(
   candidate: WorkingCandidate,
   input: RecoveryRequest,
-): string[] {
-  const reasons = [
-    candidate.purposePreservation.statement,
-    candidate.routeEvidence.status === "routed"
-      ? `OpenStreetMap 보행 경로 기준 ${candidate.distanceMeters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다.`
-      : `한국관광공사 위치정보 기준 직선거리 ${Math.round(candidate.distanceMeters).toLocaleString("ko-KR")}m입니다.`,
-  ];
+): { ko: string[]; en: string[] } {
+  const ko: string[] = [];
+  const en: string[] = [];
+  const push = (korean: string, english: string) => {
+    ko.push(korean);
+    en.push(english);
+  };
+
+  const meters = Math.round(candidate.distanceMeters);
+  if (candidate.routeEvidence.status === "routed") {
+    /* 어느 경로 공급자로 계산했는지 문장에 그대로 쓴다. 공급자 이름을
+       고정해 두면 TMAP으로 계산한 결과에도 OpenStreetMap이라고 적힌다. */
+    const routeSource =
+      candidate.routeEvidence.provider === "tmap_pedestrian"
+        ? { ko: "TMAP 보행자 경로", en: "TMAP pedestrian routing" }
+        : { ko: "OpenStreetMap 보행 경로", en: "OpenStreetMap walking route" };
+    push(
+      `실제 보행 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
+      `${meters.toLocaleString("en-US")} m on a real walking route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
+    );
+  } else {
+    push(
+      `한국관광공사 좌표 기준 직선거리 ${meters.toLocaleString("ko-KR")}m입니다.`,
+      `${meters.toLocaleString("en-US")} m in a straight line from the official coordinates.`,
+    );
+  }
 
   const appointment = candidate.scheduleDiff.nextFixedAppointment;
   if (appointment?.status === "preserved") {
-    reasons.push(
-      `다음 고정 일정 '${appointment.title}' 도착 전 ${appointment.arrivalBufferMinutes}분의 여유를 확보합니다.`,
+    push(
+      `다음 예약 '${appointment.title}'에 ${appointment.arrivalBufferMinutes}분 여유를 두고 도착합니다.`,
+      `You arrive at '${appointment.title}' with ${appointment.arrivalBufferMinutes} min to spare.`,
     );
   }
   if (candidate.scheduleDiff.changedNodeCount === 1) {
-    reasons.push(
-      `기존 일정 중 '${candidate.scheduleDiff.originalNode?.title ?? "중단 일정"}' 한 곳만 교체하고 나머지 잠금 일정을 유지합니다.`,
+    const original =
+      candidate.scheduleDiff.originalNode?.title ?? "틀어진 일정";
+    push(
+      `'${original}' 한 곳만 바꾸고 나머지 일정은 그대로 둡니다.`,
+      `Only '${original}' changes. Every other stop stays as it was.`,
     );
   }
   if (candidate.availability.status === "confirmed_open") {
-    reasons.push(
-      "한국관광공사 공식 운영정보에서 복구 일정 도착 시각의 이용 가능성을 확인했습니다.",
+    push(
+      "도착 시각에 문을 여는지 한국관광공사 공식 운영정보로 확인했습니다.",
+      "Official operating data confirms it is open at your arrival time.",
     );
-  } else if (
-    candidate.availability.status === "official_hours_unstructured"
-  ) {
-    reasons.push(
-      "한국관광공사 공식 운영시간 문구가 있으나 방문 직전 최종 확인이 필요합니다.",
+  } else if (candidate.availability.status === "official_hours_unstructured") {
+    push(
+      "공식 운영시간은 있지만 자동으로 읽을 수 없어 출발 전 확인이 필요합니다.",
+      "Official hours exist but cannot be parsed, so confirm before you set out.",
     );
   }
   if (candidate.indoor && (input.incident === "rain" || input.indoorOnly)) {
-    reasons.push(
-      "한국관광공사 콘텐츠 유형을 근거로 실내 이용 가능성이 높은 후보입니다.",
+    push(
+      "한국관광공사 콘텐츠 유형상 실내에서 지낼 수 있는 곳입니다.",
+      "The official content type indicates you can stay indoors here.",
     );
   }
   if (candidate.accessibility.status === "verified") {
-    reasons.push(
-      "무장애여행정보에서 요청한 이동 조건과 관련된 편의정보를 확인했습니다.",
+    push(
+      "요청한 이동 조건에 맞는 편의정보를 무장애여행정보에서 확인했습니다.",
+      "Barrier-free data confirms the facilities you asked for.",
     );
   }
   if (candidate.crowdRate !== undefined) {
-    reasons.push(
-      `관광지 집중률 예측값은 ${candidate.crowdRate.toFixed(2)}/100입니다. 실시간 현장 인원값은 아닙니다.`,
+    push(
+      `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100입니다. 현장 실시간 인원수는 아닙니다.`,
+      `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100 — a forecast, not a live headcount.`,
     );
   }
   if (candidate.relatedRank !== undefined) {
-    reasons.push(
-      `지역 연계방문 데이터에서 원래 여행지와의 연관 순위 ${candidate.relatedRank}위 근거가 있습니다.`,
+    push(
+      `원래 일정과 함께 방문된 순위 ${candidate.relatedRank}위 기록이 있습니다.`,
+      `Ranked #${candidate.relatedRank} among places visited together with your original stop.`,
     );
   }
-  return reasons;
+  return { ko, en };
 }
 
 function sourcesFor(candidate: WorkingCandidate): KtoServiceName[] {
@@ -1387,14 +1463,16 @@ function dataContributionsFor(
 function toOption(
   candidate: WorkingCandidate,
   strategy: RecoveryOption["strategy"],
-  strategyLabel: string,
+  strategyLabel: { ko: string; en: string },
   requestId: string,
   input: RecoveryRequest,
 ): RecoveryOption {
   return {
     id: `${requestId}-${strategy}-${candidate.contentId}`,
     strategy,
-    strategyLabel,
+    strategyLabel: strategyLabel.ko,
+    /* 영어 화면에서 전략 배지가 한국어로 남지 않도록 두 벌을 함께 보낸다. */
+    strategyLabelEn: strategyLabel.en,
     /* Travels with the option so the traveller is told which conditions were
        not confirmed. An option with gaps is a suggestion to check, never a
        verified result. */
@@ -1423,28 +1501,38 @@ function toOption(
       input.incident === "rain" || input.indoorOnly
         ? {
             status: "type_based",
-            note: "한국관광공사 콘텐츠 유형을 근거로 한 실내 적합성 판정입니다. 건물별 실제 동선은 최종 확인이 필요합니다.",
+            note: "한국관광공사 콘텐츠 유형으로 실내 여부를 판단했습니다. 건물 안 동선은 방문 전에 확인해 주세요.",
+            noteEn:
+              "Indoor fit is inferred from the official content type. Check the route inside the building before you go.",
           }
         : {
             status: "not_required",
-            note: "이번 복구 요청은 실내 장소를 필수 조건으로 사용하지 않았습니다.",
+            note: "이번 요청은 실내 여부를 필수 조건으로 쓰지 않았습니다.",
+            noteEn: "This request did not require an indoor place.",
           },
     accessibility: candidate.accessibility,
     crowd:
       candidate.crowdRate === undefined
         ? {
             status: "unavailable",
-            note: "이 관광지와 정확히 일치하는 집중률 예측을 확인하지 못했습니다.",
+            note: "이 곳과 정확히 일치하는 집중률 예측을 찾지 못했습니다.",
+            noteEn:
+              "No visitor-concentration forecast matched this place exactly.",
           }
         : {
             status: "available",
             relativeRate: candidate.crowdRate,
             baseDate: candidate.crowdBaseDate,
-            note: "향후 관광 집중률 예측값이며 실시간 현장 인원값은 아닙니다.",
+            note: "앞으로의 집중률 예측값입니다. 현장 실시간 인원수가 아닙니다.",
+            noteEn:
+              "A forward-looking concentration forecast, not a live headcount.",
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,
-    why: buildWhy(candidate, input),
+    ...(() => {
+      const reasons = buildWhy(candidate, input);
+      return { why: reasons.ko, whyEn: reasons.en };
+    })(),
     sources: sourcesFor(candidate),
     sourceModifiedAt: candidate.modifiedAt,
     scheduleDiff: candidate.scheduleDiff,
@@ -1463,62 +1551,130 @@ function pickOptions(
   const selected: Array<{
     candidate: WorkingCandidate;
     strategy: RecoveryOption["strategy"];
-    label: string;
+    label: { ko: string; en: string };
   }> = [];
   const used = new Set<string>();
 
-  const add = (
-    candidate: WorkingCandidate | undefined,
+  /* 세 카드는 서로 다른 이유로 뽑혀야 한다. 예전 구현은 각 정렬의 1위만
+     보고, 이미 쓴 후보면 그 전략을 통째로 건너뛰었다. 대체로 같은 후보가
+     세 정렬에서 모두 1위였기 때문에 2·3번 카드가 "추가 검증 대안"이라는
+     같은 이름으로 채워졌고, 사용자는 무엇이 다른지 알 수 없었다.
+     여기서는 각 정렬에서 아직 쓰지 않은 첫 후보를 고른다. */
+  const addFirstUnused = (
+    sorted: WorkingCandidate[],
     strategy: RecoveryOption["strategy"],
-    label: string,
+    label: { ko: string; en: string },
   ) => {
-    if (!candidate || used.has(candidate.contentId)) return;
+    const candidate = sorted.find((entry) => !used.has(entry.contentId));
+    if (!candidate) return;
     used.add(candidate.contentId);
     selected.push({ candidate, strategy, label });
   };
 
-  add(
+  const travelMinutes = (candidate: WorkingCandidate) =>
+    candidate.routeEvidence.status === "routed"
+      ? candidate.routeEvidence.durationMinutes
+      : candidate.estimatedTravelMinutes;
+
+  addFirstUnused(
     [...candidates].sort((a, b) => {
       const changed =
         a.scheduleDiff.changedNodeCount - b.scheduleDiff.changedNodeCount;
       if (changed) return changed;
-      const aTotal =
-        a.routeEvidence.status === "routed"
-          ? a.routeEvidence.durationMinutes
-          : a.estimatedTravelMinutes;
-      const bTotal =
-        b.routeEvidence.status === "routed"
-          ? b.routeEvidence.durationMinutes
-          : b.estimatedTravelMinutes;
-      return aTotal - bTotal || b.baseScore - a.baseScore;
-    })[0],
+      return travelMinutes(a) - travelMinutes(b) || b.baseScore - a.baseScore;
+    }),
     "minimum_change",
     input.itinerary
-      ? "잠금 일정을 지키는 최소변경"
-      : "가장 가까운 조건충족 대안",
-  );
-  add(
-    [...candidates].sort(
-      (a, b) => b.comfortScore - a.comfortScore || b.baseScore - a.baseScore,
-    )[0],
-    "comfortable",
-    "이동 편의 우선",
-  );
-  add(
-    [...candidates].sort((a, b) => {
-      const aRank = a.relatedRank ?? 999;
-      const bRank = b.relatedRank ?? 999;
-      return aRank - bRank || b.baseScore - a.baseScore;
-    })[0],
-    "local_discovery",
-    "여행 목적과 지역 연결",
+      ? { ko: "예약을 지키는 가장 가까운 곳", en: "Closest place that keeps your booking" }
+      : { ko: "지금 바로 갈 수 있는 가장 가까운 곳", en: "Closest place you can reach now" },
   );
 
+  /* 두 번째 카드는 상황별로 사용자가 실제로 궁금해하는 축을 쓴다. */
+  if (input.incident === "crowd") {
+    addFirstUnused(
+      [...candidates].sort((a, b) => {
+        const aRate = a.crowdRate ?? 101;
+        const bRate = b.crowdRate ?? 101;
+        return aRate - bRate || b.baseScore - a.baseScore;
+      }),
+      "comfortable",
+      { ko: "덜 붐빌 것으로 예측된 곳", en: "Forecast to be less crowded" },
+    );
+  } else {
+    addFirstUnused(
+      [...candidates].sort(
+        (a, b) => b.comfortScore - a.comfortScore || b.baseScore - a.baseScore,
+      ),
+      "comfortable",
+      input.audience === "general"
+        ? { ko: "이동 부담이 가장 적은 곳", en: "Least walking and transfers" }
+        : { ko: "이동 편의 조건이 가장 잘 맞는 곳", en: "Best match for your mobility need" },
+    );
+  }
+
+  /* 세 번째 카드는 기획의 `지역 발견`이다. 연계 방문 데이터가 있으면
+     그 근거로, 없으면 여유 시간이 가장 넉넉한 후보로 채운다. 어느 쪽이든
+     라벨이 이유를 말한다. */
+  const relatedFirst = [...candidates]
+    .filter((entry) => entry.relatedRank !== undefined)
+    .sort(
+      (a, b) => (a.relatedRank ?? 999) - (b.relatedRank ?? 999) ||
+        b.baseScore - a.baseScore,
+    );
+  if (relatedFirst.some((entry) => !used.has(entry.contentId))) {
+    addFirstUnused(
+      relatedFirst,
+      "local_discovery",
+      { ko: "함께 방문이 많은 인근 관광지", en: "Often visited together with your stop" },
+    );
+  } else {
+    addFirstUnused(
+      [...candidates].sort((a, b) => {
+        const aBuffer =
+          a.scheduleDiff.nextFixedAppointment?.arrivalBufferMinutes ?? -1;
+        const bBuffer =
+          b.scheduleDiff.nextFixedAppointment?.arrivalBufferMinutes ?? -1;
+        return bBuffer - aBuffer || b.baseScore - a.baseScore;
+      }),
+      "local_discovery",
+      { ko: "약속까지 여유가 가장 많은 곳", en: "Most spare time before your booking" },
+    );
+  }
+
+  /* 위 세 축이 같은 후보로 겹쳐 자리가 남는 경우에만 총점 순으로 채운다.
+     이때도 "추가 검증 대안" 같은 무의미한 이름을 쓰지 않고, 그 후보가
+     상대적으로 나은 점을 라벨에 적는다. */
   for (const candidate of [...candidates].sort(
     (a, b) => b.baseScore - a.baseScore,
   )) {
     if (selected.length >= 3) break;
-    add(candidate, "local_discovery", "추가 검증 대안");
+    if (used.has(candidate.contentId)) continue;
+    used.add(candidate.contentId);
+    const tier = candidatePurpose(candidate.contentTypeId).tier;
+    selected.push({
+      candidate,
+      strategy: "local_discovery",
+      label:
+        tier === "sightseeing"
+          ? {
+              ko: "조건을 통과한 다른 관광 콘텐츠",
+              en: "Another attraction that passed every condition",
+            }
+          : tier === "meal"
+            ? {
+                ko: "시간을 채울 수 있는 식사 장소",
+                en: "A place to eat while you wait",
+              }
+            : tier === "shopping"
+              ? {
+                  ko: "실내에서 머물 수 있는 쇼핑 장소",
+                  en: "An indoor shopping stop",
+                }
+              : {
+                  ko: "조건을 통과한 다른 곳",
+                  en: "Another place that passed every condition",
+                },
+    });
   }
 
   return selected.map(({ candidate, strategy, label }) =>
@@ -1908,7 +2064,8 @@ export async function recoverTrip(
     if (input.audience !== "general" && !accessibleIds.has(contentId)) {
       evidenceGaps.push({
         code: "ACCESSIBILITY_UNVERIFIED",
-        note: "무장애여행정보 목록에서 같은 콘텐츠를 확인하지 못했습니다.",
+        note: "무장애여행정보 목록에서 이 곳을 찾지 못했습니다.",
+        noteEn: "This place is not in the barrier-free travel dataset.",
       });
     }
 
@@ -1916,7 +2073,8 @@ export async function recoverTrip(
     if (input.incident === "crowd" && !forecast) {
       evidenceGaps.push({
         code: "CONCENTRATION_UNVERIFIED",
-        note: "이 관광지의 향후 집중률 예측을 확인하지 못했습니다.",
+        note: "이 곳의 집중률 예측을 확인하지 못했습니다.",
+        noteEn: "No concentration forecast is available for this place.",
       });
     }
     if (
@@ -2024,6 +2182,7 @@ export async function recoverTrip(
             {
               code: "ACCESSIBILITY_UNVERIFIED" as const,
               note: candidate.accessibility.note,
+              noteEn: candidate.accessibility.noteEn,
             },
           ],
         };

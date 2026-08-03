@@ -121,6 +121,8 @@ export async function GET(
     const response = jsonResponse({
       ...pack,
       delivery: "versioned_region_pack",
+      requestedScope: normalizedDistrictCode ? "district" : "region",
+      deliveredScope: normalizedDistrictCode ? "district" : "region",
     });
     response.headers.set(
       "X-RateLimit-Remaining",
@@ -129,12 +131,40 @@ export async function GET(
     return response;
   }
 
+  /* 시군구 자료가 아직 동기화되지 않았을 때 시도 자료로 내려간다.
+     예전에는 503으로 끝나서, 시군구를 고른 사용자는 아무것도 보지 못하고
+     "운영 동기화 후 다시 확인해 주세요"라는 자기가 할 수 없는 안내만 받았다.
+     숫자를 시군구 것처럼 보여 주지는 않고, 어느 범위의 값인지 함께 내려서
+     화면이 그대로 밝히게 한다. */
+  if (normalizedDistrictCode) {
+    const regionPack = await getRegionPack({
+      areaCode: normalizedAreaCode,
+    });
+    if (regionPack) {
+      const response = jsonResponse({
+        ...regionPack,
+        delivery: "versioned_region_pack",
+        requestedScope: "district",
+        deliveredScope: "region",
+        scopeNotice:
+          "선택한 시군구의 검증 자료가 아직 준비되지 않아 시도 단위 공식 지표를 보여 드립니다. 아래 값은 시군구 값이 아닙니다.",
+        scopeNoticeEn:
+          "Verified data for the selected district is not ready yet, so these are province-level official indicators — not district figures.",
+      });
+      response.headers.set(
+        "X-RateLimit-Remaining",
+        String(durableRate.remaining),
+      );
+      return response;
+    }
+  }
+
   const response = jsonResponse(
     {
       error: {
         code: "REGION_PACK_NOT_READY",
         message:
-          "검증된 지역 인사이트 팩이 아직 준비되지 않았습니다. 운영 동기화 후 다시 확인해 주세요.",
+          "이 지역의 검증 자료가 아직 준비되지 않았습니다. 다른 지역을 먼저 살펴봐 주세요.",
       },
     },
     { status: 503 },

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { statusLabel as codeLabel } from "@/lib/text/status-labels";
 import styles from "./PolicyMissionPanel.module.css";
 
 type LoadState = "idle" | "loading" | "success" | "error";
@@ -286,6 +287,15 @@ function normalizeMissions(payload: unknown): PolicyMission[] {
           typeof (entry as PolicyMission).id === "string",
       ),
   );
+}
+
+/** 미션이 속한 시도 이름. 시도를 직접 선택한 화면에서는 중복이라 생략한다. */
+function missionRegionLabel(
+  mission: { regionCode: string },
+  regions: Region[],
+): string {
+  const match = regions.find((region) => region.code === mission.regionCode);
+  return match?.name ?? "";
 }
 
 export function PolicyMissionPanel({
@@ -589,7 +599,14 @@ export function PolicyMissionPanel({
                     <span className={styles.kind}>
                       {missionKindLabel(mission.missionType)}
                     </span>
-                    <h3>{mission.title}</h3>
+                    {/* 전국 목록에서는 같은 제목의 카드가 시도마다 하나씩
+                        생긴다. 지역 이름이 없으면 100장이 전부 같은 카드로
+                        보인다. */}
+                    <h3>
+                      {missionRegionLabel(mission, regions)
+                        ? `${missionRegionLabel(mission, regions)} · ${mission.title}`
+                        : mission.title}
+                    </h3>
                   </div>
                   <span
                     className={`${styles.status} ${styles[mission.status]}`}
@@ -611,19 +628,21 @@ export function PolicyMissionPanel({
                       </strong>
                     </div>
                     <small>
-                      동일 시나리오 {mission.revalidationCount}회 재검증
+                      {mission.revalidationCount > 0
+                        ? `같은 조건으로 ${mission.revalidationCount}회 다시 확인함`
+                        : "아직 같은 조건으로 다시 확인하지 않음"}
                     </small>
                   </div>
                   <div className={styles.contractFacts}>
                     <dl>
-                      <dt>실행 책임</dt>
+                      <dt>제안 대상</dt>
                       <dd>
                         {mission.actionContract.ownerOrganization}
                         <small>{mission.actionContract.ownerRole}</small>
                       </dd>
                     </dl>
                     <dl>
-                      <dt>완료 기한</dt>
+                      <dt>권고 완료 시점</dt>
                       <dd>
                         {formatDateTime(
                           mission.actionContract.deadlineAt,
@@ -631,13 +650,13 @@ export function PolicyMissionPanel({
                       </dd>
                     </dl>
                     <dl>
-                      <dt>성공 조건</dt>
+                      <dt>해결 판정 기준</dt>
                       <dd>
                         {mission.actionContract.successCondition}
                       </dd>
                     </dl>
                     <dl>
-                      <dt>필수 증빙</dt>
+                      <dt>필요한 증빙</dt>
                       <dd>
                         {mission.actionContract.evidenceRequirement}
                       </dd>
@@ -733,10 +752,9 @@ export function PolicyMissionPanel({
                         <li key={intervention.id}>
                           <strong>{intervention.title}</strong>
                           <span>
-                            노력 {intervention.effortPoints} · 예상{" "}
-                            {intervention.estimatedDays}일 · 불확실성{" "}
-                            {intervention.uncertainty} · 닫는 공백{" "}
-                            {intervention.closes.length}개
+                            {intervention.estimatedDays}일 예상 · 난이도{" "}
+                            {codeLabel(intervention.uncertainty)} · 공백{" "}
+                            {intervention.closes.length}건 해소
                           </span>
                           <p>{intervention.description}</p>
                         </li>

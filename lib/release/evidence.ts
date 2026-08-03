@@ -120,25 +120,25 @@ export function buildLaunchEvidenceReport(params: {
     },
     {
       id: "platform_runtime",
-      title: "영속 DB·지역 증거 저장소",
+      title: "일정 저장소와 지역 증거 보관소",
       status: platformReady ? "verified" : "release_blocker",
       evidence: platformReady
-        ? "D1과 R2 런타임 바인딩이 준비되었습니다."
-        : "현재 런타임에서 D1 또는 R2 바인딩이 준비되지 않았습니다.",
+        ? "일정 데이터베이스와 지역 증거 보관소가 모두 정상 연결되어 있습니다."
+        : "일정 데이터베이스 또는 지역 증거 보관소가 아직 연결되지 않았습니다.",
       nextAction: platformReady
         ? undefined
-        : "배포 환경의 D1·R2 바인딩과 마이그레이션을 확인하세요.",
+        : "배포 환경의 저장소 연결과 스키마 이관을 확인하세요.",
     },
     {
       id: "stable_session_signing",
-      title: "Stable anonymous-session signing",
+      title: "익명 세션 서명 안정성",
       status: params.sessionSigningReady ? "verified" : "release_blocker",
       evidence: params.sessionSigningReady
-        ? "A dedicated SESSION_SIGNING_KEY meets the server-enforced minimum quality and separation policy."
-        : "A dedicated SESSION_SIGNING_KEY does not meet the server-enforced minimum quality and separation policy.",
+        ? "익명 세션 전용 서명 값이 서버가 검증하는 최소 품질과 분리 정책을 통과했습니다."
+        : "익명 세션 전용 서명 값이 서버가 검증하는 최소 품질과 분리 정책을 통과하지 못했습니다.",
       nextAction: params.sessionSigningReady
         ? undefined
-        : "Configure a distinct CSPRNG-generated SESSION_SIGNING_KEY before release.",
+        : "익명 세션 전용 서명 값을 난수 생성기로 새로 만들어 다른 값과 분리해 설정하세요.",
     },
     {
       id: "release_secret_separation",
@@ -147,11 +147,11 @@ export function buildLaunchEvidenceReport(params: {
         ? "verified"
         : "release_blocker",
       evidence: params.releaseSecretsReady
-        ? "출시용 인증키 4개가 32바이트 이상이며 placeholder·낮은 문자 다양성·반복 패턴 차단 정책을 통과하고 모두 서로 다릅니다."
-        : "출시용 인증키 4개의 서버 검증 가능 최소 품질과 상호 분리가 충족되지 않았습니다.",
+        ? "운영 인증값 4개가 모두 최소 길이·문자 다양성 정책을 통과하고 서로 다른 값입니다."
+        : "운영 인증값 4개의 최소 품질과 상호 분리가 아직 충족되지 않았습니다.",
       nextAction: params.releaseSecretsReady
         ? undefined
-        : "4개 인증키를 각각 CSPRNG로 독립 생성해 서로 다른 배포 Secret으로 교체하세요. 서버 정책은 실제 엔트로피를 증명하지 않으므로 생성 절차도 별도로 확인해야 합니다.",
+        : "인증값 4개를 각각 난수 생성기로 독립 생성해 서로 다른 값으로 교체하세요. 서버 점검은 길이와 형태만 확인하므로 생성 절차도 별도로 확인해야 합니다.",
     },
     {
       id: "independent_field_evidence_auditor",
@@ -160,11 +160,11 @@ export function buildLaunchEvidenceReport(params: {
         ? "verified"
         : "release_blocker",
       evidence: params.independentAuditorReady
-        ? "OPS 제출 토큰과 다르고 최소 품질 정책을 통과한 RELEASE_AUDITOR_API_KEY가 구성되었습니다."
-        : "독립 감사 키가 없거나 짧거나 OPS 토큰과 동일해 제출과 승인을 분리할 수 없습니다.",
+        ? "증거 제출용 인증값과 다른 독립 승인용 인증값이 설정되어, 제출과 승인을 다른 사람이 맡을 수 있습니다."
+        : "독립 승인용 인증값이 없거나 제출용과 같아 제출과 승인을 분리할 수 없습니다.",
       nextAction: params.independentAuditorReady
         ? undefined
-        : "OPS_API_KEY와 다른 RELEASE_AUDITOR_API_KEY를 구성하고 독립 감사자가 증거를 승인하세요.",
+        : "제출용과 다른 독립 승인용 인증값을 설정하고, 증거는 제출자가 아닌 사람이 승인하게 하세요.",
     },
     {
       id: "eight_kto_openapis",
@@ -183,7 +183,7 @@ export function buildLaunchEvidenceReport(params: {
       status: managedProvidersReady ? "verified" : "release_blocker",
       evidence: managedProvidersReady
         ? "정방향·역방향 지오코딩, 보행 경로, 날씨의 관리형 제공자가 최근 실제 응답 계약 점검을 통과했습니다."
-        : "공용 공유 엔드포인트가 남아 있거나 관리형 제공자의 최근 실제 응답 계약 점검 근거가 없습니다.",
+        : "무료 공용 서버를 아직 쓰고 있거나, 전용 제공자의 최근 실호출 점검 근거가 없습니다.",
       nextAction: managedProvidersReady
         ? undefined
         : "관리형 또는 자체 운영 엔드포인트를 연결한 뒤 인증된 제공자 실호출 점검을 통과시키세요.",

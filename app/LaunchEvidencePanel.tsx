@@ -95,8 +95,10 @@ export function LaunchEvidencePanel() {
     >
       <div className={styles.heading}>
         <div>
-          <p>RELEASE EVIDENCE</p>
-          <h2 id="launch-evidence-title">출시 가능성을 근거로 확인해요</h2>
+          <p>서비스 준비 현황</p>
+          <h2 id="launch-evidence-title">
+            무엇이 준비됐고 무엇이 남았는지 그대로 적었어요
+          </h2>
           <span>
             구현 완료와 현장 검증을 섞어 표시하지 않습니다. 아직 없는
             증거는 그대로 ‘필요’로 남깁니다.
@@ -114,13 +116,16 @@ export function LaunchEvidencePanel() {
 
       {state === "loading" && (
         <div className={styles.state} role="status">
-          출시 증거와 현재 운영 설정을 확인하고 있어요.
+          준비 현황을 확인하고 있어요.
         </div>
       )}
 
       {state === "error" && (
         <div className={`${styles.state} ${styles.error}`} role="alert">
-          <span>출시 증거를 불러오지 못했어요.</span>
+          <span>
+            준비 현황을 지금 불러오지 못했어요. 여행 복구 기능은 그대로
+            사용할 수 있습니다.
+          </span>
           <button type="button" onClick={() => void load()}>
             다시 확인
           </button>

@@ -107,6 +107,16 @@ export function forwardGeocodeProviderConfig() {
 
 export function routingProviderConfig() {
   const endpoints = routingEndpoints();
+  /* TMAP 보행자 경로는 OSRM 호환 엔드포인트가 아니라 별도 어댑터이므로
+     ROUTING_BASE_URL로는 설정할 수 없다. 하지만 키가 있으면 그것이 1순위
+     공급자이고 상용 쿼터를 쓰므로, 준비 상태 판정에서 공용 공유 서버 의존이
+     끝났다고 보는 것이 사실에 맞다. OSRM은 그 뒤의 폴백으로만 남는다. */
+  if (getRuntimeSecret("TMAP_APP_KEY")) {
+    return {
+      url: "https://apis.openapi.sk.com/tmap/routes/pedestrian",
+      mode: "managed" as const,
+    };
+  }
   return {
     url: endpoints[0],
     mode: endpoints.some(

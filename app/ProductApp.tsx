@@ -47,6 +47,7 @@ import {
   formatCoverage,
   formatCrowd,
   formatDate,
+  formatDayOnly,
   formatIsoTime,
   formatMetricLabel,
   formatReferenceDate,
@@ -72,6 +73,8 @@ import {
   todayInKorea,
   fetchJson,
 } from "./product-app-model";
+import { quotedWithParticle, withParticle } from "@/lib/text/korean";
+import { statusLabel } from "@/lib/text/status-labels";
 
 export function ProductApp() {
   const [activeTab, setActiveTab] = useState<TabId>("recover");
@@ -128,10 +131,17 @@ export function ProductApp() {
   const [deleteState, setDeleteState] = useState<LoadState>("idle");
   const [deleteMessage, setDeleteMessage] = useState("");
 
+  /* 언어를 바꾸면 화면은 영어가 되는데 탭 제목은 한국어로 남아 있었다.
+     서버 메타데이터는 요청 시점에 정해지므로 클라이언트에서 맞춰 준다. */
   useEffect(() => {
     document.documentElement.lang = language;
+    const original = document.title;
+    if (language === "en") {
+      document.title = "IEOGA | Keep your next booking when a stop breaks";
+    }
     return () => {
       document.documentElement.lang = "ko";
+      document.title = original;
     };
   }, [language]);
 
@@ -598,7 +608,7 @@ export function ProductApp() {
     );
     if (stopWithoutLocation) {
       setJourneyError(
-        `‘${stopWithoutLocation.title}’을(를) 장소검색 결과에서 선택해 주세요.`,
+        `${quotedWithParticle(stopWithoutLocation.title, "을/를")} 장소 검색 결과에서 선택해 주세요.`,
       );
       return;
     }
@@ -792,7 +802,7 @@ export function ProductApp() {
             setLocationMode("automatic");
             setGeoState("success");
             setGeoMessage(
-              `${[areaName, districtName].filter(Boolean).join(" ") || "현재 지역"}으로 자동 입력했습니다. 정확한 좌표는 복구 계산에만 사용합니다.`,
+              `${withParticle([areaName, districtName].filter(Boolean).join(" ") || "현재 지역", "으로/로")} 자동 입력했어요. 정확한 좌표는 복구 계산에만 사용합니다.`,
             );
           })
           .catch(() => {
@@ -889,7 +899,7 @@ export function ProductApp() {
     setGeoState("success");
     setGeoAttribution(place.sourceLabel ?? "");
     setGeoMessage(
-      `현재 위치를 ‘${place.title}’(으)로 설정했습니다.${place.retention === "ephemeral" ? " 이 좌표는 일정에 저장하지 않습니다." : ""}`,
+      `현재 위치를 ${quotedWithParticle(place.title, "으로/로")} 정했어요.${place.retention === "ephemeral" ? " 이 좌표는 일정에 저장하지 않습니다." : ""}`,
     );
   }
 
@@ -1341,7 +1351,7 @@ export function ProductApp() {
           </span>
           <span>
             <strong>이어가</strong>
-            <small>IEOGA · TRAVEL CONTINUITY</small>
+            <small>{language === "en" ? "Keep your trip going" : "여행을 이어 주는 서비스"}</small>
           </span>
         </a>
 
@@ -1447,6 +1457,7 @@ export function ProductApp() {
             {activeExecution && (
               <ActiveJourneyCockpit
                 execution={activeExecution}
+                language={language}
                 onChange={setActiveExecution}
                 onCloseCompleted={() => {
                   setActiveExecution(null);
@@ -1461,8 +1472,8 @@ export function ProductApp() {
               <div className="hero-copy">
                 <p className="section-kicker">
                   {language === "en"
-                    ? "NATIONWIDE TRAVEL CONTINUITY"
-                    : "전국 여행 중단 회복 서비스"}
+                    ? "Nationwide · while you are still travelling"
+                    : "전국 어디서든, 여행 중에 바로"}
                 </p>
                 <h1>
                   {language === "en" ? "When plans break," : "여행이 흔들려도,"}
@@ -1476,16 +1487,22 @@ export function ProductApp() {
                 <p>
                   {language === "en" ? (
                     <>
-                      When rain, delay, crowds or mobility barriers disrupt your day,
-                      IEOGA changes only the broken segment and
-                      <strong> protects your next fixed reservation.</strong>
+                      When rain, a delay or a crowd breaks your day, IEOGA{" "}
+                      <strong>changes only the one stop that broke</strong> and
+                      keeps your next booking.
                     </>
                   ) : (
                     <>
-                      비, 지연, 혼잡, 이동 부담이 생기면 깨진 구간만 바꾸고
-                      <strong> 다음 예약과 여행 목적을 지키는 복구안</strong>을 찾습니다.
+                      비가 오거나 길이 막혀 일정이 틀어졌을 때, 이어가는{" "}
+                      <strong>깨진 한 곳만 바꿔</strong> 다음 예약을 지켜
+                      드립니다.
                     </>
                   )}
+                </p>
+                <p className="hero-promise">
+                  {language === "en"
+                    ? "No itinerary needed. Ten seconds to start."
+                    : "일정을 미리 등록하지 않아도 됩니다. 10초면 시작할 수 있어요."}
                 </p>
               </div>
               <aside className="scope-card" aria-label="서비스 범위">
@@ -1524,7 +1541,7 @@ export function ProductApp() {
                 <b>3</b>
                 <span>
                   <strong>{language === "en" ? "Continue the trip" : "복구 적용·도착 확인"}</strong>
-                  <small>{language === "en" ? "Prove continuity" : "여행 연속성 증명"}</small>
+                  <small>{language === "en" ? "Prove you finished" : "끝까지 마쳤다는 기록"}</small>
                 </span>
               </li>
             </ol>
@@ -1879,10 +1896,10 @@ export function ProductApp() {
               <section className="journey-context" aria-labelledby="journey-context-title">
                 <div className="journey-context-heading">
                   <div>
-                    <p>SAVED TRIP CONTRACT</p>
+                    <p>{language === "en" ? "Saved trip" : "저장한 오늘 일정"}</p>
                     <h2 id="journey-context-title">{journeyPlan.title}</h2>
                     <span>
-                      {journeyPlan.date} · 잠긴 일정{" "}
+                      {formatDayOnly(journeyPlan.date)} · 잠긴 일정{" "}
                       {journeyPlan.stops.filter((stop) => stop.fixed).length}개
                     </span>
                   </div>
@@ -1950,11 +1967,11 @@ export function ProductApp() {
                 <div className="panel-heading">
                   <span>01</span>
                   <div>
-                    <p>DISRUPTION INPUT</p>
+                    <p>{language === "en" ? "Step 1 · what happened" : "1단계 · 무슨 일이 있었나요"}</p>
                     <h2>
                       {language === "en"
                         ? "What changed right now?"
-                        : "지금 흔들린 구간을 알려주세요"}
+                        : "지금 어떤 일정이 틀어졌나요?"}
                     </h2>
                   </div>
                 </div>
@@ -2241,9 +2258,9 @@ export function ProductApp() {
                 </fieldset>
 
                 <fieldset className="form-group">
-                  <legend>자동으로 지키는 조건</legend>
+                  <legend>{language === "en" ? "What IEOGA will protect" : "이어가가 반드시 지킬 것"}</legend>
                   <div className="derived-time-card">
-                    <span>다음 예약을 지키기 위한 복구 가능 시간</span>
+                    <span>{language === "en" ? "Time you can use before the next booking" : "다음 예약까지 쓸 수 있는 시간"}</span>
                     <strong>{availableMinutes}분</strong>
                     <small>
                       예약 시각과 안전 여유 {safetyBufferMinutes}분을 반영해
@@ -2291,9 +2308,12 @@ export function ProductApp() {
                     <summary>시간·거리 세부 조건 조정</summary>
                     <div className="field-grid three">
                       <label>
-                        <span>사용 가능한 시간</span>
+                        <span>
+                          사용 가능한 시간 <i aria-hidden="true">(분)</i>
+                        </span>
                         <span className="number-input">
                           <input
+                            aria-label="사용 가능한 시간 (15~240분)"
                             type="number"
                             min={15}
                             max={240}
@@ -2301,13 +2321,16 @@ export function ProductApp() {
                             value={availableMinutes}
                             onChange={(event) => setAvailableMinutes(Number(event.target.value))}
                           />
-                          <b>분</b>
+                          <b aria-hidden="true">분</b>
                         </span>
                       </label>
                       <label>
-                        <span>안전 여유</span>
+                        <span>
+                          안전 여유 <i aria-hidden="true">(분)</i>
+                        </span>
                         <span className="number-input">
                           <input
+                            aria-label="안전 여유 (5~60분)"
                             type="number"
                             min={5}
                             max={60}
@@ -2315,13 +2338,16 @@ export function ProductApp() {
                             value={safetyBufferMinutes}
                             onChange={(event) => setSafetyBufferMinutes(Number(event.target.value))}
                           />
-                          <b>분</b>
+                          <b aria-hidden="true">분</b>
                         </span>
                       </label>
                       <label>
-                        <span>대체 일정 최소 체류</span>
+                        <span>
+                          대체 일정 최소 체류 <i aria-hidden="true">(분)</i>
+                        </span>
                         <span className="number-input">
                           <input
+                            aria-label="대체 일정 최소 체류 (10~180분)"
                             type="number"
                             min={10}
                             max={180}
@@ -2331,13 +2357,16 @@ export function ProductApp() {
                               setMinimumStayMinutes(Number(event.target.value))
                             }
                           />
-                          <b>분</b>
+                          <b aria-hidden="true">분</b>
                         </span>
                       </label>
                       <label>
-                        <span>최대 이동 거리</span>
+                        <span>
+                          최대 이동 거리 <i aria-hidden="true">(m)</i>
+                        </span>
                         <span className="number-input">
                           <input
+                            aria-label="최대 이동 거리 (300~20,000m)"
                             type="number"
                             min={300}
                             max={20000}
@@ -2345,13 +2374,16 @@ export function ProductApp() {
                             value={maxDistanceMeters}
                             onChange={(event) => setMaxDistanceMeters(Number(event.target.value))}
                           />
-                          <b>m</b>
+                          <b aria-hidden="true">m</b>
                         </span>
                       </label>
                       <label>
-                        <span>탐색 반경</span>
+                        <span>
+                          탐색 반경 <i aria-hidden="true">(m)</i>
+                        </span>
                         <span className="number-input">
                           <input
+                            aria-label="탐색 반경 (500~20,000m)"
                             type="number"
                             min={500}
                             max={20000}
@@ -2359,7 +2391,7 @@ export function ProductApp() {
                             value={radiusMeters}
                             onChange={(event) => setRadiusMeters(Number(event.target.value))}
                           />
-                          <b>m</b>
+                          <b aria-hidden="true">m</b>
                         </span>
                       </label>
                     </div>
@@ -2396,13 +2428,13 @@ export function ProductApp() {
                   data-testid="recover-submit"
                 >
                   {recoverState === "loading"
-                    ? "예약을 지킬 수 있는 경로 확인 중…"
-                    : "예약을 지키는 최소변경 복구안 찾기"}
+                    ? "갈 수 있는 길을 확인하는 중…"
+                    : "한 곳만 바꿔서 찾기"}
                   <span aria-hidden="true">→</span>
                 </button>
                 <p className="estimate-note">
-                  이동 구간별 실제 경로 근거와 운영 여부를 확인한 후보만 결과에 표시합니다.
-                  확인할 수 없는 조건은 숨기지 않고 별도로 표시합니다.
+                  실제 보행 경로와 운영 여부를 확인한 곳만 결과에 올립니다.
+                  확인하지 못한 조건은 숨기지 않고 따로 알려 드립니다.
                 </p>
               </form>
 
@@ -2416,8 +2448,8 @@ export function ProductApp() {
                 <div className="panel-heading dark">
                   <span>02</span>
                   <div>
-                    <p>CONTINUITY OPTIONS</p>
-                    <h2>원래 일정으로 돌아가는 복구안</h2>
+                    <p>{language === "en" ? "Step 2 · where you can go" : "2단계 · 갈 수 있는 곳"}</p>
+                    <h2>{language === "en" ? "Where you can go instead" : "지금 대신 갈 수 있는 곳"}</h2>
                   </div>
                 </div>
 
@@ -2427,10 +2459,10 @@ export function ProductApp() {
                       <i />
                       <b />
                     </span>
-                    <strong>조건을 입력하면 이곳에 결과가 나타납니다.</strong>
+                    <strong>조건을 입력하면 여기에 결과가 나타납니다.</strong>
                     <p>
-                      후보를 먼저 많이 보여주지 않습니다. 시간·거리·접근성 조건을 통과한 실제 관광정보만
-                      제안합니다.
+                      긴 목록을 먼저 보여주지 않습니다. 시간·거리·이동 조건을
+                      통과한 공식 관광정보만 제안합니다.
                     </p>
                   </div>
                 )}
@@ -2438,8 +2470,11 @@ export function ProductApp() {
                 {recoverState === "loading" && (
                   <div className="result-loading" role="status">
                     <span className="loading-ring" aria-hidden="true" />
-                    <strong>전국 관광데이터를 교차 확인하고 있습니다.</strong>
-                    <p>조건을 어긴 후보는 이 단계에서 제외됩니다.</p>
+                    <strong>전국 관광데이터를 교차 확인하고 있어요.</strong>
+                    <p>
+                      조건을 못 지키는 곳은 이 단계에서 빠집니다. 보통 5~15초
+                      걸립니다.
+                    </p>
                   </div>
                 )}
 
@@ -2818,7 +2853,11 @@ export function ProductApp() {
                             <div className="option-title-row">
                               <div>
                                 {option.strategyLabel && (
-                                  <span className="strategy-label">{option.strategyLabel}</span>
+                                  <span className="strategy-label">
+                                    {(language === "en" &&
+                                      option.strategyLabelEn) ||
+                                      option.strategyLabel}
+                                  </span>
                                 )}
                                 <p>{option.address || "주소 정보 확인 필요"}</p>
                                 <h3>{option.title}</h3>
@@ -2848,7 +2887,10 @@ export function ProductApp() {
                                   {(option.evidenceGaps ?? []).map(
                                     (gap, gapIndex) => (
                                       <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
-                                        {gap.note ||
+                                        {(language === "en"
+                                          ? gap.noteEn
+                                          : "") ||
+                                          gap.note ||
                                           (gap.code === "INDOOR_UNVERIFIED"
                                             ? "실내 이용 가능 여부 미확인"
                                             : gap.code ===
@@ -2869,7 +2911,18 @@ export function ProductApp() {
                                 className="purpose-contract"
                                 data-testid="travel-purpose-contract"
                               >
-                                <span>여행 목적 보존</span>
+                                {/* 유형이 바뀐 후보에까지 "목적 보존"이라고 적으면
+                                    바로 아래 "관광·체험 → 식사"와 모순된다. */}
+                                <span>
+                                  {option.purposePreservation.status ===
+                                  "changed_visit_category"
+                                    ? language === "en"
+                                      ? "Activity changes"
+                                      : "활동이 바뀝니다"
+                                    : language === "en"
+                                      ? "Purpose kept"
+                                      : "여행 목적 유지"}
+                                </span>
                                 <strong>
                                   {option.purposePreservation.originalPurpose ||
                                     "원래 여행 경험"}
@@ -2878,7 +2931,9 @@ export function ProductApp() {
                                     .replacementPurpose || "대체 경험"}
                                 </strong>
                                 <p>
-                                  {option.purposePreservation.statement ||
+                                  {(language === "en" &&
+                                    option.purposePreservation.statementEn) ||
+                                    option.purposePreservation.statement ||
                                     "장소만 바꾸고 원래 하려던 여행 경험은 이어갑니다."}
                                 </p>
                                 <small>
@@ -3023,13 +3078,25 @@ export function ProductApp() {
                               )}
                             {option.why && option.why.length > 0 && (
                               <ul className="why-list">
-                                {option.why.map((reason) => (
+                                {(
+                                  (language === "en" && option.whyEn) ||
+                                  option.why ||
+                                  []
+                                ).map((reason) => (
                                   <li key={reason}>{reason}</li>
                                 ))}
                               </ul>
                             )}
                             <div className="option-footer">
-                              <span>운영 여부: {compactValue(option.availability)}</span>
+                              <span>
+                                {language === "en" ? "Opening" : "운영 상태"} ·{" "}
+                                {statusLabel(
+                                  readText(asRecord(option.availability), [
+                                    "status",
+                                  ]),
+                                  language,
+                                )}
+                              </span>
                               <div className="option-footer-actions">
                                 <button
                                   type="button"
@@ -3061,14 +3128,15 @@ export function ProductApp() {
                                     (option.evidenceGaps?.length ?? 0) > 0
                                   }
                                 >
-                                  {shareMessages[option.id] ?? "복구 증명 공유"}
+                                  {shareMessages[option.id] ??
+                                    (language === "en" ? "Share proof" : "결과 공유")}
                                 </button>
                                 <a
                                   href={`https://map.kakao.com/link/map/${encodeURIComponent(option.title)},${option.latitude},${option.longitude}`}
                                   target="_blank"
                                   rel="noreferrer"
                                 >
-                                  지도에서 위치 확인
+                                  {language === "en" ? "Open map" : "지도 보기"}
                                   <span aria-hidden="true">↗</span>
                                 </a>
                               </div>
@@ -3124,11 +3192,11 @@ export function ProductApp() {
                     )}
 
                     <details className="decision-contribution">
-                      <summary>왜 이 복구안이 안전한지 확인</summary>
+                      <summary>{language === "en" ? "Why this place is safe to go" : "이 곳이 왜 안전한지 보기"}</summary>
                       <div className="decision-contribution-intro">
-                        <span>WHY THIS PLAN SURVIVED</span>
-                        <h3>각 데이터가 바꾼 판단</h3>
-                        <p>데이터 이름보다, 이 복구안이 남거나 제외되는 데 한 역할을 보여줍니다.</p>
+                        <span>{language === "en" ? "Why this place was chosen" : "이 곳을 고른 이유"}</span>
+                        <h3>{language === "en" ? "What each data source decided" : "각 데이터가 바꾼 판단"}</h3>
+                        <p>어떤 데이터가 이 곳을 남기고 다른 곳을 제외했는지 그대로 보여 드립니다.</p>
                       </div>
                       <ul>
                         {recovery.dataContributions && recovery.dataContributions.length > 0
@@ -3467,11 +3535,16 @@ export function ProductApp() {
             className="page-section transparency-section"
           >
             <div className="section-intro">
-              <p className="section-kicker">DATA TRANSPARENCY</p>
-              <h1>추천보다 먼저, 근거를 공개합니다.</h1>
+              <p className="section-kicker">{language === "en" ? "Data sources" : "데이터 출처"}</p>
+              <h1>
+                {language === "en"
+                  ? "Evidence first, recommendation second."
+                  : "추천보다 먼저, 근거를 공개합니다."}
+              </h1>
               <p>
-                이어가는 한국관광공사 OpenAPI의 응답과 명시된 규칙만 사용합니다. 연결이 끊기거나
-                확인할 수 없는 조건은 추정값으로 메우지 않고 사용자에게 그대로 알립니다.
+                {language === "en"
+                  ? "IEOGA uses only Korea Tourism Organization OpenAPI responses and the rules stated here. When a connection drops or a condition cannot be checked, we say so instead of filling the gap with a guess."
+                  : "이어가는 한국관광공사 OpenAPI 응답과 여기 적은 규칙만 사용합니다. 연결이 끊기거나 확인할 수 없는 조건은 추정값으로 메우지 않고 그대로 알려 드립니다."}
               </p>
             </div>
 
@@ -3479,13 +3552,13 @@ export function ProductApp() {
               <div>
                 <span className={`health-dot ${statusTone(health?.overall)}`} aria-hidden="true" />
                 <div>
-                  <p>서비스 준비 상태</p>
+                  <p>{language === "en" ? "Service readiness" : "서비스 준비 상태"}</p>
                   <strong>
                     {healthState === "loading"
-                      ? "저장된 운영 점검을 불러오는 중"
+                      ? "운영 점검 기록을 불러오는 중"
                       : healthState === "error"
-                        ? "상태 확인 실패"
-                        : humanizeStatus(health?.overall)}
+                        ? "지금은 확인할 수 없음"
+                        : humanizeStatus(health?.overall, language)}
                   </strong>
                   <small>
                     {health?.checkedAt
@@ -3500,7 +3573,10 @@ export function ProductApp() {
             </div>
             {healthError && (
               <div className="notice is-error" role="alert">
-                <strong>준비 상태를 확인하지 못했습니다.</strong>
+                <strong>
+                  운영 점검 기록을 지금 불러오지 못했습니다. 여행 복구 기능은
+                  그대로 사용할 수 있습니다.
+                </strong>
                 <p>{healthError}</p>
               </div>
             )}
@@ -3510,10 +3586,18 @@ export function ProductApp() {
             <div className="api-board" data-testid="health-source-list">
               <div className="board-heading">
                 <div>
-                  <p>공식 데이터 연결</p>
-                  <h2>한국관광공사 OpenAPI 8종</h2>
+                  <p>{language === "en" ? "Official data" : "공식 데이터 연결"}</p>
+                  <h2>
+                    {language === "en"
+                      ? "8 Korea Tourism Organization OpenAPIs"
+                      : "한국관광공사 OpenAPI 8종"}
+                  </h2>
                 </div>
-                <span>원문 응답 미저장 · 파생 근거만 기록</span>
+                <span>
+                  {language === "en"
+                    ? "Raw responses are not stored — only derived evidence"
+                    : "원문 응답은 저장하지 않고 파생 근거만 기록합니다"}
+                </span>
               </div>
               <div className="api-list">
                 {OPEN_APIS.map((api, index) => {
@@ -3666,8 +3750,8 @@ export function ProductApp() {
           </a>
           <p>
             {language === "en"
-              ? "Nationwide travel continuity powered by Korea Tourism OpenAPI"
-              : "한국관광공사 OpenAPI 기반 전국 여행 중단 회복 서비스"}
+              ? "Built on Korea Tourism Organization OpenAPI — keeps your next booking when a stop breaks"
+              : "한국관광공사 OpenAPI로 다음 예약을 지키는 여행 복구 서비스"}
           </p>
         </div>
         <div className="footer-links">
@@ -3683,8 +3767,8 @@ export function ProductApp() {
           </button>
           <button type="button" onClick={() => changeTab("insights")}>
             {language === "en"
-              ? "Regional action contract"
-              : "기관용 지역 실행계약"}
+              ? "For local governments"
+              : "지자체·기관용 개선 과제"}
           </button>
           <a
             href="#launch-evidence"
@@ -3698,7 +3782,7 @@ export function ProductApp() {
               }, 30);
             }}
           >
-            {language === "en" ? "Launch evidence" : "출시 증거"}
+            {language === "en" ? "Service readiness" : "서비스 준비 현황"}
           </a>
         </div>
         <small>© 2026 IEOGA. Data provided by Korea Tourism Organization.</small>

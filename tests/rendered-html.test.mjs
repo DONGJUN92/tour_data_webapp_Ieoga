@@ -78,7 +78,8 @@ test("production home server-renders intact Korean nationwide markers", async ()
   const html = await response.text();
   assert.match(html, /<html lang="ko">/i);
   assert.match(html, /이어가/);
-  assert.match(html, /전국 여행 중단 회복 서비스/);
+  assert.match(html, /전국 어디서든, 여행 중에 바로/);
+  assert.match(html, /다음 예약을 지켜/);
   assert.match(html, /여행 복구/);
   assert.match(html, /한국관광공사 OpenAPI/);
   assert.match(html, /data-testid="recover-submit"/);

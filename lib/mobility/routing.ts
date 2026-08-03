@@ -2,6 +2,10 @@ import {
   routingEndpoints,
   routingProviderConfig,
 } from "@/lib/external-providers";
+import {
+  getTmapPedestrianRoute,
+  tmapPedestrianConfigured,
+} from "@/lib/mobility/tmap-pedestrian";
 
 export type RoutePoint = {
   latitude: number;
@@ -13,10 +17,12 @@ export type RouteLeg = {
   durationMinutes: number;
 };
 
+export type WalkingRouteProvider = "tmap_pedestrian" | "openstreetmap_osrm";
+
 export type WalkingRouteEvidence =
   | {
       status: "routed";
-      provider: "openstreetmap_osrm";
+      provider: WalkingRouteProvider;
       distanceMeters: number;
       durationMinutes: number;
       legs: RouteLeg[];
@@ -26,11 +32,16 @@ export type WalkingRouteEvidence =
     }
   | {
       status: "unavailable";
-      provider: "openstreetmap_osrm";
+      provider: WalkingRouteProvider;
       reason: string;
       calculatedAt: string;
       attribution: string;
     };
+
+const ATTRIBUTION: Record<WalkingRouteProvider, string> = {
+  tmap_pedestrian: "보행 경로 · TMAP 보행자 경로안내 (SK텔레콤)",
+  openstreetmap_osrm: "© OpenStreetMap contributors",
+};
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<
@@ -85,7 +96,7 @@ export async function getWalkingRoute(
   options: { signal?: AbortSignal } = {},
 ): Promise<WalkingRouteEvidence> {
   const calculatedAt = new Date().toISOString();
-  const attribution = "© OpenStreetMap contributors";
+  const attribution = ATTRIBUTION.openstreetmap_osrm;
   if (points.length < 2 || points.length > 32) {
     return {
       status: "unavailable",
@@ -99,6 +110,44 @@ export async function getWalkingRoute(
   const key = routeKey(points);
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  /* 국내 보행 경로는 TMAP이 지하상가·횡단보도를 더 정확히 반영한다. 도착
+     시각이 "다음 예약을 지킬 수 있는가"의 판정 근거이므로 품질이 좋은 쪽을
+     먼저 쓴다. 키가 없거나 실패하면 아래 OSRM 경로로 그대로 내려간다. */
+  if (tmapPedestrianConfigured()) {
+    try {
+      const tmap = await getTmapPedestrianRoute(points, {
+        signal: options.signal,
+      });
+      if (tmap) {
+        const routed: WalkingRouteEvidence = {
+          status: "routed",
+          provider: "tmap_pedestrian",
+          distanceMeters: tmap.distanceMeters,
+          durationMinutes: tmap.durationMinutes,
+          legs: [
+            {
+              distanceMeters: tmap.distanceMeters,
+              durationMinutes: tmap.durationMinutes,
+            },
+          ],
+          geometry: tmap.geometry,
+          calculatedAt,
+          attribution: ATTRIBUTION.tmap_pedestrian,
+        };
+        cache.set(key, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          value: routed,
+        });
+        return routed;
+      }
+    } catch {
+      if (options.signal?.aborted) {
+        throw new DOMException("Routing request cancelled", "AbortError");
+      }
+      /* TMAP 실패는 결과가 아니다. 조용히 다음 공급자로 넘어간다. */
+    }
+  }
 
   /* Try each configured router in turn. A rejected candidate is a real
      product outcome here, so it must mean "no route exists", never "the one

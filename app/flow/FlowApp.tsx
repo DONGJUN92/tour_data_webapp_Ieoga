@@ -13,6 +13,8 @@ import {
   appointmentMinutesFromNow,
   parseKoreaCoordinate,
 } from "../product-app-model";
+import { withParticle } from "@/lib/text/korean";
+import { sourceLabelText, statusLabel } from "@/lib/text/status-labels";
 import styles from "./flow.module.css";
 
 /* Bridge recovery: the traveller answers three questions (what happened,
@@ -58,6 +60,7 @@ type PlaceHit = {
   areaCode?: string;
   sigunguCode?: string;
   provider?: "kto" | "kakao_local" | "forward_geocoder";
+  matchReason?: string;
   sourceLabel: string;
   retention: "persistable" | "ephemeral";
 };
@@ -82,18 +85,24 @@ type RecoveryOption = {
   longitude: number;
   imageUrl?: string;
   strategyLabel?: string;
+  strategyLabelEn?: string;
   distanceMeters?: number;
   estimatedTravelMinutes?: number;
   availability?: unknown;
   indoorSuitability?: unknown;
   accessibility?: unknown;
   crowd?: unknown;
-  evidenceGaps?: Array<{ code?: string; note?: string }>;
+  evidenceGaps?: Array<{ code?: string; note?: string; noteEn?: string }>;
   confirmationRequired?: boolean;
   why?: string[];
+  whyEn?: string[];
   sources?: string[];
   dataContributions?: DataContribution[];
-  purposePreservation?: { statement?: string };
+  purposePreservation?: {
+    status?: string;
+    statement?: string;
+    statementEn?: string;
+  };
 };
 
 type Language = "ko" | "en";
@@ -311,24 +320,16 @@ async function postJson(
 function evidenceText(value: unknown, language: Language): string {
   const record = asRecord(value);
   const status = readText(record, ["status"]);
-  const note = readText(record, ["note"]);
+  /* 영어 화면에서는 같은 근거의 영어 표기를 먼저 쓴다. 없을 때만 한국어로
+     내려가고, 그때도 상태 코드가 그대로 보이지는 않는다. */
+  const note =
+    (language === "en" ? readText(record, ["noteEn"]) : "") ||
+    readText(record, ["note"]);
   if (note) return note;
-  const labels: Record<string, { ko: string; en: string }> = {
-    confirmed_open: { ko: "운영 확인", en: "Open hours verified" },
-    official_hours_unstructured: {
-      ko: "공식 운영정보 확인 필요",
-      en: "Check the official operating information",
-    },
-    verified: { ko: "공식 정보 확인", en: "Verified by official data" },
-    available: { ko: "예측 정보 있음", en: "Forecast available" },
-    unavailable: { ko: "정보 미확인", en: "Not verified" },
-    type_based: {
-      ko: "콘텐츠 유형 기반 실내 판정",
-      en: "Indoor fit inferred from the content type",
-    },
-    not_required: { ko: "이번 요청의 필수 조건 아님", en: "Not required" },
-  };
-  return labels[status]?.[language] || (status ? status.replaceAll("_", " ") : "—");
+  // 상태 코드는 공용 사전만 통과한다. 미매핑 값을 그대로 흘려보내면
+  // `official_hours_unstructured`가 화면에 그대로 찍힌다.
+  if (!status) return "—";
+  return statusLabel(status, language);
 }
 
 function formatKstTime(value?: string): string {
@@ -387,6 +388,13 @@ export default function FlowApp() {
   const [apptNote, setApptNote] = useState("");
 
   const [apiLog, setApiLog] = useState<string[]>([]);
+  /* 지점을 물었는데 공식 관광정보에 그 지점이 없을 때, 본점만 조용히
+     보여 주면 사용자는 자기가 찾던 지점이라고 오해한다. 마지막 검색의
+     지점 해석 결과를 들고 있다가 안내 문장에 쓴다. */
+  const lastBranchQuery = useRef<{
+    branch: string;
+    resolved: boolean;
+  } | null>(null);
   const [options, setOptions] = useState<RecoveryOption[]>([]);
   const [rejectedCount, setRejectedCount] = useState(0);
   const [rejectionSummary, setRejectionSummary] = useState<
@@ -409,8 +417,13 @@ export default function FlowApp() {
 
   useEffect(() => {
     document.documentElement.lang = language;
+    const original = document.title;
+    if (language === "en") {
+      document.title = "IEOGA | Recover your trip right now";
+    }
     return () => {
       document.documentElement.lang = "ko";
+      document.title = original;
     };
   }, [language]);
 
@@ -618,6 +631,14 @@ export default function FlowApp() {
       );
     }
     const root = asRecord(payload);
+    const searchPath = asRecord(root?.searchPath);
+    const branch = asRecord(searchPath?.branchQuery);
+    lastBranchQuery.current = branch
+      ? {
+          branch: readText(branch, ["branch"]),
+          resolved: branch.branchResolved !== false,
+        }
+      : null;
     const rows = ["places", "items", "results", "candidates"]
       .map((key) => root?.[key])
       .find(Array.isArray) as unknown[] | undefined;
@@ -655,6 +676,7 @@ export default function FlowApp() {
               : "장소 검색 제공자"),
           retention:
             retention === "persistable" ? "persistable" : "ephemeral",
+          matchReason: readText(row, ["matchReason"]) || undefined,
         },
       ];
     });
@@ -709,15 +731,30 @@ export default function FlowApp() {
     setApptPlace(null);
     setApptHits([]);
     try {
-      const hits = (await lookupPlaces(keyword, "saved_stop")).filter(
-        (hit) => hit.retention === "persistable",
-      );
-      setApptHits(hits.slice(0, 6));
+      /* 약속 장소는 좌표만 있으면 도착 시간을 계산할 수 있다. 예전에는
+         공식 관광정보(persistable)만 허용해서, 사무실·신축 상가·프랜차이즈
+         지점처럼 관광정보에 없는 약속 장소를 아예 지정할 수 없었다.
+         공식 관광정보를 먼저 보여 주고, 아닌 결과는 그렇다고 표시한다. */
+      const hits = await lookupPlaces(keyword, "saved_stop");
+      const officialFirst = [
+        ...hits.filter((hit) => hit.retention === "persistable"),
+        ...hits.filter((hit) => hit.retention !== "persistable"),
+      ];
+      setApptHits(officialFirst.slice(0, 6));
+      const branchInfo = lastBranchQuery.current;
+      if (hits.length && branchInfo && !branchInfo.resolved) {
+        setApptNote(
+          tr(
+            `‘${branchInfo.branch}’ 지점은 공식 관광정보와 연결된 장소 검색에서 확인되지 않았습니다. 아래는 같은 상호의 다른 지점입니다. 지점이 맞는지 주소로 확인해 주세요.`,
+            `The ‘${branchInfo.branch}’ branch was not found in the connected place data. The results below are other branches of the same brand — check the address to confirm.`,
+          ),
+        );
+      }
       if (!hits.length) {
         setApptNote(
           tr(
-            "일정에 안전하게 저장할 수 있는 공식 관광정보 결과가 없습니다. 다른 장소명이나 주소로 검색해 주세요.",
-            "No official result can be safely stored for the appointment. Try another place name or address.",
+            "그 이름으로는 찾지 못했습니다. 지점명을 빼고 상호만 넣거나(예: ‘성심당’), 도로명 주소로 다시 검색해 주세요.",
+            "Nothing matched that name. Try the brand name without the branch (for example ‘성심당’), or search by street address.",
           ),
         );
       }
@@ -802,7 +839,7 @@ export default function FlowApp() {
       const registered = await postJson("/api/v1/itineraries", {
         ephemeralLocationNodeIds: ["now"],
         itinerary: {
-          title: "브리지 복구",
+          title: "오늘의 여행",
           timezone: "Asia/Seoul",
           audience,
           nodes,
@@ -855,7 +892,7 @@ export default function FlowApp() {
         analyticsConsent: false,
         itinerary: {
           id: itineraryId,
-          title: "브리지 복구",
+          title: "오늘의 여행",
           timezone: "Asia/Seoul",
           audience,
           nodes,
@@ -1385,7 +1422,7 @@ export default function FlowApp() {
                     setOriginNote(
                       tr(
                         `${hit.title}에서 출발합니다. 출처: ${hit.sourceLabel}. 이 출발 좌표는 일정에 저장하지 않습니다.`,
-                        `Starting from ${hit.title}. Source: ${hit.sourceLabel}. This origin coordinate is not stored in the itinerary.`,
+                        `Starting from ${hit.title}. Source: ${sourceLabelText(hit.sourceLabel, "en")}. This origin coordinate is not stored in the itinerary.`,
                       ),
                     );
                   }}
@@ -1397,7 +1434,7 @@ export default function FlowApp() {
                       <span className={styles.choiceSub}>{hit.address}</span>
                     )}
                     <span className={styles.choiceSub}>
-                      {tr("출처", "Source")} · {hit.sourceLabel}
+                      {tr("출처", "Source")} · {sourceLabelText(hit.sourceLabel, language)}
                     </span>
                   </span>
                 </button>
@@ -1548,8 +1585,8 @@ export default function FlowApp() {
                     setApptHits([]);
                     setApptNote(
                       tr(
-                        `${hit.title}을 약속 장소로 선택했습니다. 출처: ${hit.sourceLabel}.`,
-                        `${hit.title} is selected as the appointment place. Source: ${hit.sourceLabel}.`,
+                        `${withParticle(hit.title, "을/를")} 약속 장소로 정했어요. 출처: ${hit.sourceLabel}.`,
+                        `${hit.title} is set as the appointment place. Source: ${sourceLabelText(hit.sourceLabel, "en")}.`,
                       ),
                     );
                   }}
@@ -1561,8 +1598,27 @@ export default function FlowApp() {
                       <span className={styles.choiceSub}>{hit.address}</span>
                     )}
                     <span className={styles.choiceSub}>
-                      {tr("출처", "Source")} · {hit.sourceLabel}
+                      {tr("출처", "Source")} ·{" "}
+                      {sourceLabelText(hit.sourceLabel, language)}
                     </span>
+                    {/* 검색어에 지점명이 있었고 그 지점 단서로 찾아낸 결과라면
+                        왜 이 결과가 맞는지 알려 준다. */}
+                    {hit.matchReason === "branch_area" && (
+                      <span className={styles.choiceSub}>
+                        {tr(
+                          "입력한 지점 위치 주변에서 찾은 곳입니다.",
+                          "Found near the branch location you typed.",
+                        )}
+                      </span>
+                    )}
+                    {hit.retention !== "persistable" && (
+                      <span className={styles.choiceWarn}>
+                        {tr(
+                          "공식 관광정보에 없는 장소입니다. 좌표만 사용하고 관광 근거는 붙지 않습니다.",
+                          "Not in the official tourism dataset. Only the coordinate is used; no tourism evidence is attached.",
+                        )}
+                      </span>
+                    )}
                   </span>
                 </button>
               ))}
@@ -1627,19 +1683,19 @@ export default function FlowApp() {
             </span>
             <h1 className={styles.title}>
               {tr(
-                `${apptTime}까지 조건을 확인한`,
-                `${verifiedOptionCount} verified option${
+                `${apptTime} 약속까지 갈 수 있는`,
+                `${verifiedOptionCount} place${
                   verifiedOptionCount === 1 ? "" : "s"
-                } for arrival by ${apptTime}`,
+                } can still get you`,
               )}
               <br />
               {language === "ko"
                 ? `${verifiedOptionCount}곳을 찾았어요`
-                : "are ready"}
+                : `there by ${apptTime}`}
             </h1>
             <p className={styles.sub}>
               {tr(
-                `조건을 지키지 못한 ${rejectedCount}곳은 제외했습니다.${
+                `시간·이동 조건을 못 지키는 ${rejectedCount}곳은 빼고 골랐어요.${
                   options.length - verifiedOptionCount > 0
                     ? ` 공식 근거가 부족한 ${options.length - verifiedOptionCount}곳은 적용할 수 없습니다.`
                     : ""
@@ -1686,8 +1742,8 @@ export default function FlowApp() {
                     <div>
                       <span className={styles.rank}>
                         {tr(
-                          `복구 후보 ${optionIndex + 1}`,
-                          `Recovery option ${optionIndex + 1}`,
+                          `추천 ${optionIndex + 1}`,
+                          `Suggestion ${optionIndex + 1}`,
                         )}
                       </span>
                       <h2 className={styles.cardTitle}>{option.title}</h2>
@@ -1697,7 +1753,8 @@ export default function FlowApp() {
                     </div>
                     {option.strategyLabel && (
                       <span className={styles.badge}>
-                        {option.strategyLabel}
+                        {(language === "en" && option.strategyLabelEn) ||
+                          option.strategyLabel}
                       </span>
                     )}
                   </div>
@@ -1726,7 +1783,8 @@ export default function FlowApp() {
                       <ul>
                         {(option.evidenceGaps ?? []).map((gap, gapIndex) => (
                           <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
-                            {gap.note ||
+                            {(language === "en" ? gap.noteEn : "") ||
+                              gap.note ||
                               tr(
                                 "필수 조건의 공식 근거가 없습니다.",
                                 "Official evidence for a required condition is missing.",
@@ -1789,13 +1847,17 @@ export default function FlowApp() {
 
                   {option.purposePreservation?.statement && (
                     <p className={styles.cardAddr} style={{ marginTop: 14 }}>
-                      {option.purposePreservation.statement}
+                      {(language === "en" &&
+                        option.purposePreservation.statementEn) ||
+                        option.purposePreservation.statement}
                     </p>
                   )}
 
                   {!!option.why?.length && (
                     <ul className={styles.why}>
-                      {option.why.slice(0, 4).map((reason) => (
+                      {((language === "en" && option.whyEn) || option.why)
+                        .slice(0, 4)
+                        .map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
@@ -1811,7 +1873,7 @@ export default function FlowApp() {
                             key={`${option.id}-${name}`}
                             className={`${styles.ledgerChip} ${styles.ledgerChipKto}`}
                           >
-                            {tr("공사", "KTO")} {name}
+                            {tr("관광공사", "KTO")} {name}
                           </span>
                         ))}
                         {external.map((name) => (
@@ -1910,7 +1972,7 @@ export default function FlowApp() {
                     onClick={() => void shareSelectedOption()}
                     disabled={actionBusy}
                   >
-                    {tr("복구 증명 공유", "Share recovery proof")}
+                    {tr("결과 공유", "Share proof")}
                   </button>
                 </div>
                 {(actionMessage || shareMessage) && (
@@ -2216,7 +2278,7 @@ export default function FlowApp() {
                 ? tr("적용 중…", "Applying…")
                 : selectedOption
                   ? tr(
-                      `${selectedOption.title}(으)로 이어가기`,
+                      `${withParticle(selectedOption.title, "으로/로")} 이어가기`,
                       `Continue with ${selectedOption.title}`,
                     )
                   : tr(
@@ -2236,7 +2298,7 @@ export default function FlowApp() {
                 !recoveryPersisted
               }
             >
-              {tr("선택한 복구 증명 공유", "Share proof for selected option")}
+              {tr("선택한 곳의 결과 공유", "Share the selected result")}
             </button>
           </div>
         )}

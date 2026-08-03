@@ -4,6 +4,7 @@
    renders — it is the data model and formatting layer only. */
 
 import type { JourneyExecution } from "@/lib/recovery/execution";
+import { statusLabel, statusTone } from "@/lib/text/status-labels";
 
 export type TabId = "recover" | "insights" | "transparency";
 export type Incident = "rain" | "delay" | "crowd" | "less_walk";
@@ -124,6 +125,7 @@ export type PlaceSearchResult = {
 export type RecoveryOption = {
   id: string;
   strategyLabel?: string;
+  strategyLabelEn?: string;
   evidenceGaps?: Array<{
     code?:
       | "INDOOR_UNVERIFIED"
@@ -131,6 +133,7 @@ export type RecoveryOption = {
       | "CONCENTRATION_UNVERIFIED"
       | string;
     note?: string;
+    noteEn?: string;
   }>;
   confirmationRequired?: boolean;
   contentId?: string;
@@ -157,8 +160,10 @@ export type RecoveryOption = {
     evidenceSource?: string;
     relatedRank?: number;
     statement?: string;
+    statementEn?: string;
   };
   why?: string[];
+  whyEn?: string[];
   sources?: unknown[];
   scheduleDiff?: ScheduleDiff;
   proof?: Record<string, unknown>;
@@ -768,35 +773,26 @@ export function normalizePlaceResults(payload: unknown): PlaceSearchResult[] {
   });
 }
 
-export function humanizeStatus(value: unknown): string {
-  const status = String(value ?? "").toLowerCase();
-  if (["ok", "ready", "healthy", "available", "success", "live"].includes(status)) return "정상";
-  if (["used", "applied"].includes(status)) return "사용";
-  if (["verified", "confirmed"].includes(status)) return "확인됨";
-  if (status === "official_check_required") return "공식 확인 필요";
-  if (status === "not_required") return "별도 조건 없음";
-  if (status === "type_based") return "콘텐츠 유형 기준";
-  if (["unverified", "unknown", "check_required"].includes(status)) return "확인 필요";
-  if (["available_on_demand", "not_queried", "pending_query"].includes(status)) return "조회 전";
-  if (["degraded", "partial", "warning", "stale"].includes(status)) return "일부 제한";
-  if (["empty", "insufficient", "no_data", "unavailable"].includes(status)) return "데이터 부족";
-  if (["error", "failed", "down"].includes(status)) return "오류";
-  return value ? String(value) : "조회 전";
+/* 상태 코드는 공용 라벨 사전을 통해서만 화면으로 나간다. 예전 구현은
+   화이트리스트에 없는 값을 `String(value)`로 흘려보내 `confirmed_open`,
+   `bounded` 같은 내부 코드가 사용자에게 노출됐다. */
+export function humanizeStatus(
+  value: unknown,
+  language: Language = "ko",
+): string {
+  return statusLabel(value, language);
 }
 
-export function statusTone(value: unknown): "good" | "warn" | "bad" | "idle" {
-  const label = humanizeStatus(value);
-  if (label === "정상") return "good";
-  if (label === "일부 제한" || label === "데이터 부족") return "warn";
-  if (label === "오류") return "bad";
-  return "idle";
-}
+export { statusTone };
 
 export function compactValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "확인되지 않음";
   if (typeof value === "boolean") return value ? "확인" : "미확인";
   if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString("ko-KR") : value.toFixed(1);
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    // 이미 사람이 읽는 문장이면 그대로, 내부 코드(snake_case 등)면 라벨로.
+    return /[가-힣]/.test(value) ? value : statusLabel(value);
+  }
   if (Array.isArray(value)) {
     const texts = value.map((entry) => compactValue(entry)).filter(Boolean);
     return texts.slice(0, 3).join(", ") || "확인되지 않음";
@@ -837,21 +833,50 @@ export function formatCoverage(value: unknown): string {
   return compactValue(value);
 }
 
+/* 화면 전체가 같은 날짜 표기를 쓰도록 여기 한 곳에서만 만든다. 예전에는
+   `2026-08-03`, `2026. 8. 3. 오전 10:48`, `202606`, `2026년 06월 기준`이
+   같은 화면에 섞여 나왔다. */
 export function formatDate(value?: string): string {
   if (!value) return "기준일 미제공";
   const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(date);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
+/** 시각 없이 날짜만. 예: 2026년 8월 3일 */
+export function formatDayOnly(value?: string): string {
+  if (!value) return "기준일 미제공";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-");
+    return `${year}년 ${Number(month)}월 ${Number(day)}일`;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+}
+
+/** 기준월(`202606`)·기준일(`20260603`)처럼 자릿수만 있는 값도 문장으로 만든다. */
 export function formatReferenceDate(value?: string): string {
   if (!value) return "기준일 미제공";
-  if (/^\d{6}$/.test(value)) return `${value.slice(0, 4)}년 ${value.slice(4, 6)}월`;
-  if (/^\d{8}$/.test(value)) {
-    return `${value.slice(0, 4)}.${value.slice(4, 6)}.${value.slice(6, 8)}`;
+  if (/^\d{6}$/.test(value)) {
+    return `${value.slice(0, 4)}년 ${Number(value.slice(4, 6))}월`;
   }
-  return formatDate(value);
+  if (/^\d{8}$/.test(value)) {
+    return `${value.slice(0, 4)}년 ${Number(value.slice(4, 6))}월 ${Number(value.slice(6, 8))}일`;
+  }
+  return formatDayOnly(value);
 }
 
 export function formatCrowd(value: unknown): string {

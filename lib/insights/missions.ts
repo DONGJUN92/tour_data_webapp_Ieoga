@@ -376,27 +376,30 @@ function ownerScope(
     [payload.regionName, payload.districtName]
       .filter(Boolean)
       .join(" ") || `지역코드 ${payload.areaCode}`;
+  /* 이 값은 협약된 담당자가 아니라 "이 공백을 고칠 수 있는 주체"에 대한
+     제안이다. 화면 라벨도 `제안 대상`으로 맞췄다. 협약 없이 특정 기관에
+     책임과 마감일을 통보하는 것처럼 읽히지 않게 표현을 낮춘다. */
   if (failureCategory === "data_gap") {
     return {
-      ownerOrganization: "한국관광공사 관광데이터 운영 담당",
-      ownerRole: "공식 관광데이터 품질 책임자",
+      ownerOrganization: "한국관광공사 관광데이터 담당 부서(제안)",
+      ownerRole: "공식 관광데이터 품질 검토",
     };
   }
   if (failureCategory === "content_gap") {
     return {
-      ownerOrganization: `${localScope} 관광정책 담당부서`,
-      ownerRole: "지역 대체관광 콘텐츠 책임자",
+      ownerOrganization: `${localScope} 관광정책 담당부서(제안)`,
+      ownerRole: "지역 대체관광 콘텐츠 검토",
     };
   }
   if (failureCategory === "operating_hours_gap") {
     return {
-      ownerOrganization: `${localScope} 관광정보·시설 운영 담당부서`,
-      ownerRole: "관광지 운영정보 개선 책임자",
+      ownerOrganization: `${localScope} 관광정보·시설 운영 담당부서(제안)`,
+      ownerRole: "관광지 운영정보 개선 검토",
     };
   }
   return {
-    ownerOrganization: `${localScope} 관광·교통 협업 담당부서`,
-    ownerRole: "여행 이동 연속성 개선 책임자",
+    ownerOrganization: `${localScope} 관광·교통 협업 담당부서(제안)`,
+    ownerRole: "여행 이동 연속성 개선 검토",
   };
 }
 
@@ -822,7 +825,17 @@ export function buildMissionCandidates(
     priority: missingMetrics.length >= 4 ? 95 : 78,
     title: "정책 근거 데이터 완성도 점검",
     summary: policyActive
-      ? `정책 세부지표 ${missingMetrics.length}개 또는 원천 응답 ${incompleteSources.length}건을 현재 기준월에서 확인하지 못했습니다.`
+      ? [
+          missingMetrics.length > 0
+            ? `정책 세부지표 ${missingMetrics.length}개`
+            : "",
+          incompleteSources.length > 0
+            ? `원천 응답 ${incompleteSources.length}건`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("와 ") +
+        `을 ${payload.baseYm.slice(0, 4)}년 ${payload.baseYm.slice(4)}월 기준으로 확인하지 못했습니다.`
       : "정책 세부지표 7개가 현재 기준월에서 모두 확인됐습니다.",
     actionText:
       "누락 지표의 공식 원천·법정동 코드·기준월을 확인하고 같은 지역 범위를 다시 검증합니다.",

@@ -132,8 +132,11 @@ export async function buildPolicyInsight(params: {
       totalCount: 0,
       fieldsUsed: [],
     });
+    /* 예전 문구는 "시군구를 선택한 경우에만 조회합니다"에서 끝나 사용자가
+       다음에 무엇을 할 수 있는지 알 수 없었다. 이제 시군구 선택 화면이
+       있으므로 그 행동을 문장에 담는다. */
     warnings.push(
-      "기초지자체 중심 관광지는 시군구를 선택한 경우에만 조회합니다.",
+      "시군구를 고르면 그 지역의 중심 관광지 지표까지 함께 확인할 수 있습니다.",
     );
   }
 
@@ -188,7 +191,9 @@ export async function buildPolicyInsight(params: {
     areaCode: params.areaCode,
     districtCode: params.districtCode,
     regionName,
-    districtName,
+    /* 시도 단위 조회에서는 시군구 이름이 없다. 원천 필드가 `_`나 공백만
+       담고 있는 경우가 있어 화면에 `대전광역시 _`로 찍혔다. */
+    districtName: /[가-힣A-Za-z0-9]/.test(districtName) ? districtName : "",
     status,
     coverage: {
       available: availableEvidenceCount,

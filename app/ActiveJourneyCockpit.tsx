@@ -10,24 +10,34 @@ type Props = {
   execution: JourneyExecution;
   onChange: (execution: JourneyExecution) => void;
   onCloseCompleted: () => void;
+  /* 이 화면은 복구를 적용한 뒤 여행이 끝날 때까지 계속 보이는 화면인데
+     영어 대응이 하나도 없어서, 영어로 쓰던 사용자가 적용 버튼을 누르는
+     순간부터 화면이 통째로 한국어로 바뀌었다. */
+  language?: "ko" | "en";
 };
 
-function formatTime(value?: string): string {
-  if (!value) return "시간 확인";
+function formatTime(value: string | undefined, language: "ko" | "en"): string {
+  if (!value) return language === "en" ? "Time to confirm" : "시간 확인";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
     timeZone: "Asia/Seoul",
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
 }
 
-function stepRole(step: JourneyExecutionStep): string {
-  if (step.role === "replacement") return "바뀐 일정";
-  if (step.role === "next_fixed") return "다음 예약";
-  if (step.role === "preserved") return "보존 일정";
-  return "원래 일정";
+function stepRole(
+  step: JourneyExecutionStep,
+  language: "ko" | "en",
+): string {
+  const roles = {
+    replacement: { ko: "바뀐 일정", en: "Changed stop" },
+    next_fixed: { ko: "다음 예약", en: "Next booking" },
+    preserved: { ko: "보존 일정", en: "Kept stop" },
+    remaining_original: { ko: "원래 일정", en: "Original stop" },
+  } as const;
+  return (roles[step.role] ?? roles.remaining_original)[language];
 }
 
 function navigationUrl(step: JourneyExecutionStep): string {
@@ -38,7 +48,9 @@ export function ActiveJourneyCockpit({
   execution,
   onChange,
   onCloseCompleted,
+  language = "ko",
 }: Props) {
+  const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -94,17 +106,17 @@ export function ActiveJourneyCockpit({
       } | null;
       if (!response.ok || !payload?.execution) {
         throw new Error(
-          payload?.error?.message ?? "여행 진행 상태를 저장하지 못했습니다.",
+          payload?.error?.message ?? tr("여행 진행 상태를 저장하지 못했습니다.", "Could not save your trip progress."),
         );
       }
       onChange(payload.execution);
       setState("idle");
       setMessage(
         payload.execution.status === "contract_met"
-          ? "다음 예약 도착을 확인했습니다. 남은 원래 일정을 계속 이어갑니다."
+          ? tr("다음 예약 도착을 확인했습니다. 남은 원래 일정을 계속 이어갑니다.", "Arrival at your next booking is confirmed. Your remaining stops continue.")
           : payload.execution.status === "completed"
-            ? "복구된 여행을 끝까지 완주했습니다."
-            : "다음 일정으로 이어갑니다.",
+            ? tr("복구된 여행을 끝까지 완주했습니다.", "You finished the recovered trip.")
+            : tr("다음 일정으로 이어갑니다.", "Continuing to your next stop."),
       );
     } catch (error) {
       setState("error");
@@ -120,13 +132,16 @@ export function ActiveJourneyCockpit({
     return (
       <section className="journey-complete-card" data-testid="journey-completed">
         <span aria-hidden="true">✓</span>
-        <p>여행 완주</p>
-        <h1>복구된 일정으로 여행을 끝까지 이어갔어요.</h1>
+        <p>{tr("여행 완주", "Trip completed")}</p>
+        <h1>{tr("복구된 일정으로 여행을 끝까지 이어갔어요.", "You kept the trip going all the way with the recovered plan.")}</h1>
         <p>
-          다음 예약 도착과 남은 원래 일정의 완료가 모두 기록되었습니다.
+          {tr(
+            "다음 예약 도착과 남은 원래 일정의 완료가 모두 기록되었습니다.",
+            "Arrival at your booking and every remaining stop are recorded.",
+          )}
         </p>
         <button type="button" onClick={onCloseCompleted}>
-          새 여행 준비하기
+          {tr("새 여행 준비하기", "Plan a new trip")}
         </button>
       </section>
     );
@@ -135,10 +150,10 @@ export function ActiveJourneyCockpit({
   if (execution.status === "abandoned") {
     return (
       <section className="journey-complete-card is-abandoned">
-        <p>복구 여행 종료</p>
-        <h1>이번 여행 진행을 종료했습니다.</h1>
+        <p>{tr("복구 여행 종료", "Trip ended")}</p>
+        <h1>{tr("이번 여행 진행을 종료했습니다.", "This trip has been ended.")}</h1>
         <button type="button" onClick={onCloseCompleted}>
-          여행 화면으로 돌아가기
+          {tr("여행 화면으로 돌아가기", "Back to the trip screen")}
         </button>
       </section>
     );
@@ -153,36 +168,38 @@ export function ActiveJourneyCockpit({
       data-testid="active-journey-cockpit"
       tabIndex={-1}
     >
-      <div className="cockpit-progress" aria-label={`여행 진행률 ${progress}%`}>
+      <div className="cockpit-progress" aria-label={tr(`여행 진행률 ${progress}%`, `Trip progress ${progress}%`)}>
         <i style={{ width: `${progress}%` }} />
       </div>
       <div className="cockpit-topline">
-        <span>복구 여행 진행 중</span>
+        <span>{tr("복구 여행 진행 중", "Recovered trip in progress")}</span>
         <b>
-          {completedCount}/{execution.steps.length} 완료
+          {completedCount}/{execution.steps.length} {tr("완료", "done")}
         </b>
       </div>
 
       <div className="cockpit-main">
         <div className="cockpit-copy">
-          <p>{stepRole(current)}</p>
+          <p>{stepRole(current, language)}</p>
           <h1 id="active-journey-title">{current.title}</h1>
-          <span>{current.locationLabel || "목적지 위치 확인"}</span>
+          <span>{current.locationLabel || tr("목적지 위치 확인", "Destination to confirm")}</span>
           <div className="cockpit-facts">
             <dl>
-              <dt>예상·예약 시각</dt>
+              <dt>{tr("예상·예약 시각", "Expected time")}</dt>
               <dd>
                 {formatTime(
                   current.estimatedArrivalAt ?? current.scheduledAt,
+                  language,
                 )}
               </dd>
             </dl>
             <dl>
-              <dt>지켜야 할 다음 예약</dt>
+              <dt>{tr("지켜야 할 다음 예약", "Booking to protect")}</dt>
               <dd>
                 {nextFixed.title} ·{" "}
                 {formatTime(
                   nextFixed.estimatedArrivalAt ?? nextFixed.scheduledAt,
+                  language,
                 )}
               </dd>
             </dl>
@@ -196,7 +213,7 @@ export function ActiveJourneyCockpit({
             target="_blank"
             rel="noreferrer"
           >
-            다음 장소 길찾기
+            {tr("다음 장소 길찾기", "Directions to the next stop")}
             <span aria-hidden="true">→</span>
           </a>
           <button
@@ -207,28 +224,32 @@ export function ActiveJourneyCockpit({
             }
             disabled={state === "loading"}
           >
-            {state === "loading" ? "도착 기록 중…" : "이 장소에 도착했어요"}
+            {state === "loading"
+              ? tr("도착 기록 중…", "Recording arrival…")
+              : tr("이 장소에 도착했어요", "I arrived here")}
           </button>
         </div>
       </div>
 
       {execution.status === "contract_met" && (
         <div className="cockpit-contract-met" role="status">
-          <strong>다음 예약을 지켰어요.</strong>
-          <span>이제 남아 있는 원래 일정도 같은 순서로 이어갑니다.</span>
+          <strong>{tr("다음 예약을 지켰어요.", "Your booking is safe.")}</strong>
+          <span>{tr("이제 남아 있는 원래 일정도 같은 순서로 이어갑니다.", "Your remaining stops continue in the same order.")}</span>
         </div>
       )}
       {promptReached &&
         execution.status === "active" &&
         current.sequence < execution.nextFixedStepSequence && (
           <div className="cockpit-time-alert" role="status">
-            다음 예약 도착 확인 시각이 가까워졌습니다. 현재 단계 도착 후 바로
-            다음 목적지로 이동해 주세요.
+            {tr(
+              "다음 예약 도착 시각이 가까워졌습니다. 지금 단계에 도착하면 바로 다음 장소로 이동해 주세요.",
+              "Your booking time is close. Once you arrive here, head to the next stop right away.",
+            )}
           </div>
         )}
 
       <details className="cockpit-itinerary">
-        <summary>전체 복구 일정 보기</summary>
+        <summary>{tr("전체 복구 일정 보기", "See the whole recovered plan")}</summary>
         <ol>
           {execution.steps.map((step) => (
             <li
@@ -249,10 +270,10 @@ export function ActiveJourneyCockpit({
                     : step.sequence + 1}
               </span>
               <div>
-                <b>{stepRole(step)}</b>
+                <b>{stepRole(step, language)}</b>
                 <strong>{step.title}</strong>
                 <small>
-                  {formatTime(step.estimatedArrivalAt ?? step.scheduledAt)}
+                  {formatTime(step.estimatedArrivalAt ?? step.scheduledAt, language)}
                 </small>
               </div>
             </li>

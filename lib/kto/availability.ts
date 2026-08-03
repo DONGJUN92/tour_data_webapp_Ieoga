@@ -12,6 +12,8 @@ export type AvailabilityEvidence = {
   contact?: string;
   checkedAt: string;
   note: string;
+  /* 같은 설명의 영어 표기. 영어 화면에서 운영 판정만 한국어로 남지 않게 한다. */
+  noteEn?: string;
   audit: KtoAudit;
 };
 
@@ -127,6 +129,12 @@ export function evaluateAvailabilityItem(
           : eventStart !== null && today < eventStart
             ? "한국관광공사 행사 시작일 전입니다."
             : `한국관광공사 휴무 정보에 방문일(${DAY_NAMES[koreaDate(visitStart).getDay()]})이 포함됩니다.`,
+      noteEn:
+        eventEnd !== null && today > eventEnd
+          ? "The official event end date has already passed."
+          : eventStart !== null && today < eventStart
+            ? "The official event has not started yet."
+            : "The official closing days include your visit date.",
       audit,
     };
   }
@@ -166,6 +174,9 @@ export function evaluateAvailabilityItem(
       note: intervalInside
         ? "한국관광공사 운영시간의 단일 명확 구간 안에 대체 일정의 전체 체류시간이 포함됩니다."
         : "대체 일정의 도착부터 체류 종료까지 전체 구간이 한국관광공사 운영시간 안에 들어오지 않습니다.",
+      noteEn: intervalInside
+        ? "Your whole stay fits inside one clearly stated opening interval in the official data."
+        : "Your arrival-to-departure window does not fit inside the official opening hours.",
       audit,
     };
   }
@@ -178,7 +189,9 @@ export function evaluateAvailabilityItem(
       contact: contact || undefined,
       checkedAt,
       note:
-        "한국관광공사 공식 운영 정보는 확인했으나 자동 시간 판정이 어려워 방문 전 최종 확인이 필요합니다.",
+        "한국관광공사 공식 운영시간은 있지만 자동으로 읽을 수 없는 형식입니다. 출발 전에 한 번 확인해 주세요.",
+      noteEn:
+        "Official opening hours exist but cannot be parsed automatically. Please confirm before you set out.",
       audit,
     };
   }
@@ -187,7 +200,9 @@ export function evaluateAvailabilityItem(
     status: "unknown",
     contact: contact || undefined,
     checkedAt,
-    note: "한국관광공사 응답에 구조화된 운영시간 정보가 없습니다.",
+    note: "한국관광공사 응답에 운영시간 항목이 비어 있습니다. 출발 전에 확인해 주세요.",
+    noteEn:
+      "The official response has no operating-hours field. Please confirm before you set out.",
     audit,
   };
 }
@@ -209,6 +224,7 @@ export async function getAvailabilityEvidence(params: {
       status: "unknown",
       checkedAt: new Date().toISOString(),
       note: "한국관광공사 상세 운영정보 응답이 비어 있습니다.",
+      noteEn: "The official detail response for this place was empty.",
       audit: result.audit,
     };
   }

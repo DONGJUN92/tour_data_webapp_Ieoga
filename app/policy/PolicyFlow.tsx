@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import {
+  aliasHint,
+  regionMatchesQuery,
+  regionNameNote,
+} from "@/lib/text/region-alias";
 import styles from "../flow/flow.module.css";
 import policyStyles from "./policy.module.css";
 
@@ -10,9 +15,10 @@ import policyStyles from "./policy.module.css";
    pick a region, watch the official indicators load, then read the result —
    so a reader follows one question at a time. */
 
-type Step = "region" | "loading" | "result" | "error";
+type Step = "region" | "district" | "loading" | "result" | "error";
 
 type Region = { code: string; name: string };
+type District = { code: string; name: string };
 
 type Metric = {
   key: string;
@@ -36,6 +42,9 @@ type LedgerEntry = { api?: string; operation?: string; status?: string };
 type Insight = {
   regionName: string;
   districtName?: string;
+  /* 시군구를 골랐지만 시도 자료로 내려온 경우의 안내. 숫자를 시군구 값처럼
+     읽게 두지 않기 위해 화면에 그대로 띄운다. */
+  scopeNotice?: string;
   baseYm?: string;
   coverage: Coverage;
   metrics: Metric[];
@@ -134,10 +143,15 @@ function formatCheckedAt(value?: string): string {
   if (!value) return "조회 시각 미확인";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  /* 화면 안에서 날짜 표기를 하나로 맞춘다. `2026. 8. 3.`과
+     `2026년 6월 기준`이 같은 카드에 섞여 있었다. */
   return new Intl.DateTimeFormat("ko-KR", {
-    dateStyle: "medium",
-    timeStyle: "short",
     timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   }).format(date);
 }
 
@@ -162,7 +176,15 @@ export default function PolicyFlow() {
 
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionsError, setRegionsError] = useState("");
+  const [regionQuery, setRegionQuery] = useState("");
   const [selected, setSelected] = useState<Region | null>(null);
+  /* 시군구를 고르지 않으면 기초지자체 중심 관광지를 조회할 수 없다. 예전에는
+     그 사실만 안내하고 고를 방법이 없어 막다른 길이었다. */
+  const [districts, setDistricts] = useState<District[]>([]);
+  const [districtsError, setDistrictsError] = useState("");
+  const [selectedDistrict, setSelectedDistrict] = useState<District | null>(
+    null,
+  );
 
   const [insight, setInsight] = useState<Insight | null>(null);
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -183,9 +205,30 @@ export default function PolicyFlow() {
       .catch((error: Error) => setRegionsError(error.message));
   }, []);
 
-  const loadRegion = useCallback(
+  const openRegion = useCallback(
     async (region: Region) => {
       setSelected(region);
+      setSelectedDistrict(null);
+      setDistricts([]);
+      setDistrictsError("");
+      go("district");
+      try {
+        const payload = await getJson(
+          `/api/v1/regions/${region.code}/districts`,
+        );
+        const rows = asRecord(payload)?.districts;
+        setDistricts(Array.isArray(rows) ? (rows as District[]) : []);
+      } catch (error) {
+        setDistrictsError((error as Error).message);
+      }
+    },
+    [go],
+  );
+
+  const loadRegion = useCallback(
+    async (region: Region, district?: District | null) => {
+      setSelected(region);
+      setSelectedDistrict(district ?? null);
       setErrorText("");
       setApiLog([]);
       go("loading");
@@ -199,17 +242,30 @@ export default function PolicyFlow() {
       push("LocgoHubTarService1 · 중심 관광지 확인");
       try {
         const [insightPayload, missionPayload] = await Promise.all([
-          getJson(`/api/v1/insights/regions/${region.code}`),
-          getJson(`/api/v1/insights/missions?areaCode=${region.code}`).catch(
-            () => null,
+          getJson(
+            `/api/v1/insights/regions/${region.code}${
+              district ? `?sigunguCode=${district.code}` : ""
+            }`,
           ),
+          getJson(
+            `/api/v1/insights/missions?areaCode=${region.code}${
+              district ? `&sigunguCode=${district.code}` : ""
+            }`,
+          ).catch(() => null),
         ]);
         const root = asRecord(insightPayload);
         if (!root) throw new Error("지역 응답을 해석하지 못했습니다.");
         setInsight({
           regionName: String(root.regionName ?? region.name),
+          /* 이미 저장된 지역 자료에는 시군구 이름이 `_`로 들어 있는 것이
+             있어 제목이 `대전광역시 _`로 찍혔다. 실제 이름만 통과시킨다. */
           districtName:
-            typeof root.districtName === "string" ? root.districtName : undefined,
+            typeof root.districtName === "string" &&
+            /[가-힣A-Za-z0-9]/.test(root.districtName)
+              ? root.districtName
+              : undefined,
+          scopeNotice:
+            typeof root.scopeNotice === "string" ? root.scopeNotice : undefined,
           baseYm: typeof root.baseYm === "string" ? root.baseYm : undefined,
           coverage: root.coverage as Coverage,
           metrics: Array.isArray(root.metrics) ? (root.metrics as Metric[]) : [],
@@ -238,10 +294,23 @@ export default function PolicyFlow() {
   );
 
   const back = useCallback(() => {
-    if (step !== "region") go("region", true);
-  }, [step, go]);
+    if (step === "district") {
+      go("region", true);
+      return;
+    }
+    if (step !== "region") go(selected ? "district" : "region", true);
+  }, [step, go, selected]);
 
-  const STEPS: Step[] = ["region", "loading", "result"];
+  const visibleRegions = regions.filter((region) =>
+    regionMatchesQuery(region.name, regionQuery),
+  );
+  const activeAliasHint = regionQuery.trim()
+    ? visibleRegions
+        .map((region) => aliasHint(region.name, regionQuery))
+        .find(Boolean)
+    : undefined;
+
+  const STEPS: Step[] = ["region", "district", "loading", "result"];
   const stepIndex = Math.max(0, STEPS.indexOf(step));
 
   return (
@@ -286,29 +355,108 @@ export default function PolicyFlow() {
           <>
             <span className={styles.eyebrow}>지역 회복력</span>
             <h1 className={styles.title}>
-              어느 지역의
+              어느 지역을
               <br />
-              빈틈을 보시겠어요?
+              살펴볼까요?
             </h1>
             <p className={styles.sub}>
-              운영 동기화에서 한국관광공사 공식 정책 지표를 검증해 저장한
-              최신 지역팩을 읽습니다. 기준월과 생성 시각을 함께 확인하세요.
+              한국관광공사 공식 정책 지표를 검증해 저장한 최신 지역 자료를
+              읽습니다. 기준월과 생성 시각을 함께 보여 드립니다.
             </p>
             <div className={styles.body}>
+              <label className={styles.field}>
+                <span className={styles.label}>지역 검색</span>
+                <input
+                  className={styles.input}
+                  type="search"
+                  value={regionQuery}
+                  onChange={(event) => setRegionQuery(event.target.value)}
+                  placeholder="예: 대전, 광주, 강원"
+                  autoComplete="off"
+                />
+              </label>
+              {/* 행정 통합으로 이름이 바뀐 지역은 사용자가 옛 이름으로 찾는다.
+                  옛 이름으로도 걸리게 하고, 왜 이 이름이 나오는지 알려 준다. */}
+              {activeAliasHint && (
+                <p className={styles.fieldNote}>{activeAliasHint}</p>
+              )}
               {regionsError && <p className={styles.sub}>{regionsError}</p>}
               {!regions.length && !regionsError && (
                 <p className={styles.sub}>공식 지역코드를 불러오는 중…</p>
               )}
-              {regions.map((region) => (
+              {regions.length > 0 && !visibleRegions.length && (
+                <p className={styles.sub}>
+                  검색어와 맞는 시도가 없습니다. 시·도 이름으로 다시 입력해
+                  주세요.
+                </p>
+              )}
+              {visibleRegions.map((region) => {
+                const note = regionNameNote(region.name);
+                return (
+                  <button
+                    key={region.code}
+                    type="button"
+                    className={styles.choice}
+                    style={{ minHeight: 60 }}
+                    onClick={() => void openRegion(region)}
+                  >
+                    <span className={styles.choiceText}>
+                      <span className={styles.choiceTitle}>{region.name}</span>
+                      {note && (
+                        <span className={styles.choiceSub}>{note}</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {step === "district" && selected && (
+          <>
+            <span className={styles.eyebrow}>{selected.name}</span>
+            <h1 className={styles.title}>
+              시군구까지
+              <br />
+              좁혀 볼까요?
+            </h1>
+            <p className={styles.sub}>
+              시군구를 고르면 그 지역의 중심 관광지와 기초지자체 지표까지 함께
+              확인할 수 있습니다. 시도 전체로 먼저 봐도 됩니다.
+            </p>
+            <div className={styles.body}>
+              <button
+                type="button"
+                className={styles.choice}
+                style={{ minHeight: 60 }}
+                onClick={() => void loadRegion(selected, null)}
+              >
+                <span className={styles.choiceText}>
+                  <span className={styles.choiceTitle}>
+                    {selected.name} 전체로 보기
+                  </span>
+                  <span className={styles.choiceSub}>
+                    시도 단위 공식 지표만 사용합니다.
+                  </span>
+                </span>
+              </button>
+              {districtsError && (
+                <p className={styles.sub}>{districtsError}</p>
+              )}
+              {!districts.length && !districtsError && (
+                <p className={styles.sub}>공식 시군구 목록을 불러오는 중…</p>
+              )}
+              {districts.map((district) => (
                 <button
-                  key={region.code}
+                  key={district.code}
                   type="button"
                   className={styles.choice}
-                  style={{ minHeight: 60 }}
-                  onClick={() => void loadRegion(region)}
+                  style={{ minHeight: 56 }}
+                  onClick={() => void loadRegion(selected, district)}
                 >
                   <span className={styles.choiceText}>
-                    <span className={styles.choiceTitle}>{region.name}</span>
+                    <span className={styles.choiceTitle}>{district.name}</span>
                   </span>
                 </button>
               ))}
@@ -323,7 +471,7 @@ export default function PolicyFlow() {
               <h1 className={styles.title} style={{ fontSize: 22 }}>
                 {selected?.name}의
                 <br />
-                검증된 지역팩을 불러오고 있어요
+                검증된 지역 자료를 불러오고 있어요
               </h1>
             </div>
             <div className={styles.apiLog}>
@@ -341,10 +489,21 @@ export default function PolicyFlow() {
           <>
             <span className={styles.eyebrow}>
               {insight.baseYm
-                ? `${insight.baseYm.slice(0, 4)}년 ${insight.baseYm.slice(4)}월 기준`
+                ? `${insight.baseYm.slice(0, 4)}년 ${Number(insight.baseYm.slice(4))}월 기준`
                 : "최신 가용 기준월"}
             </span>
-            <h1 className={styles.title}>{insight.regionName}</h1>
+            <h1 className={styles.title}>
+              {insight.districtName
+                ? `${insight.regionName} ${insight.districtName}`
+                : selectedDistrict && !insight.scopeNotice
+                  ? `${insight.regionName} ${selectedDistrict.name}`
+                  : insight.regionName}
+            </h1>
+            {insight.scopeNotice && (
+              <p className={styles.fieldError} role="status">
+                {insight.scopeNotice}
+              </p>
+            )}
             <p className={styles.sub}>{insight.coverage?.meaning}</p>
 
             <div className={styles.body}>
@@ -385,21 +544,33 @@ export default function PolicyFlow() {
                 <div className={policyStyles.summaryFacts}>
                   <dl>
                     <dt>기준월</dt>
-                    <dd>{insight.baseYm ?? "최신 가용 기준월"}</dd>
+                    <dd>
+                      {insight.baseYm
+                        ? `${insight.baseYm.slice(0, 4)}년 ${Number(insight.baseYm.slice(4))}월`
+                        : "최신 가용 기준월"}
+                    </dd>
                   </dl>
                   <dl>
-                    <dt>지역팩 생성</dt>
+                    <dt>자료 생성 시각</dt>
                     <dd>{formatCheckedAt(insight.generatedAt)}</dd>
                   </dl>
                   <dl>
                     <dt>판독 원칙</dt>
-                    <dd>백분율·순위로 임의 환산하지 않음</dd>
+                    <dd>원값 그대로 표시 (순위 환산 없음)</dd>
                   </dl>
                 </div>
               </div>
 
-              {insight.metrics.map((metric) => {
+              {/* 같은 설명이 지표 카드마다 반복되면 화면 대부분이 같은
+                  문장으로 채워진다. 묶음이 바뀔 때만 한 번 보여 준다. */}
+              {insight.metrics.map((metric, metricIndex) => {
                 const guide = metricGuide(metric);
+                const previous =
+                  metricIndex > 0
+                    ? metricGuide(insight.metrics[metricIndex - 1])
+                    : undefined;
+                const repeatsExplanation =
+                  previous?.explanation === guide.explanation;
                 return (
                   <div
                     key={`${metric.source}-${metric.key}`}
@@ -421,16 +592,18 @@ export default function PolicyFlow() {
                         {formatValue(metric.value)}
                       </span>
                     </div>
-                    <p className={policyStyles.metricExplanation}>
-                      {guide.explanation}
-                    </p>
+                    {!repeatsExplanation && (
+                      <p className={policyStyles.metricExplanation}>
+                        {guide.explanation}
+                      </p>
+                    )}
                   </div>
                 );
               })}
 
               <div className={`${styles.card} ${policyStyles.sourceCard}`}>
                 <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
-                  이 지역팩을 만든 공사 OpenAPI
+                  이 지역 자료를 만든 한국관광공사 OpenAPI
                 </h2>
                 <div className={styles.ledger} style={{ marginTop: 12 }}>
                   {insight.sourceLedger.map((entry, index) => (

@@ -154,6 +154,10 @@ async function executeSearch(request: NextRequest, input: unknown) {
       ktoStatus: result.ktoStatus,
       fallbackUsed: result.usedFallback,
       fallbackProvider: result.fallbackProvider ?? null,
+      /* 지점 검색이 어떻게 풀렸는지 화면에서 설명할 수 있게 함께 내려준다.
+         예: `성심당 DCC점` → 기저명 `성심당`, 지점 단서 `DCC`,
+         앵커 `대전컨벤션센터(DCC)` 주변 조회 */
+      branchQuery: result.branchQuery ?? null,
     },
   });
   response.headers.set(

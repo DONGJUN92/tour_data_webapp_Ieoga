@@ -24,9 +24,12 @@
   --ink: #191f28; /* 제목 */
   --ink-soft: #4e5968; /* 본문 */
   --muted: #5f6b79; /* 보조 설명 — 흰색/캔버스에서 WCAG AA */
-  --line: #e5e8eb;
+  --line: #c9cfd6; /* 일반 구분선 — 흰 배경에서 1.57:1로 실제 보인다 */
+  --line-strong: #8b95a1; /* 입력·버튼 등 컨트롤 경계 — 흰 배경 3.04:1 (WCAG 1.4.11) */
   --canvas: #f2f4f6; /* 화면 배경 */
   --paper: #ffffff; /* 카드 */
+  --accent: #1b64da; /* 주요 행동 — 흰 텍스트와 5.4:1 */
+  --accent-strong: #134fac;
 
   /* --- 엘리베이션 --- */
   --shadow-card: 0 1px 3px rgba(25, 31, 40, 0.06);
@@ -1955,7 +1958,7 @@ input:disabled {
   padding: 4px 7px;
   border-radius: 999px;
   background: #edf1ee;
-  color: #687875;
+  color: #45514f;
   font-size: 12px;
   font-weight: 900;
 }
@@ -5391,5 +5394,542 @@ body summary:focus-visible {
   body .header-guide {
     padding-inline: 10px;
     font-size: 0.82rem;
+  }
+}
+
+/* =========================================================================
+   완결 레이어 — 시인성·가독성 정합 (2026-08)
+
+   이 파일은 다크 테마에서 라이트 테마로 이관되며 `body .xxx` 오버라이드를
+   덧쓰는 방식으로 자라났다. 그 과정에서 두 종류의 사고가 남았다.
+
+   (1) `--lime`이 #ffffff로 재매핑되어 라이트 표면에 흰색이 그려졌다.
+       → 잠긴 일정 타임라인 선·노드, 적용된 카드 테두리, 최소변경 수치,
+         로딩 스피너가 흰 배경 위 흰색(1.00:1)으로 사라졌다.
+   (2) 라이트용 회색(#5f6b79 등)이 아직 다크인 블록에 적용되었다.
+       → 경로 출처 표기가 2.15:1로 읽히지 않았다.
+
+   아래 레이어는 남은 다크 섬을 라이트로 통일하고, 모든 전경/경계 색을
+   WCAG 2.1 AA(본문 4.5:1, 큰 텍스트·컨트롤 3:1) 위로 올린다.
+   신규 화면은 이 레이어의 토큰만 사용한다.
+   ========================================================================= */
+
+/* --- 한국어 줄바꿈 정책 -------------------------------------------------
+   한국어는 어절 중간에서 끊기면 즉시 어색해진다. keep-all로 어절을 보호하고,
+   pretty/balance로 마지막 줄에 한 단어만 남는 고아 줄을 줄인다. */
+body h1,
+body h2,
+body h3,
+body h4,
+body p,
+body li,
+body dt,
+body dd,
+body span,
+body strong,
+body b,
+body em,
+body small,
+body label,
+body button,
+body a,
+body summary,
+body legend,
+body figcaption,
+body th,
+body td {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+body h1,
+body h2,
+body h3,
+body h4 {
+  text-wrap: balance;
+}
+
+body p,
+body li,
+body dd {
+  text-wrap: pretty;
+}
+
+/* --- 구분선·컨트롤 경계 -------------------------------------------------
+   하드코딩된 #e5e8eb(1.23:1)·#edf1f5(1.14:1)·rgba(18,40,42,0.12)(1.26:1)를
+   실제로 보이는 값으로 올린다. 컨트롤은 3:1 이상을 쓴다. */
+body .product-header,
+body .product-footer,
+body .language-toggle,
+body .journey-steps,
+body .journey-steps li,
+body .service-grid,
+body .region-ribbon,
+body .insight-overview,
+body .region-board,
+body .policy-result,
+body .api-board,
+body .principle-grid article,
+body .legal-grid article,
+body .active-journey-cockpit,
+body .journey-complete-card,
+body .cockpit-itinerary,
+body .schedule-builder,
+body .schedule-edit-card,
+body .panel-heading,
+body .form-group,
+body .place-results,
+body .option-card,
+body .option-facts,
+body .option-facts > dl,
+body .decision-contribution,
+body .journey-loading {
+  border-color: var(--line);
+}
+
+body .schedule-edit-card.is-primary-changeable,
+body .schedule-edit-card.is-primary-fixed {
+  border-color: var(--line);
+}
+
+body input,
+body select,
+body textarea,
+body .place-search input,
+body .incident-option,
+body .option-footer-actions button,
+body .option-footer a,
+body .verify-place-button,
+body .place-fallback-button,
+body .arrival-check button,
+body .journey-context-actions button,
+body .route-action-row a,
+body .no-candidate-actions a,
+body .no-candidate-actions button {
+  border-color: var(--line-strong);
+}
+
+body .option-footer-actions button:disabled {
+  border-color: var(--line);
+}
+
+body .cockpit-progress {
+  background: #dfe3e8;
+}
+
+/* --- 잠긴 일정 타임라인: 흰 선·흰 노드 복구 (첨부 진단 1순위) ---------- */
+body .saved-timeline li {
+  border-top: 2px solid var(--line);
+}
+
+body .saved-timeline li::before {
+  background: #fff;
+  border: 3px solid var(--line-strong);
+  box-shadow: none;
+}
+
+body .saved-timeline li.is-locked {
+  border-top-color: var(--brand);
+}
+
+body .saved-timeline li.is-locked::before {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+body .saved-timeline strong {
+  color: var(--ink);
+}
+
+body .saved-timeline li > b {
+  background: #f2f4f6;
+  color: var(--ink-soft);
+}
+
+/* --- 저장된 일정 카드의 다크 잔재 버튼·칩 ------------------------------ */
+body .journey-context-actions button {
+  border-width: 1px;
+  border-style: solid;
+  background: #fff;
+  color: var(--ink-soft);
+}
+
+body .journey-context-actions button:hover {
+  background: #f2f4f6;
+}
+
+body .journey-context-actions .danger-text {
+  border-color: #e0aeb5;
+  color: #b32d3c;
+}
+
+/* --- 결과 카드: 최소변경 증거 수치가 흰색으로 사라지던 블록 ------------ */
+body .option-continuity-summary {
+  border-color: var(--line);
+}
+
+body .option-continuity-summary span {
+  border-right-color: var(--line);
+  color: var(--muted);
+}
+
+body .option-continuity-summary b {
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+body .option-card.is-applied {
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 0 3px rgba(8, 120, 118, 0.14);
+}
+
+body .why-list li::before {
+  color: var(--brand-deep);
+  font-weight: 900;
+}
+
+body .status-badge {
+  color: #45514f;
+}
+
+/* --- 로딩 스피너: 링 전체가 보이지 않던 문제 --------------------------- */
+body .loading-ring {
+  border-color: rgba(25, 31, 40, 0.16);
+  border-top-color: var(--accent);
+}
+
+body .loading-ring.dark {
+  border-color: rgba(25, 31, 40, 0.16);
+  border-top-color: var(--accent);
+}
+
+/* --- 경로 그래픽·원칙 배지: 흰 배경에서 형태가 사라지던 요소 ----------- */
+body .route-graphic i,
+body .route-graphic b {
+  /* 흰 배경 위에서는 흰 링이 아무 역할도 하지 않는다. 링 자체를 보이는
+     색으로 두고 그림자를 없앤다. */
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+body .principle-grid article > span {
+  /* 연한 틴트만으로는 흰 배경에서 배지 모양이 드러나지 않는다. 글자
+     명암비는 충분하므로 형태만 테두리로 잡아 준다. */
+  border: 1px solid var(--brand-tint-strong);
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+/* --- 적용된 복구안 블록: 흰 결과 패널 속 다크 섬을 라이트로 통일 ------- */
+body .applied-recovery {
+  border: 1px solid var(--line);
+  background: #f7f8fa;
+  color: var(--ink);
+}
+
+body .applied-recovery:focus,
+body .applied-recovery:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+body .applied-recovery-heading span {
+  color: var(--brand-deep);
+}
+
+body .applied-recovery-heading h3 {
+  color: var(--ink);
+}
+
+body .applied-recovery-heading > b {
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+body .applied-recovery-heading > b.is-warning {
+  background: var(--disrupt-tint);
+  color: #7d4a00;
+}
+
+body .before-after-timeline > i {
+  color: var(--ink-soft);
+}
+
+body .timeline-column {
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+body .timeline-column > span {
+  color: var(--muted);
+}
+
+body .timeline-column li {
+  border-left-color: var(--line);
+}
+
+body .timeline-column li::before {
+  background: var(--line-strong);
+}
+
+body .timeline-column .is-replacement {
+  border-left-color: var(--brand);
+}
+
+body .timeline-column .is-replacement::before {
+  background: var(--brand);
+}
+
+body .timeline-column .is-locked {
+  border-left-color: var(--ink-soft);
+}
+
+body .timeline-column .is-disrupted {
+  text-decoration-color: var(--danger);
+}
+
+body .timeline-column time {
+  color: var(--brand-deep);
+}
+
+body .timeline-column strong {
+  color: var(--ink);
+}
+
+body .timeline-column small {
+  color: var(--muted);
+}
+
+body .route-action-row a {
+  background: #fff;
+  color: var(--accent);
+}
+
+/* 공사 출처 표기는 어떤 표면에서도 반드시 읽혀야 한다. */
+body .route-attribution {
+  color: var(--ink-soft);
+}
+
+body .waypoint-proof-list li {
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+body .waypoint-proof-list span {
+  color: var(--ink-soft);
+}
+
+body .waypoint-proof-list b {
+  color: var(--ink);
+}
+
+body .waypoint-proof-list small {
+  color: var(--muted);
+}
+
+body .arrival-check span {
+  color: var(--ink-soft);
+}
+
+body .arrival-check button {
+  background: #fff;
+  color: var(--ink-soft);
+}
+
+body .arrival-check button.is-selected {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+}
+
+body .arrival-check button.is-negative {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+body .outcome-message {
+  color: var(--ink-soft);
+}
+
+/* --- OpenAPI 기여 원장: 값이 1.25:1로 읽히지 않던 심사 증거 화면 ------- */
+body .decision-contribution p {
+  color: var(--muted);
+}
+
+body .decision-contribution ul,
+body .decision-contribution li {
+  border-color: var(--line);
+}
+
+body .decision-contribution li strong {
+  color: var(--ink);
+}
+
+body .decision-contribution li span {
+  color: var(--muted);
+}
+
+body .decision-contribution li b {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+/* --- 반사실(탈락안) 카드 ------------------------------------------------ */
+body .counterfactual-card {
+  border: 1px solid #e4c489;
+  background: #fffaf0;
+  color: var(--ink);
+}
+
+body .counterfactual-card .counterfactual-relaxation {
+  color: var(--ink-soft);
+}
+
+body .counterfactual-card > button {
+  background: var(--accent);
+  color: #fff;
+}
+
+body .counterfactual-card > button:hover {
+  background: var(--accent-strong);
+}
+
+/* --- 출처 원장 --------------------------------------------------------- */
+body .source-ledger {
+  border-color: var(--line);
+  background: #f7f8fa;
+}
+
+body .source-ledger summary {
+  color: var(--ink);
+}
+
+body .source-ledger ul,
+body .source-ledger li {
+  border-color: var(--line);
+}
+
+body .source-ledger li {
+  color: var(--ink-soft);
+}
+
+body .source-ledger p {
+  color: var(--muted);
+}
+
+/* --- 후보 없음 상태 ---------------------------------------------------- */
+body .no-candidate-actions a,
+body .no-candidate-actions button {
+  background: #fff;
+  color: var(--accent);
+}
+
+body .no-candidate-actions a {
+  border-color: var(--danger);
+  color: #a82836;
+}
+
+/* --- 파란 주요 행동: 흰 텍스트 3.71:1 → 5.41:1 ------------------------- */
+body .cockpit-primary,
+body .journey-complete-card button {
+  background: var(--accent);
+  color: #fff;
+}
+
+body .cockpit-primary:hover,
+body .journey-complete-card button:hover {
+  background: var(--accent-strong);
+}
+
+body .practice-ready > span,
+body .recovery-ready-banner > span {
+  background: var(--accent);
+}
+
+body .recovery-ready-banner p,
+body .practice-ready p,
+body .purpose-contract small,
+body .context-adjustment summary,
+body .cockpit-topline,
+body .cockpit-copy > span,
+body .journey-complete-card p {
+  color: var(--muted);
+}
+
+body .purpose-contract strong i,
+body .hero-copy h1 em,
+body .header-guide {
+  color: var(--accent);
+}
+
+@media (min-width: 1024px) {
+  body .product-header {
+    width: min(1180px, calc(100% - 40px));
+  }
+}
+
+/* --- 히어로 보조 약속 문장 --------------------------------------------- */
+body .hero-promise {
+  max-width: 650px;
+  margin-top: 14px;
+  padding: 11px 15px;
+  border-radius: 12px;
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+/* --- 데스크톱 내비게이션 복구 -------------------------------------------
+   `body .desktop-nav{display:none}`과 `.mobile-nav`의 max-width:820px가
+   겹쳐 821px 이상에서 내비게이션이 하나도 남지 않았다. 지역 회복력·데이터
+   출처 화면으로 가는 상시 경로를 되돌린다. */
+@media (min-width: 821px) {
+  body .product-header {
+    grid-template-columns: 1fr auto 1fr;
+    gap: 20px;
+  }
+
+  /* 내비게이션을 되살리면서 헤더가 3열이 됐다. 960px 안에서는 CTA가
+     `지금 / 바로 → / 복구`로 쪼개지므로, 헤더만 조금 넓히고 두 버튼은
+     줄바꿈을 막는다. */
+  body .header-guide,
+  body .header-cta {
+    white-space: nowrap;
+  }
+
+  body .desktop-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+  }
+
+  body .desktop-nav button {
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  body .desktop-nav button[aria-selected="true"],
+  body .desktop-nav button.is-active {
+    background: var(--brand-tint);
+    color: var(--brand-deep);
+  }
+
+  body .desktop-nav button:hover {
+    color: var(--ink);
   }
 }

@@ -209,12 +209,12 @@ export default function SourcesFlow() {
           <>
             <span className={styles.eyebrow}>데이터 출처</span>
             <h1 id="sources-screen-title" className={styles.title}>
-              이어가는 공사 데이터
+              한국관광공사 데이터
               <br />
-              8종 위에서 작동합니다
+              8종으로 판단합니다
             </h1>
             <p className={styles.sub}>
-              몇 개를 호출했는지가 아니라, 각 데이터가 어떤 판단을 바꾸는지를
+              몇 개를 호출했는지가 아니라, 각 데이터가 어떤 판단을 바꿨는지
               적었습니다.
             </p>
             <div className={styles.body}>
@@ -227,7 +227,11 @@ export default function SourcesFlow() {
                       </h2>
                       <p className={styles.cardAddr}>{entry.service}</p>
                     </div>
-                    <span className={styles.badge}>공고 {entry.listNo}번</span>
+                    {/* `공고 3번`은 공모전 지정 목록의 순번이라 일반 이용자에게는
+                        의미가 없다. 무엇의 순번인지 밝혀 준다. */}
+                    <span className={styles.badge}>
+                      한국관광공사 OpenAPI 목록 {entry.listNo}번
+                    </span>
                   </div>
                   <ul className={styles.why}>
                     <li>{entry.role}</li>
@@ -325,6 +329,29 @@ export default function SourcesFlow() {
                 이용자 요청 기반 정책 지표는 같은 시군구의 비식별 집계가 30건
                 이상일 때만 공개합니다. 그 미만은 공개 화면에 반영하지
                 않습니다.
+              </div>
+              {/* 한국관광공사 OpenAPI는 실시간 호출을 원칙으로 한다. 이어가가
+                  어디까지 실시간이고 어디부터 저장인지 이용자와 심사자가 화면에서
+                  바로 확인할 수 있어야 한다. */}
+              <div className={styles.card}>
+                <h2 className={styles.cardTitle} style={{ fontSize: 16 }}>
+                  관광정보를 저장하는 범위
+                </h2>
+                <ul className={styles.why}>
+                  <li>
+                    여행 복구는 요청할 때마다 관광정보를 실시간으로 호출합니다.
+                    후보·좌표·운영정보·접근성·집중률을 저장해 두고 쓰지 않습니다.
+                  </li>
+                  <li>
+                    지역 회복력 화면의 정책 지표는 운영 점검 시점에 계산한 값을
+                    최대 7일까지 보관하고, 화면에 기준월과 생성 시각을 함께
+                    표시합니다.
+                  </li>
+                  <li>
+                    보관하는 것은 지표값·중심 관광지 이름·좌표이며, 원문 응답
+                    전체를 그대로 저장하지는 않습니다.
+                  </li>
+                </ul>
               </div>
               {deleteState && <p className={styles.sub}>{deleteState}</p>}
             </div>

@@ -27,6 +27,8 @@ export type AccessibilityEvidence = {
   }>;
   supplementalFields: Array<{ field: string; value: string }>;
   note: string;
+  /* 같은 설명의 영어 표기. 영어 화면에서 검증 사유만 한국어로 남는 일을 막는다. */
+  noteEn?: string;
 };
 
 export type CrowdEvidence = {
@@ -34,6 +36,7 @@ export type CrowdEvidence = {
   relativeRate?: number;
   baseDate?: string;
   note: string;
+  noteEn?: string;
 };
 
 export type PublicAvailabilityEvidence = Omit<
@@ -137,7 +140,10 @@ export type TravelPurposeProof = {
   status:
     | "verified_related_place"
     | "verified_activity_type"
-    | "supported_visit_category";
+    | "supported_visit_category"
+    /* 원래 하려던 활동과 유형이 다른 후보. 시간·날씨 조건은 통과했지만
+       "목적을 유지한다"고 말할 수 없으므로 별도 상태로 분리한다. */
+    | "changed_visit_category";
   originalPurpose: string;
   replacementPurpose: string;
   originalStopTitle: string;
@@ -145,6 +151,7 @@ export type TravelPurposeProof = {
   evidenceSource: "TarRlteTarService1" | "KorService2";
   relatedRank?: number;
   statement: string;
+  statementEn?: string;
 };
 
 export type RecoveryOption = {
@@ -154,6 +161,8 @@ export type RecoveryOption = {
   id: string;
   strategy: "minimum_change" | "comfortable" | "local_discovery";
   strategyLabel: string;
+  /* 같은 라벨의 영어 표기. 영어 화면에서 배지만 한국어로 남는 일을 막는다. */
+  strategyLabelEn?: string;
   contentId: string;
   title: string;
   address: string;
@@ -170,12 +179,14 @@ export type RecoveryOption = {
   indoorSuitability: {
     status: "type_based" | "not_required";
     note: string;
+    noteEn?: string;
   };
   accessibility: AccessibilityEvidence;
   crowd: CrowdEvidence;
   relatedRank?: number;
   purposePreservation: TravelPurposeProof;
   why: string[];
+  whyEn?: string[];
   sources: KtoServiceName[];
   sourceModifiedAt?: string;
   scheduleDiff: ScheduleDiff;
@@ -191,6 +202,7 @@ export type EvidenceGap = {
     | "ACCESSIBILITY_UNVERIFIED"
     | "CONCENTRATION_UNVERIFIED";
   note: string;
+  noteEn?: string;
 };
 
 export type RejectedCandidate = {

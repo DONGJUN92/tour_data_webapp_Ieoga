@@ -7,8 +7,34 @@ import {
   getRelatedTourism,
 } from "./adapters";
 import { callKto, ktoServiceKeyConfigured } from "./client";
-import { POLICY_INDICATORS, previousCompleteMonth } from "./registry";
+import {
+  POLICY_INDICATORS,
+  previousCompleteMonth,
+  priorMonth,
+} from "./registry";
 import { KtoError, type KtoAudit } from "./types";
+
+/* 월 단위 데이터셋은 지난달이 아직 발행되지 않았을 수 있다. 실측 기준으로
+   8월 초에 최신 기준월은 6월이었고, 7월은 모든 지표에서 0건이었다. 점검이
+   기준월 하나만 보고 끝내면 발행 지연을 데이터 공백으로 보고하게 된다.
+   실제 조회 경로(getPolicyBundle)가 3개월을 훑으므로 점검도 같은 창을 쓴다.
+   그래야 점검 결과가 사용자가 화면에서 겪는 것과 같은 사실이 된다. */
+const BASE_MONTH_ATTEMPTS = 3;
+
+async function checkAcrossRecentMonths(
+  baseYm: string,
+  run: (baseYm: string) => Promise<{ audit: KtoAudit }>,
+): Promise<{ audit: KtoAudit }> {
+  let month = baseYm;
+  let lastResult: { audit: KtoAudit } | undefined;
+  for (let attempt = 0; attempt < BASE_MONTH_ATTEMPTS; attempt += 1) {
+    const result = await run(month);
+    if (result.audit.status !== "empty") return result;
+    lastResult = result;
+    month = priorMonth(month);
+  }
+  return lastResult!;
+}
 
 function failedAudit(
   apiName: KtoAudit["apiName"],
@@ -92,12 +118,14 @@ export async function checkAllKtoServices(): Promise<{
       service: "TarRlteTarService1" as const,
       operation: "areaBasedList1",
       run: () =>
-        getRelatedTourism({
-          regionCode,
-          districtCode,
-          baseYm,
-          numOfRows: 1,
-        }),
+        checkAcrossRecentMonths(baseYm, (month) =>
+          getRelatedTourism({
+            regionCode,
+            districtCode,
+            baseYm: month,
+            numOfRows: 1,
+          }),
+        ),
     },
     {
       service: "TatsCnctrRateService" as const,
@@ -120,37 +148,45 @@ export async function checkAllKtoServices(): Promise<{
       service: "LocgoHubTarService1" as const,
       operation: "areaBasedList1",
       run: () =>
-        getHubTourism({ regionCode, districtCode, baseYm }),
+        checkAcrossRecentMonths(baseYm, (month) =>
+          getHubTourism({ regionCode, districtCode, baseYm: month }),
+        ),
     },
     {
       service: "AreaTarDivService" as const,
       operation: diversity.operation,
       run: () =>
-        getPolicyIndicator(diversity, {
-          regionCode,
-          districtCode,
-          baseYm,
-        }),
+        checkAcrossRecentMonths(baseYm, (month) =>
+          getPolicyIndicator(diversity, {
+            regionCode,
+            districtCode,
+            baseYm: month,
+          }),
+        ),
     },
     {
       service: "AreaTarDemDsService" as const,
       operation: demand.operation,
       run: () =>
-        getPolicyIndicator(demand, {
-          regionCode,
-          districtCode,
-          baseYm,
-        }),
+        checkAcrossRecentMonths(baseYm, (month) =>
+          getPolicyIndicator(demand, {
+            regionCode,
+            districtCode,
+            baseYm: month,
+          }),
+        ),
     },
     {
       service: "AreaTarResDemService" as const,
       operation: resource.operation,
       run: () =>
-        getPolicyIndicator(resource, {
-          regionCode,
-          districtCode,
-          baseYm,
-        }),
+        checkAcrossRecentMonths(baseYm, (month) =>
+          getPolicyIndicator(resource, {
+            regionCode,
+            districtCode,
+            baseYm: month,
+          }),
+        ),
     },
   ];
 

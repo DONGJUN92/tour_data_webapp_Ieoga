@@ -150,11 +150,6 @@ export function validateFieldEvidence(
       requireRate("purposePreservationRate", 95);
       requireZero("criticalFalsePositiveCount");
       break;
-    case "first_time_location_ux":
-      requireSample(20);
-      requireRate("taskSuccessRate", 90);
-      requireRate("permissionDeniedSuccessRate", 90);
-      break;
     case "tripbreak_100":
       requireSample(100);
       requireRate("scenarioSuccessRate", 90);
@@ -162,26 +157,6 @@ export function validateFieldEvidence(
       if (uniqueRegionPrefixes.size < 6) {
         errors.push("최소 6개 권역의 실전 시나리오가 필요합니다.");
       }
-      break;
-    case "first_time_users_20":
-      requireSample(20);
-      requireRate("taskSuccessRate", 80);
-      break;
-    case "tourism_reviewers_3":
-      requireSample(3);
-      if (uniqueReviewers.size < 3) {
-        errors.push("서로 다른 관광·지자체 실무 검토자 3인 이상이 필요합니다.");
-      }
-      if (input.sampleSize !== uniqueReviewers.size) {
-        errors.push("표본 수는 고유 검토자 수와 일치해야 합니다.");
-      }
-      break;
-    case "six_region_field_audit":
-      requireSample(6);
-      if (uniqueRegionPrefixes.size < 6) {
-        errors.push("서로 다른 시도 권역 6곳 이상의 현장 점검이 필요합니다.");
-      }
-      requireZero("criticalFalsePositiveCount");
       break;
     case "recovery_speed_and_false_positive": {
       requireSample(100);

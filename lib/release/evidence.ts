@@ -21,14 +21,16 @@ export type LaunchEvidenceReport = {
   generatedAt: string;
 };
 
+/* 출시 보고서가 추적하는 현장 증거. 사람 참여자와 실제 이동을 전제로 하던
+   네 종류(초행 사용자 20명, 실무자 3인, 첫 사용 위치 흐름, 6개 권역 현장
+   감사)는 운영 주체의 결정으로 이 보고서의 범위에서 제외했다. 임계값을
+   낮추거나 다른 근거로 대체하지 않고 항목 자체를 뺐다. 남겨 두면 채워질 수
+   없는 칸이 영구히 미충족으로 남고, 낮추면 채워졌다는 잘못된 사실이
+   남는다. 여기 남은 네 종류는 모두 실행 원장으로 측정할 수 있는 것이다. */
 export const FIELD_EVIDENCE_TYPES = [
   "journey_completion_contract",
   "travel_purpose_preservation",
-  "first_time_location_ux",
   "tripbreak_100",
-  "first_time_users_20",
-  "tourism_reviewers_3",
-  "six_region_field_audit",
   "recovery_speed_and_false_positive",
 ] as const;
 
@@ -107,15 +109,6 @@ export function buildLaunchEvidenceReport(params: {
       evidence: fieldSummary(
         "travel_purpose_preservation",
         "연계 방문 순위와 콘텐츠 유형 규칙은 구현됐지만 실제 시나리오에서 목적 보존을 검토한 인증 증거가 아직 없습니다.",
-      ),
-    },
-    {
-      id: "first_time_location_ux",
-      title: "위·경도 입력 없는 첫 사용 흐름",
-      status: fieldStatus("first_time_location_ux"),
-      evidence: fieldSummary(
-        "first_time_location_ux",
-        "위치 허용·거부·직접 검색을 실제 초행 사용자와 브라우저에서 통과한 인증 증거가 아직 없습니다.",
       ),
     },
     {
@@ -198,39 +191,6 @@ export function buildLaunchEvidenceReport(params: {
       ),
       nextAction:
         "지역·시간·문제유형·고정예약 조합 100건을 실행하고 오추천과 실패 원인을 기록하세요.",
-    },
-    {
-      id: "first_time_users_20",
-      title: "초기 사용자 20명 무도움 과업 성공",
-      status: fieldStatus("first_time_users_20"),
-      evidence: fieldSummary(
-        "first_time_users_20",
-        "시뮬레이션 가이드는 구현됐지만 실제 초행 사용자 과업 성공률 근거는 아직 없습니다.",
-      ),
-      nextAction:
-        "20명이 도움 없이 일정 등록→복구 적용→도착→완주하는지 측정하세요.",
-    },
-    {
-      id: "tourism_reviewers_3",
-      title: "관광 현장·지자체 실무자 3인 검토",
-      status: fieldStatus("tourism_reviewers_3"),
-      evidence: fieldSummary(
-        "tourism_reviewers_3",
-        "4대 실패유형 실행계약과 동일 시나리오 재검증은 구현됐지만 현장 조치 가능성 검토 서명은 아직 없습니다.",
-      ),
-      nextAction:
-        "관광안내·지자체·관광사업자 각 1인 이상에게 조치 가능성과 책임주체를 검증받으세요.",
-    },
-    {
-      id: "six_region_field_audit",
-      title: "수도권·광역시·도서산간 포함 6개 권역 현장 점검",
-      status: fieldStatus("six_region_field_audit"),
-      evidence: fieldSummary(
-        "six_region_field_audit",
-        "전국 코드와 검색 범위는 지원하지만 서로 다른 이동·데이터 환경의 현장 점검표는 아직 없습니다.",
-      ),
-      nextAction:
-        "최소 6개 권역에서 장소검색, 경로, 영업정보, 도착 계약을 실제 이동으로 확인하세요.",
     },
     {
       id: "recovery_speed_and_false_positive",

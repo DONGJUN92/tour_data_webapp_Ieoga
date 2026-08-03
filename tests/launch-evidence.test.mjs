@@ -32,10 +32,6 @@ test("launch evidence never marks missing field proof as verified", async () => 
 
   assert.equal(report.overall, "evidence_collection");
   assert.equal(
-    report.items.find((item) => item.id === "first_time_users_20")?.status,
-    "needs_field_evidence",
-  );
-  assert.equal(
     report.items.find((item) => item.id === "tripbreak_100")?.status,
     "needs_field_evidence",
   );
@@ -161,7 +157,6 @@ test("implementation claims remain unverified without authenticated field eviden
   for (const id of [
     "journey_completion_contract",
     "travel_purpose_preservation",
-    "first_time_location_ux",
   ]) {
     assert.equal(
       report.items.find((item) => item.id === id)?.status,
@@ -508,31 +503,6 @@ test("field evidence validation is fail-closed and threshold based", async () =>
       new Date("2026-07-31T09:00:00.000Z"),
     ).join(" "),
     /공식 시도 코드/,
-  );
-  assert.match(
-    validateFieldEvidence(
-      {
-        ...base,
-        evidenceType: "six_region_field_audit",
-        sampleSize: 6,
-        regions: ["11110", "11140", "11170", "11200", "11215", "11230"],
-        metrics: { criticalFalsePositiveCount: 0 },
-      },
-      new Date("2026-07-31T09:00:00.000Z"),
-    ).join(" "),
-    /서로 다른 시도 권역 6곳/,
-  );
-  assert.match(
-    validateFieldEvidence(
-      {
-        ...base,
-        evidenceType: "tourism_reviewers_3",
-        sampleSize: 3,
-        reviewers: ["관광 실무자", " 관광   실무자 ", "관광 실무자"],
-      },
-      new Date("2026-07-31T09:00:00.000Z"),
-    ).join(" "),
-    /서로 다른 관광·지자체 실무 검토자 3인/,
   );
   assert.match(
     validateFieldEvidence(

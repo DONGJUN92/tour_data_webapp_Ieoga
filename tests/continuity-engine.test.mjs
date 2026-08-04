@@ -716,3 +716,69 @@ test("KorService2 detailCommon2 omits retired selector flags", async () => {
     else process.env.KTO_SERVICE_KEY = originalKey;
   }
 });
+
+/* 경유지가 있는 경로는 구간별 결과가 있어야 한다. 엔진은 경유지마다 도착을
+   검증하므로 합계 하나만 오면 그 후보를 통째로 탈락시킨다. 배포본 실측에서
+   라우팅까지 도달한 후보가 매번 전부 ROUTE_UNAVAILABLE로 떨어져 대안이 하나도
+   제시되지 않았고, 원인이 정확히 이것이었다. */
+test("a waypointed TMAP route reports one leg per segment", async () => {
+  const { getTmapPedestrianRoute } = await import(
+    "../lib/mobility/tmap-pedestrian.ts"
+  );
+  const originalFetch = globalThis.fetch;
+  const previousKey = process.env.TMAP_APP_KEY;
+  process.env.TMAP_APP_KEY = "tmap-leg-test-key";
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return new Response(
+      JSON.stringify({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [body.startX, body.startY] },
+            properties: { totalDistance: 500, totalTime: 600 },
+          },
+          {
+            type: "Feature",
+            geometry: {
+              type: "LineString",
+              coordinates: [
+                [body.startX, body.startY],
+                [body.endX, body.endY],
+              ],
+            },
+            properties: {},
+          },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    const points = [
+      { latitude: 37.5665, longitude: 126.978 },
+      { latitude: 37.5658, longitude: 126.9751 },
+      { latitude: 37.5693, longitude: 126.9788 },
+    ];
+    const route = await getTmapPedestrianRoute(points);
+    assert.ok(route);
+    /* 엔진의 통과 조건과 같은 식으로 확인한다. */
+    assert.ok(route.legs.length >= points.length - 1);
+    assert.equal(route.legs.length, 2);
+    assert.equal(calls.length, 2, "구간마다 한 번씩 호출해야 한다");
+    /* 두 번째 호출의 출발점은 첫 번째의 도착점이어야 한다. */
+    assert.equal(calls[0].endX, calls[1].startX);
+    assert.equal(calls[0].endY, calls[1].startY);
+    assert.equal(route.distanceMeters, 1000);
+    assert.equal(route.durationMinutes, 20);
+    /* 경유지 좌표가 두 번 들어가지 않아야 한다. */
+    assert.equal(route.geometry.length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousKey === undefined) delete process.env.TMAP_APP_KEY;
+    else process.env.TMAP_APP_KEY = previousKey;
+  }
+});

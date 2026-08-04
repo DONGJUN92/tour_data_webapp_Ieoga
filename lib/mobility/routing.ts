@@ -123,12 +123,9 @@ export async function getWalkingRoute(
           provider: "tmap_pedestrian",
           distanceMeters: tmap.distanceMeters,
           durationMinutes: tmap.durationMinutes,
-          legs: [
-            {
-              distanceMeters: tmap.distanceMeters,
-              durationMinutes: tmap.durationMinutes,
-            },
-          ],
+          /* 구간별 결과를 그대로 전달한다. 엔진이 경유지마다 도착을 검증하므로
+             합계 하나로 뭉치면 경유지가 있는 후보는 전부 탈락한다. */
+          legs: tmap.legs,
           geometry: tmap.geometry,
           calculatedAt,
           attribution: ATTRIBUTION.tmap_pedestrian,

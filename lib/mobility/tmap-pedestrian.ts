@@ -16,6 +16,7 @@ import { getRuntimeSecret } from "@/lib/runtime-env";
 export type TmapRoute = {
   distanceMeters: number;
   durationMinutes: number;
+  legs: Array<{ distanceMeters: number; durationMinutes: number }>;
   geometry: Array<{ latitude: number; longitude: number }>;
 };
 
@@ -44,12 +45,93 @@ function pushPoint(
   into.push({ latitude, longitude });
 }
 
+/* 한 번의 호출이 감당하는 구간 수. 이어가의 복구 경로는 보통
+   `현재 → 대안 → 다음 예약`이라 2구간이고, 사이의 원래 일정이 많아도 이
+   범위를 넘지 않는다. 넘으면 호출하지 않고 상위에서 다른 공급자를 쓰게 한다. */
+const MAX_SEGMENTS = 8;
+
+type Segment = { distanceMeters: number; durationSeconds: number; geometry: Array<{ latitude: number; longitude: number }> };
+
+async function fetchSegment(
+  appKey: string,
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+  signal: AbortSignal,
+): Promise<Segment> {
+  const response = await fetch(`${TMAP_PEDESTRIAN_URL}?version=1`, {
+    method: "POST",
+    headers: {
+      appKey,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      startX: from.longitude,
+      startY: from.latitude,
+      endX: to.longitude,
+      endY: to.latitude,
+      reqCoordType: "WGS84GEO",
+      resCoordType: "WGS84GEO",
+      startName: "출발",
+      endName: "도착",
+      searchOption: "0",
+    }),
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`TMAP_HTTP_${response.status}`);
+  const payload = (await response.json()) as {
+    features?: TmapFeature[];
+    error?: unknown;
+  };
+  if (payload.error) throw new Error("TMAP_ERROR");
+
+  let distanceMeters: number | undefined;
+  let durationSeconds: number | undefined;
+  const geometry: Array<{ latitude: number; longitude: number }> = [];
+  for (const feature of payload.features ?? []) {
+    const total = feature.properties?.totalDistance;
+    const time = feature.properties?.totalTime;
+    if (distanceMeters === undefined && Number.isFinite(total)) {
+      distanceMeters = Number(total);
+    }
+    if (durationSeconds === undefined && Number.isFinite(time)) {
+      durationSeconds = Number(time);
+    }
+    const type = feature.geometry?.type;
+    const coordinates = feature.geometry?.coordinates;
+    if (type === "LineString" && Array.isArray(coordinates)) {
+      for (const pair of coordinates) pushPoint(geometry, pair);
+    } else if (type === "Point") {
+      pushPoint(geometry, coordinates);
+    }
+  }
+  if (
+    !Number.isFinite(distanceMeters) ||
+    !Number.isFinite(durationSeconds) ||
+    !geometry.length
+  ) {
+    throw new Error("TMAP_EMPTY");
+  }
+  return {
+    distanceMeters: distanceMeters as number,
+    durationSeconds: durationSeconds as number,
+    geometry,
+  };
+}
+
 /**
- * 보행자 경로를 조회한다.
+ * 보행자 경로를 구간별로 조회한다.
  *
- * TMAP은 경유지를 최대 5개까지 별도 파라미터로 받는다. 이어가는
- * `현재 → 대안 → 다음 예약`처럼 3~4개 지점을 쓰므로 그 범위에서 처리하고,
- * 그보다 많으면 호출하지 않고 undefined를 돌려 상위에서 OSRM을 쓰게 한다.
+ * 경유지는 `passList`로 한 번에 보낼 수도 있지만, 그렇게 하면 응답이 전체
+ * 합계만 주고 구간별 거리·시간을 주지 않는다. 이어가는 경유지마다 도착을
+ * 검증해 "한 경유지라도 보존을 확인하지 못한 후보는 제외"하므로, 구간이
+ * 없으면 그 후보는 통째로 탈락한다. 실제로 그렇게 동작했다. 배포본 실측에서
+ * 라우팅까지 도달한 후보가 매번 전부 `ROUTE_UNAVAILABLE`로 떨어져 대안이
+ * 하나도 제시되지 않았다.
+ *
+ * 그래서 구간을 나눠 병렬로 호출하고 구간별 결과를 그대로 돌려준다. 지점이
+ * 셋이면 두 번 호출하며, 병렬이라 지연은 한 번과 비슷하다.
  */
 export async function getTmapPedestrianRoute(
   points: Array<{ latitude: number; longitude: number }>,
@@ -57,95 +139,54 @@ export async function getTmapPedestrianRoute(
 ): Promise<TmapRoute | undefined> {
   const appKey = getRuntimeSecret("TMAP_APP_KEY");
   if (!appKey) return undefined;
-  if (points.length < 2 || points.length > 7) return undefined;
-
-  const start = points[0];
-  const end = points[points.length - 1];
-  const via = points.slice(1, -1);
-
-  const body: Record<string, unknown> = {
-    startX: start.longitude,
-    startY: start.latitude,
-    endX: end.longitude,
-    endY: end.latitude,
-    reqCoordType: "WGS84GEO",
-    resCoordType: "WGS84GEO",
-    startName: "출발",
-    endName: "도착",
-    searchOption: "0",
-  };
-  if (via.length) {
-    body.passList = via
-      .map((point) => `${point.longitude},${point.latitude}`)
-      .join("_");
-  }
+  if (points.length < 2) return undefined;
+  if (points.length - 1 > MAX_SEGMENTS) return undefined;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_500);
+  const timeout = setTimeout(() => controller.abort(), 4_500);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
   try {
-    const response = await fetch(
-      `${TMAP_PEDESTRIAN_URL}?version=1`,
-      {
-        method: "POST",
-        headers: {
-          appKey,
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal: options.signal
-          ? AbortSignal.any([options.signal, controller.signal])
-          : controller.signal,
-        cache: "no-store",
-      },
+    const segments = await Promise.all(
+      points.slice(0, -1).map((from, index) =>
+        fetchSegment(appKey, from, points[index + 1], signal),
+      ),
     );
-    if (!response.ok) {
-      throw new Error(`TMAP_HTTP_${response.status}`);
-    }
-    const payload = (await response.json()) as {
-      features?: TmapFeature[];
-      error?: unknown;
-    };
-    if (payload.error) throw new Error("TMAP_ERROR");
 
-    const features = payload.features ?? [];
-    /* 총거리·총시간은 첫 Point feature의 properties에 담겨 온다. */
-    let distanceMeters: number | undefined;
-    let durationSeconds: number | undefined;
+    /* TMAP은 안내점을 Point로, 같은 좌표를 LineString에도 담아 보내고 구간
+       경계에서도 같은 좌표가 반복된다. 연속 중복을 한 번만 남겨 경로선이
+       제자리를 오가는 것처럼 보이지 않게 한다. */
     const geometry: Array<{ latitude: number; longitude: number }> = [];
-
-    for (const feature of features) {
-      const total = feature.properties?.totalDistance;
-      const time = feature.properties?.totalTime;
-      if (distanceMeters === undefined && Number.isFinite(total)) {
-        distanceMeters = Number(total);
+    for (const segment of segments) {
+      for (const point of segment.geometry) {
+        const previous = geometry[geometry.length - 1];
+        if (
+          previous &&
+          previous.latitude === point.latitude &&
+          previous.longitude === point.longitude
+        ) {
+          continue;
+        }
+        geometry.push(point);
       }
-      if (durationSeconds === undefined && Number.isFinite(time)) {
-        durationSeconds = Number(time);
-      }
-      const type = feature.geometry?.type;
-      const coordinates = feature.geometry?.coordinates;
-      if (type === "LineString" && Array.isArray(coordinates)) {
-        for (const pair of coordinates) pushPoint(geometry, pair);
-      } else if (type === "Point") {
-        pushPoint(geometry, coordinates);
-      }
-    }
-
-    if (
-      !Number.isFinite(distanceMeters) ||
-      !Number.isFinite(durationSeconds) ||
-      !geometry.length
-    ) {
-      throw new Error("TMAP_EMPTY");
     }
 
     return {
-      distanceMeters: Math.round(distanceMeters as number),
+      distanceMeters: Math.round(
+        segments.reduce((sum, segment) => sum + segment.distanceMeters, 0),
+      ),
       durationMinutes: Math.max(
         1,
-        Math.ceil((durationSeconds as number) / 60),
+        Math.ceil(
+          segments.reduce((sum, segment) => sum + segment.durationSeconds, 0) /
+            60,
+        ),
       ),
+      legs: segments.map((segment) => ({
+        distanceMeters: Math.round(segment.distanceMeters),
+        durationMinutes: Math.max(1, Math.ceil(segment.durationSeconds / 60)),
+      })),
       geometry,
     };
   } finally {

@@ -214,6 +214,15 @@ export type RecoveryResponse = {
   dataContributions?: DataContribution[];
   recoveryMode?: string;
   itinerarySummary?: Record<string, unknown>;
+  ablation?: {
+    disabledSources?: string[];
+    lostCapabilities?: string[];
+    verifiedOptionCount?: number;
+    confirmationRequiredCount?: number;
+    relatedEvidenceCount?: number;
+    crowdEvidenceCount?: number;
+    accessibilityVerifiedCount?: number;
+  };
 };
 
 export type HealthResponse = {
@@ -314,6 +323,26 @@ export const TRAVEL_MODES = [
 ] as const;
 
 export type TravelMode = (typeof TRAVEL_MODES)[number]["value"];
+
+/* 제거실험으로 끌 수 있는 공사 서비스와, 끄면 사라지는 판정 근거. 후보 수만
+   비교하면 "별 차이 없다"로 읽히므로 무엇을 잃는지 화면이 먼저 말한다. */
+export const ABLATION_SOURCES = [
+  {
+    id: "TarRlteTarService1",
+    label: "관광지 연관관계",
+    lost: "원래 일정과 함께 방문된 기록이 사라져, 의도 보존 근거와 세 번째 카드의 축이 없어집니다.",
+  },
+  {
+    id: "TatsCnctrRateService",
+    label: "관광지 집중률",
+    lost: "향후 집중률 예측이 사라져 혼잡 회피 판정과 순위 보정을 할 수 없습니다.",
+  },
+  {
+    id: "KorWithService2",
+    label: "무장애 관광정보",
+    lost: "유아차·휠체어·고령자 편의정보 검증이 사라져 모든 후보가 접근성 미확인이 됩니다.",
+  },
+] as const;
 
 export const AUDIENCES: { value: Audience; label: string }[] = [
   { value: "general", label: "일반 여행" },

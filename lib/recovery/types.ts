@@ -324,6 +324,20 @@ export type RecoveryResult = {
     nextFixedNodeId?: string;
     lockedNodeCount: number;
   };
+  /* 제거실험으로 무엇을 끄고 얻은 결과인지. 심사위원이 화면에서 API를 끄고
+     차이를 볼 때, 그 수치가 어떤 조건에서 나온 것인지 응답 자체가 말해야 한다.
+     빈 배열이면 전체 사용이다. */
+  ablation?: {
+    disabledSources: string[];
+    /* 끈 서비스가 실제로 어떤 결정을 못 하게 됐는가. 후보 수만 비교하면
+       "별 차이 없다"로 읽히지만, 사라진 것은 판정 근거다. */
+    lostCapabilities: string[];
+    verifiedOptionCount: number;
+    confirmationRequiredCount: number;
+    relatedEvidenceCount: number;
+    crowdEvidenceCount: number;
+    accessibilityVerifiedCount: number;
+  };
   /* 빈 시간 추천에서 사용자가 알려 준 창 조건. 어떤 제약으로 계산했는지를
      결과와 같은 객체에 남긴다. */
   openWindowSummary?: {

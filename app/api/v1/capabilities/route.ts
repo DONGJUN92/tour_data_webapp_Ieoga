@@ -69,6 +69,20 @@ export async function GET() {
           ],
           preservedContractAppliesTo: "route_verified",
         },
+        /* 심사용 제거실험. 문서 주장이 아니라 요청 파라미터로 실행되며, 무엇을
+           끄고 얻은 수치인지 응답의 ablation에 남는다. */
+        sourceAblation: {
+          supported: true,
+          parameter: "disabledSources",
+          disableableSources: [
+            "TarRlteTarService1",
+            "TatsCnctrRateService",
+            "KorWithService2",
+          ],
+          /* 후보 자체를 만드는 유일한 원천이라 끄면 비교가 아니라 빈 결과가 된다. */
+          alwaysRequired: ["KorService2"],
+          reportedIn: "ablation",
+        },
         routeEta: {
           supported: true,
           currentMethod: providerCapabilities.routeMethod,

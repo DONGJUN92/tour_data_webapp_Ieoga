@@ -115,7 +115,7 @@
   height: 100%;
   display: block;
   border-radius: inherit;
-  background: #3182f6;
+  background: var(--accent);
   transition: width 0.25s ease;
 }
 
@@ -211,7 +211,7 @@
 
 .cockpit-primary {
   justify-content: space-between;
-  background: #3182f6;
+  background: var(--accent);
   color: #fff;
 }
 
@@ -376,7 +376,7 @@
   padding: 0 24px;
   border: 0;
   border-radius: 15px;
-  background: #3182f6;
+  background: var(--accent);
   color: #fff;
   font-weight: 900;
   cursor: pointer;
@@ -5045,7 +5045,7 @@ body .practice-ready > span {
   height: 32px;
   place-items: center;
   border-radius: 50%;
-  background: #3182f6;
+  background: var(--accent);
   color: #fff;
   font-weight: 900;
 }
@@ -5155,7 +5155,7 @@ body .recovery-ready-banner > span {
   height: 36px;
   place-items: center;
   border-radius: 50%;
-  background: #3182f6;
+  background: var(--accent);
   color: #fff;
   font-weight: 900;
 }
@@ -5983,4 +5983,61 @@ body .hero-promise {
   color: var(--muted);
   font-size: 0.8rem;
   line-height: 1.55;
+}
+
+/* 제거실험 패널. 심사위원이 화면에서 공사 API를 끄고 결과 차이를 보는 자리다.
+   끈 사실이 결과와 함께 남아야 하므로 결과 영역에도 배너를 둔다. */
+.ablation-panel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--cream);
+}
+
+.ablation-panel > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.ablation-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ablation-body > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.ablation-result {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--disrupt);
+  border-radius: var(--r-control);
+  background: var(--disrupt-tint);
+}
+
+.ablation-result strong {
+  color: var(--warning);
+  font-size: 0.95rem;
+}
+
+.ablation-result ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.ablation-result p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
 }

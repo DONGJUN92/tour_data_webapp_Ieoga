@@ -327,6 +327,7 @@ function auditFromFailure(
 function notRequiredAudit(
   service: KtoServiceName,
   operation: string,
+  reason?: string,
 ): KtoAudit {
   return {
     apiName: service,
@@ -336,6 +337,7 @@ function notRequiredAudit(
     resultCount: 0,
     totalCount: 0,
     fieldsUsed: [],
+    ...(reason ? { errorCode: reason } : {}),
   };
 }
 
@@ -842,6 +844,43 @@ function summariseItinerary(
     disruptedNodeId: context.disrupted?.id,
     nextFixedNodeId: context.nextFixed?.id,
     lockedNodeCount: context.lockedNodeIds.length,
+  };
+}
+
+/* 제거실험 요약. 후보 수만 비교하면 "API를 끄니 별 차이 없다"로 읽히므로,
+   사라진 판정 근거를 함께 센다. 실제로 연관 관광지를 끄면 후보 수는 그대로여도
+   "함께 방문한 기록" 근거가 0이 되고 세 번째 카드의 축이 사라진다. */
+const ABLATION_CAPABILITY: Record<string, string> = {
+  TarRlteTarService1: "원래 일정과의 연계 방문 근거 (의도 보존)",
+  TatsCnctrRateService: "향후 집중률 예측 기반 혼잡 회피",
+  KorWithService2: "무장애·영유아·고령자 편의정보 검증",
+};
+
+function summariseAblation(
+  input: RecoveryRequest,
+  options: RecoveryOption[],
+): RecoveryResult["ablation"] {
+  const disabledSources = input.disabledSources ?? [];
+  return {
+    disabledSources,
+    lostCapabilities: disabledSources.map(
+      (source) => ABLATION_CAPABILITY[source] ?? source,
+    ),
+    verifiedOptionCount: options.filter(
+      (option) => !option.confirmationRequired,
+    ).length,
+    confirmationRequiredCount: options.filter(
+      (option) => option.confirmationRequired,
+    ).length,
+    relatedEvidenceCount: options.filter(
+      (option) => option.relatedRank !== undefined,
+    ).length,
+    crowdEvidenceCount: options.filter(
+      (option) => option.crowd.status === "available",
+    ).length,
+    accessibilityVerifiedCount: options.filter(
+      (option) => option.accessibility.status === "verified",
+    ).length,
   };
 }
 
@@ -2325,8 +2364,12 @@ export async function recoverTrip(
   const regionCode = input.origin.areaCode ?? firstCodes.regionCode;
   const districtCode = input.origin.sigunguCode ?? firstCodes.districtCode;
 
+  /* 제거실험으로 끈 서비스는 호출하지 않는다. 호출해 놓고 결과만 버리면
+     "API가 없으면 무엇이 깨지는가"를 보여 주는 것이 아니라 같은 호출량으로
+     같은 답을 내는 것이 된다. */
+  const disabled = new Set(input.disabledSources ?? []);
   const relatedPromise =
-    regionCode && districtCode
+    regionCode && districtCode && !disabled.has("TarRlteTarService1")
       ? /* 기준월은 어댑터가 정한다. 여기서 직전 달을 못박으면 아직 발행되지
            않은 달로 고정되어, 어댑터의 하강 폴백이 "호출자가 지정한 달"로
            읽고 그 달만 조회한다. 실제로 그래서 연관 관광지가 계속 0건이었다. */
@@ -2336,14 +2379,14 @@ export async function recoverTrip(
         )
       : Promise.resolve(undefined);
   const crowdPromise =
-    regionCode && districtCode
+    regionCode && districtCode && !disabled.has("TatsCnctrRateService")
       ? getConcentrationForecast(
           { regionCode, districtCode },
           { signal: execution.signal, timeoutMs: 4_000, retry: false },
         )
       : Promise.resolve(undefined);
   const accessiblePromise =
-    input.audience === "general"
+    input.audience === "general" || disabled.has("KorWithService2")
       ? Promise.resolve(undefined)
       : getNearbyAccessibleTourism({
           longitude: input.origin.longitude,
@@ -2374,6 +2417,17 @@ export async function recoverTrip(
   if (relatedSettled.status === "fulfilled" && relatedSettled.value) {
     relatedItems = relatedSettled.value.items;
     sourceLedger.push(relatedSettled.value.audit);
+  } else if (disabled.has("TarRlteTarService1")) {
+    /* 제거실험으로 끈 호출을 오류로 적으면 안 된다. 실제로 그렇게 기록돼
+       원장에 `error`로 남았고, 그 상태는 "공사 데이터 공백" 판정의 근거로도
+       쓰이는 값이다. 요구되지 않았음을 사유와 함께 남긴다. */
+    sourceLedger.push(
+      notRequiredAudit(
+        "TarRlteTarService1",
+        "areaBasedList1",
+        "DISABLED_FOR_ABLATION",
+      ),
+    );
   } else if (regionCode && districtCode) {
     sourceLedger.push(
       auditFromFailure(
@@ -2397,6 +2451,14 @@ export async function recoverTrip(
   if (crowdSettled.status === "fulfilled" && crowdSettled.value) {
     crowdItems = crowdSettled.value.items;
     sourceLedger.push(crowdSettled.value.audit);
+  } else if (disabled.has("TatsCnctrRateService")) {
+    sourceLedger.push(
+      notRequiredAudit(
+        "TatsCnctrRateService",
+        "tatsCnctrRatedList",
+        "DISABLED_FOR_ABLATION",
+      ),
+    );
   } else if (regionCode && districtCode) {
     sourceLedger.push(
       auditFromFailure(
@@ -2420,6 +2482,17 @@ export async function recoverTrip(
   if (accessibleSettled.status === "fulfilled" && accessibleSettled.value) {
     accessibleItems = accessibleSettled.value.items;
     sourceLedger.push(accessibleSettled.value.audit);
+  } else if (disabled.has("KorWithService2")) {
+    sourceLedger.push(
+      notRequiredAudit(
+        "KorWithService2",
+        "locationBasedList2",
+        "DISABLED_FOR_ABLATION",
+      ),
+    );
+    warnings.push(
+      "제거실험으로 무장애여행정보를 끈 요청입니다. 접근성 조건은 검증하지 않았습니다.",
+    );
   } else if (input.audience !== "general") {
     sourceLedger.push(
       auditFromFailure(
@@ -2720,9 +2793,11 @@ export async function recoverTrip(
     (a, b) => b.baseScore - a.baseScore || a.distanceMeters - b.distanceMeters,
   );
 
+  /* 제거실험으로 무장애 정보를 끈 경우에는 상세 조회도 하지 않는다. 목록만
+     끄고 상세는 호출하면 "무장애 정보 없이도 검증된다"는 잘못된 비교가 된다. */
   const { details, audits: detailAudits } = await accessibilityDetails(
     preliminary,
-    input.audience,
+    disabled.has("KorWithService2") ? "general" : input.audience,
     execution.signal,
   );
   sourceLedger.push(...detailAudits);
@@ -2731,7 +2806,9 @@ export async function recoverTrip(
     .map((candidate) => {
       const accessibility = evaluateAccessibility(
         input.audience,
-        details.get(candidate.contentId),
+        disabled.has("KorWithService2")
+          ? undefined
+          : details.get(candidate.contentId),
       );
       const withAccessibility = { ...candidate, accessibility };
       return {
@@ -2865,6 +2942,7 @@ export async function recoverTrip(
     recoveryMode,
     itinerarySummary: summariseItinerary(context),
     openWindowSummary: summariseOpenWindow(context),
+    ablation: summariseAblation(input, options),
     scope: {
       coverage: "nationwide",
       regionCode,

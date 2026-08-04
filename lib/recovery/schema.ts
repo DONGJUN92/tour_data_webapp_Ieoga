@@ -409,6 +409,24 @@ export const recoveryRequestSchema = z
     /* 두 진입 경로 중 정확히 하나. 등록된 일정을 고치는 복구와, 지금 빈 시간을
        채우는 추천은 보존해야 하는 대상이 다르므로 같은 요청에 섞이면 어느 쪽
        기준으로 검증했는지 증명서가 설명할 수 없다. */
+    /* 심사용 제거실험. 지정한 공사 서비스를 이 요청에서만 호출하지 않는다.
+       기획 15.3의 20점 방어조건 4는 "API 제거 시 품질 저하가 정량적으로
+       나타난다"를 요구하는데, 보고서 문장이 아니라 심사위원이 화면에서 직접
+       끄고 차이를 보게 하는 것이 목적이다. 끈 서비스는 응답의 ablation에
+       그대로 적히므로, 무엇을 빼고 얻은 수치인지 숨길 수 없다.
+
+       국문 관광정보(KorService2)는 후보 자체를 만드는 유일한 원천이라 끄면
+       비교가 아니라 빈 결과가 되므로 목록에 두지 않는다. */
+    disabledSources: z
+      .array(
+        z.enum([
+          "TarRlteTarService1",
+          "TatsCnctrRateService",
+          "KorWithService2",
+        ]),
+      )
+      .max(3)
+      .optional(),
     itinerary: recoveryItinerarySchema.optional(),
     openWindow: openWindowSchema.optional(),
     analyticsConsent: z.boolean().optional().default(false),

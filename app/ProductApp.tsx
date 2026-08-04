@@ -43,6 +43,7 @@ import {
   ScheduleDiff,
   TabId,
   TRAVEL_MODES,
+  ABLATION_SOURCES,
   type TravelMode,
   asRecord,
   compactValue,
@@ -135,6 +136,9 @@ export function ProductApp() {
      한다. 사용자가 끄면 그 선택이 유지되며, 그때 비로소 실외 후보까지 검토된다. */
   const [indoorOnly, setIndoorOnly] = useState(false);
   const [indoorTouched, setIndoorTouched] = useState(false);
+  /* 심사용 제거실험. 끈 서비스는 이 요청에서 호출되지 않고, 응답의 ablation이
+     무엇을 끄고 얻은 수치인지 함께 적는다. */
+  const [disabledSources, setDisabledSources] = useState<string[]>([]);
   const [analyticsConsent, setAnalyticsConsent] = useState(false);
   const [deleteState, setDeleteState] = useState<LoadState>("idle");
   const [deleteMessage, setDeleteMessage] = useState("");
@@ -994,6 +998,7 @@ export function ProductApp() {
           audience,
           indoorOnly,
           travelMode,
+          disabledSources: disabledSources.length ? disabledSources : undefined,
           radiusMeters,
           safetyBufferMinutes,
           minimumStayMinutes,
@@ -1027,6 +1032,9 @@ export function ProductApp() {
           : [],
         generatedAt: readText(record, ["generatedAt"]) || undefined,
         counterfactual: asRecord(record?.counterfactual) as Counterfactual | undefined,
+        ablation: asRecord(record?.ablation) as
+          | RecoveryResponse["ablation"]
+          | undefined,
         scheduleDiff: asRecord(record?.scheduleDiff) as ScheduleDiff | undefined,
         dataContributions: Array.isArray(record?.dataContributions)
           ? (record.dataContributions as DataContribution[])
@@ -2350,6 +2358,38 @@ export function ProductApp() {
                         : "TMAP 보행자 경로로 도착 시각을 검증합니다."}
                     </small>
                   </div>
+                  <details className="ablation-panel">
+                    <summary>
+                      심사용 · 한국관광공사 API를 끄고 결과 차이 보기
+                    </summary>
+                    <div className="ablation-body">
+                      <p>
+                        끈 서비스는 이 요청에서 호출하지 않습니다. 호출해 놓고
+                        결과만 버리면 데이터가 없을 때 무엇이 깨지는지 보여 줄 수
+                        없기 때문입니다. 국문 관광정보는 후보 자체를 만드는 유일한
+                        원천이라 끌 수 없습니다.
+                      </p>
+                      {ABLATION_SOURCES.map((item) => (
+                        <label key={item.id} className="check-row">
+                          <input
+                            type="checkbox"
+                            checked={disabledSources.includes(item.id)}
+                            onChange={(event) =>
+                              setDisabledSources((current) =>
+                                event.target.checked
+                                  ? [...current, item.id]
+                                  : current.filter((id) => id !== item.id),
+                              )
+                            }
+                          />
+                          <span>
+                            <strong>{item.label} 끄기</strong>
+                            <small>{item.lost}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
                   <details className="recovery-preferences">
                     <summary>이동 배려·실내 조건이 필요해요</summary>
                     <div className="recovery-preferences-body">
@@ -2577,6 +2617,30 @@ export function ProductApp() {
                     </p>
                   </div>
                 )}
+
+                {recoverState === "success" &&
+                  !!recovery?.ablation?.disabledSources?.length && (
+                    /* 무엇을 끄고 얻은 수치인지 결과와 같은 자리에 적는다. 끈
+                       사실을 숨기면 이 결과가 전체 사용 결과로 읽힌다. */
+                    <aside className="ablation-result" role="status">
+                      <strong>
+                        제거실험 진행 중 · 한국관광공사 API{" "}
+                        {recovery.ablation.disabledSources.length}종을 끈 결과입니다
+                      </strong>
+                      <ul>
+                        {(recovery.ablation.lostCapabilities ?? []).map((lost) => (
+                          <li key={lost}>{lost}</li>
+                        ))}
+                      </ul>
+                      <p>
+                        검증된 후보 {recovery.ablation.verifiedOptionCount ?? 0}개 ·
+                        확인 필요 {recovery.ablation.confirmationRequiredCount ?? 0}개 ·
+                        연계 방문 근거 {recovery.ablation.relatedEvidenceCount ?? 0}개 ·
+                        집중률 근거 {recovery.ablation.crowdEvidenceCount ?? 0}개 ·
+                        접근성 확인 {recovery.ablation.accessibilityVerifiedCount ?? 0}개
+                      </p>
+                    </aside>
+                  )}
 
                 {recoverState === "success" && recovery && recovery.options.length === 0 && (
                   <div className="no-candidate" data-testid="no-candidate">

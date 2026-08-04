@@ -984,6 +984,23 @@ function scoreCandidate(
       accessScore * 0.14 +
       purposeScore * 0.18 +
       continuityScore * 0.3;
+  } else if (input.incident === "less_walk") {
+    /* `less_walk`는 엔진에 아예 없었다. 화면은 "보행 부담과 접근성 조건을 먼저
+       통과한 후보만 제시합니다"라고 약속하는데 실제로는 `delay`와 똑같이 계산됐다.
+       고른 상황이 결과를 바꾸지 않으면 그 선택지는 화면 장식이다.
+
+       이동 부담을 줄이는 것이 목적이므로 거리 가중을 가장 크게 두고 접근성을
+       그다음에 둔다. 하드 필터로 후보를 잘라내지는 않는다 — 사용자가 준 이동거리
+       상한을 화면에 알리지 않고 절반으로 조이면 "왜 아무것도 안 나오는가"를
+       설명할 수 없다. 대신 순위를 확실히 갈라 놓고, 그렇게 정렬했다는 사실을
+       카드 문장으로 밝힌다. */
+    baseScore =
+      distanceScore * 0.38 +
+      accessScore * 0.22 +
+      purposeScore * 0.12 +
+      indoorScore * 0.04 +
+      crowdScore * 0.02 +
+      continuityScore * 0.22;
   } else {
     baseScore =
       distanceScore * 0.23 +
@@ -1827,6 +1844,14 @@ function buildWhy(
     push(
       `원래 일정과 함께 방문된 순위 ${candidate.relatedRank}위 기록이 있습니다.`,
       `Ranked #${candidate.relatedRank} among places visited together with your original stop.`,
+    );
+  }
+  if (input.incident === "less_walk") {
+    /* 무엇을 기준으로 정렬했는지 밝힌다. 밝히지 않으면 "이동 부담 감소"를 골랐을
+       때 결과가 왜 이렇게 나왔는지 알 수 없다. */
+    push(
+      "이동 부담을 가장 크게 반영해 정렬했습니다. 이동거리와 접근성 확인 여부를 먼저 봅니다.",
+      "Ranked with travel burden weighted highest — distance and confirmed accessibility come first.",
     );
   }
   return { ko, en };

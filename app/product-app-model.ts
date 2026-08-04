@@ -257,7 +257,7 @@ export const INCIDENTS: { value: Incident; title: string; description: string; m
   {
     value: "less_walk",
     title: "이동 부담 감소",
-    description: "보행 부담과 접근성 조건을 먼저 통과한 후보만 제시합니다.",
+    description: "이동거리와 접근성 확인 여부를 가장 크게 반영해 정렬합니다.",
     marker: "쉼",
   },
 ];
@@ -277,7 +277,7 @@ export const INCIDENTS_EN: Record<Incident, { title: string; description: string
   },
   less_walk: {
     title: "Reduce mobility burden",
-    description: "Check walking and accessibility constraints before showing an option.",
+    description: "Ranks by travel distance and confirmed accessibility first.",
   },
 };
 

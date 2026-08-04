@@ -344,3 +344,37 @@ test("분류 매핑은 모르는 분류를 통과시키지 않는다", async () 
   /* 새 분류가 생겼을 때 조용히 느슨해지면 오탐이 늘어난다. */
   assert.match(fn, /return false;/);
 });
+
+test("이동 부담 감소가 실제로 순위를 바꾼다", async () => {
+  const engine = await readFile(
+    new URL("../lib/recovery/engine.ts", import.meta.url),
+    "utf8",
+  );
+  /* `less_walk`는 엔진에 아예 없어 `delay`와 똑같이 계산됐다. 고른 상황이 결과를
+     바꾸지 않으면 그 선택지는 화면 장식이다. */
+  assert.match(engine, /input\.incident === "less_walk"/);
+  const branch = engine.slice(
+    engine.indexOf('input.incident === "less_walk"'),
+  );
+  const weights = branch.slice(0, 900);
+  /* 거리 가중이 다른 항목보다 확실히 커야 순위가 갈린다. */
+  assert.match(weights, /distanceScore \* 0\.38/);
+  assert.match(weights, /accessScore \* 0\.22/);
+  /* 무엇을 기준으로 정렬했는지 카드가 밝혀야 한다. */
+  assert.match(engine, /이동 부담을 가장 크게 반영해 정렬했습니다/);
+});
+
+test("화면 문구가 실제 동작과 일치한다", async () => {
+  const model = await readFile(
+    new URL("../app/product-app-model.ts", import.meta.url),
+    "utf8",
+  );
+  /* 예전 문구는 "먼저 통과한 후보만 제시합니다"로 하드 필터를 약속했는데 필터는
+     없었다. 사용자가 준 이동거리 상한을 알리지 않고 조이지 않기로 했으므로
+     문구를 실제 동작(정렬)에 맞춘다. */
+  assert.ok(
+    !model.includes("보행 부담과 접근성 조건을 먼저 통과한 후보만 제시합니다"),
+    "구현하지 않은 필터를 약속하는 문구가 남아 있다",
+  );
+  assert.match(model, /이동거리와 접근성 확인 여부를 가장 크게 반영해 정렬합니다/);
+});

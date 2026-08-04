@@ -1,0 +1,7 @@
+{
+  "origin":{"latitude":37.5547,"longitude":126.9707,"label":"서울역 대합실","areaCode":"11","sigunguCode":"11140"},
+  "incident":"delay","availableMinutes":15,"maxDistanceMeters":300,"audience":"general",
+  "indoorOnly":false,"travelMode":"walk","radiusMeters":500,"safetyBufferMinutes":5,
+  "minimumStayMinutes":10,"analyticsConsent":false,
+  "openWindow":{"availableUntil":"2026-08-04T23:00:00Z","plannedStayMinutes":30}
+}

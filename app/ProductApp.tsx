@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { JourneyExecution } from "@/lib/recovery/execution";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
+import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
 import { LaunchEvidencePanel } from "./LaunchEvidencePanel";
 import { PolicyMissionPanel } from "./PolicyMissionPanel";
@@ -3066,6 +3067,67 @@ export function ProductApp() {
                                 </ul>
                               </section>
                             )}
+                            {(() => {
+                              const geometry = (option.routeGeometry ??
+                                []) as RoutePoint[];
+                              if (geometry.length < 2) return null;
+                              const evidence = asRecord(
+                                asRecord(option.continuityProof)?.routeEvidence,
+                              );
+                              const provider = readText(evidence, ["provider"]);
+                              const diff = option.scheduleDiff;
+                              const markers: RouteMapMarker[] = [
+                                {
+                                  point: geometry[0],
+                                  label: "현재 위치",
+                                  kind: "origin",
+                                },
+                                {
+                                  point: {
+                                    latitude: option.latitude,
+                                    longitude: option.longitude,
+                                  },
+                                  label: option.title,
+                                  kind: "replacement",
+                                },
+                              ];
+                              /* 다음 고정 일정까지 검증한 경우에만 끝점을
+                                 도착지로 표시한다. 검증하지 않은 지점을
+                                 도착지로 그리면 없는 보장을 그림으로 주장하는
+                                 셈이 된다. */
+                              const nextFixed = asRecord(
+                                diff?.nextFixedAppointment,
+                              );
+                              if (nextFixed) {
+                                markers.push({
+                                  point: geometry[geometry.length - 1],
+                                  label:
+                                    readText(nextFixed, ["title"]) ||
+                                    "다음 고정 일정",
+                                  kind: "destination",
+                                });
+                              }
+                              return (
+                                <RouteMap
+                                  geometry={geometry}
+                                  markers={markers}
+                                  mode={
+                                    provider === "tmap_car"
+                                      ? "car"
+                                      : provider === "kakao_transit"
+                                        ? "transit"
+                                        : provider === "kakao_bicycle"
+                                          ? "bicycle"
+                                          : "walk"
+                                  }
+                                  attribution={readText(evidence, [
+                                    "attribution",
+                                  ])}
+                                  language={language}
+                                  summary={`현재 위치에서 ${option.title}까지의 경로 개요입니다. 약 ${option.estimatedTravelMinutes ?? 0}분, ${(option.distanceMeters ?? 0).toLocaleString("ko-KR")}m.`}
+                                />
+                              );
+                            })()}
                             {option.purposePreservation && (
                               <div
                                 className="purpose-contract"

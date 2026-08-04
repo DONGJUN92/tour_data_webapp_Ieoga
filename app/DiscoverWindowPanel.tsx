@@ -10,6 +10,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import styles from "./DiscoverWindowPanel.module.css";
+import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import {
   AUDIENCES,
   AUDIENCES_EN,
@@ -783,6 +784,57 @@ function DiscoverResults({
                 </ol>
               )}
 
+              {(() => {
+                /* 엔진이 이미 좌표열을 보내는데 화면에서 쓰지 않아, 여행자는
+                   "몇 분"만 보고 그 길이 어디로 가는지 알 수 없었다. */
+                const geometry = (option.routeGeometry ?? []) as RoutePoint[];
+                if (geometry.length < 2) return null;
+                const markers: RouteMapMarker[] = [
+                  {
+                    point: geometry[0],
+                    label: tr(language, "현재 위치", "You are here"),
+                    kind: "origin",
+                  },
+                  {
+                    point: { latitude: option.latitude, longitude: option.longitude },
+                    label: option.title,
+                    kind: "replacement",
+                  },
+                ];
+                /* 다음 장소를 알려 준 경우에는 경로의 끝이 그 장소다. */
+                if (window?.returnBasis === "next_place_route") {
+                  markers.push({
+                    point: geometry[geometry.length - 1],
+                    label: tr(language, "다음 장소", "Next place"),
+                    kind: "destination",
+                  });
+                }
+                return (
+                  <RouteMap
+                    geometry={geometry}
+                    markers={markers}
+                    mode={
+                      routeProvider === "tmap_car"
+                        ? "car"
+                        : routeProvider === "kakao_transit"
+                          ? "transit"
+                          : routeProvider === "kakao_bicycle"
+                            ? "bicycle"
+                            : "walk"
+                    }
+                    attribution={readText(
+                      asRecord(asRecord(option.continuityProof)?.routeEvidence),
+                      ["attribution"],
+                    )}
+                    language={language}
+                    summary={tr(
+                      language,
+                      `현재 위치에서 ${option.title}까지 ${modeVerb.noun} 경로 개요. ${window ? `이동 ${window.travelToMinutes}분, 체류 ${window.appliedStayMinutes}분, 복귀 ${window.returnMinutes}분.` : ""}`,
+                      `Route outline from your location to ${option.title}.`,
+                    )}
+                  />
+                );
+              })()}
               {window && (
                 <p
                   className={

@@ -172,6 +172,9 @@ export type RecoveryOption = {
   distanceMeters?: number;
   estimatedTravelMinutes?: number;
   travelEstimate?: unknown;
+  /* 경로 제공자가 돌려준 좌표열. 엔진이 이미 보내는데 화면에서 쓰지 않아
+     "몇 분"만 보이고 그 길이 어디로 가는지 알 수 없었다. */
+  routeGeometry?: Array<{ latitude: number; longitude: number }>;
   availability?: unknown;
   indoorSuitability?: unknown;
   accessibility?: unknown;

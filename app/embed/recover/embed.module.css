@@ -1,0 +1,233 @@
+/* 파트너 사이트 안에서 뜨는 화면. 폭 320~420px을 전제로 한다.
+   파트너의 브랜드가 주인이므로 이어가 색을 전면에 쓰지 않고, 출처만 남긴다. */
+
+.widget {
+  display: grid;
+  gap: 14px;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 18px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.head {
+  display: grid;
+  gap: 4px;
+}
+
+.kicker {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.lead {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.row {
+  display: grid;
+  gap: 6px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.field > legend {
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip,
+.chipOn {
+  min-height: 40px;
+  padding: 0 13px;
+  border-radius: var(--r-pill);
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chip {
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink-soft);
+}
+
+.chipOn {
+  border: 1px solid var(--brand);
+  background: var(--brand-tint-strong);
+  color: var(--brand-deep);
+}
+
+.primary,
+.originReady button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.originReady {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-control);
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+.submit {
+  min-height: 50px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--accent);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.submit:disabled {
+  background: var(--line-strong);
+  cursor: not-allowed;
+}
+
+.results {
+  display: grid;
+  gap: 10px;
+}
+
+.card,
+.cardWarn {
+  display: grid;
+  gap: 6px;
+  padding: 13px;
+  border-radius: var(--r-control);
+  background: var(--paper);
+}
+
+.card {
+  border: 1px solid var(--line);
+}
+
+/* 확인하지 못한 조건이 있는 후보는 테두리부터 다르다. 축소판에서도 검증된 것과
+   같은 모양으로 두면 경고문을 읽지 않은 사용자가 같은 것으로 받아들인다. */
+.cardWarn {
+  border: 1px solid var(--disrupt);
+}
+
+.card h2,
+.cardWarn h2 {
+  margin: 0;
+  font-size: 1.02rem;
+}
+
+.addr {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.times {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.gap {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-chip);
+  background: var(--disrupt-tint);
+  color: var(--warning);
+  font-size: 0.79rem;
+  line-height: 1.55;
+}
+
+.src {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.empty {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-control);
+}
+
+.empty strong {
+  font-size: 0.95rem;
+}
+
+.empty p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.foot a {
+  color: var(--accent);
+}

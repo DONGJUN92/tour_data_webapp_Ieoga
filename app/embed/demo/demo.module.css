@@ -1,0 +1,195 @@
+/* 파트너 사이트를 모사한 호스트 화면. 일부러 이어가와 다른 색·타이포를 써서
+   "남의 사이트 안에서 돈다"가 눈으로 보이게 한다. 파트너 영역이 이어가 브랜드로
+   물들면 임베드를 증명하는 의미가 없다. */
+
+.host {
+  --host-ink: #1f2933;
+  --host-accent: #8a5a2b;
+  --host-line: #e3ded6;
+  --host-bg: #faf7f2;
+  min-height: 100vh;
+  padding: 0 0 40px;
+  background: var(--host-bg);
+  color: var(--host-ink);
+  font-family: "Iowan Old Style", "Apple SD Gothic Neo", serif;
+}
+
+.banner {
+  padding: 12px 20px;
+  background: #fff4d6;
+  border-bottom: 1px solid #e8d9a8;
+  color: #6b4e00;
+  font-family: system-ui, sans-serif;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.hostHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  border-bottom: 1px solid var(--host-line);
+}
+
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--host-accent);
+  color: #fff;
+  font-family: system-ui, sans-serif;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.brand b {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.brand small {
+  display: block;
+  color: #7b7267;
+  font-family: system-ui, sans-serif;
+  font-size: 0.72rem;
+}
+
+.hostNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: #6f665b;
+  font-size: 0.9rem;
+}
+
+.hostNav [aria-current="page"] {
+  color: var(--host-accent);
+  font-weight: 700;
+  border-bottom: 2px solid var(--host-accent);
+}
+
+.layout {
+  display: grid;
+  gap: 24px;
+  padding: 24px 20px 0;
+}
+
+.hostBody h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.4rem, 4vw, 1.9rem);
+}
+
+.hostBody > p {
+  margin: 0 0 18px;
+  color: #6f665b;
+  line-height: 1.7;
+}
+
+.hostCards {
+  display: grid;
+  gap: 12px;
+}
+
+.hostCards article {
+  padding: 14px 16px;
+  border: 1px solid var(--host-line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.hostCards h2 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.hostCards p {
+  margin: 0;
+  color: #7b7267;
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+}
+
+.hostFoot {
+  margin: 18px 0 0;
+  color: #9a9084;
+  font-family: system-ui, sans-serif;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.slot {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.slotLabel {
+  margin: 0;
+  color: #7b7267;
+  font-family: system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.frame {
+  width: 100%;
+  min-height: 760px;
+  border: 1px solid var(--host-line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.snippet {
+  padding: 12px 14px;
+  border: 1px solid var(--host-line);
+  border-radius: 12px;
+  background: #fff;
+  font-family: system-ui, sans-serif;
+}
+
+.snippet > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.snippet pre {
+  margin: 10px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: #f4f1ec;
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.snippet p {
+  margin: 8px 0 0;
+  color: #7b7267;
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+@media (min-width: 1000px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) 420px;
+    align-items: start;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .hostCards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

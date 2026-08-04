@@ -1,0 +1,117 @@
+/* 경로 개요. 타일 지도가 아니라 좌표열을 그대로 이은 선이므로, 지도처럼 보이는
+   장식(축척 바·방위표)을 두지 않는다. 없는 정보를 주장하지 않기 위한 것이다. */
+
+.wrap {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.canvas {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink-soft);
+}
+
+.grid {
+  color: var(--ink-soft);
+}
+
+/* 격자 위에서 경로가 끊겨 보이지 않도록 밑선을 깔고 그 위에 본선을 얹는다. */
+.routeHalo {
+  fill: none;
+  stroke: var(--paper);
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.route {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.origin {
+  fill: var(--ink);
+}
+
+.replacement {
+  fill: var(--brand);
+}
+
+.destination {
+  fill: var(--accent);
+}
+
+.waypoint {
+  fill: var(--muted);
+}
+
+.pinCore {
+  fill: #fff;
+}
+
+.caption {
+  display: grid;
+  gap: 6px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+
+.legend li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.dot_origin,
+.dot_replacement,
+.dot_destination,
+.dot_waypoint {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.dot_origin {
+  background: var(--ink);
+}
+
+.dot_replacement {
+  background: var(--brand);
+}
+
+.dot_destination {
+  background: var(--accent);
+}
+
+.dot_waypoint {
+  background: var(--muted);
+}
+
+.caption small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+/* 선을 그려 나가는 연출은 두지 않는다. `stroke-dasharray`로 구현하는데, 그
+   속성이 바로 수단을 구분하는 데 쓰이고 있어(도보 점선·자전거·대중교통 파선,
+   자차 실선) 애니메이션이 그 패턴을 덮어쓴다. 연출보다 "무엇으로 가는 길인가"가
+   더 많은 정보를 준다. */

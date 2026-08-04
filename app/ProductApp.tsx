@@ -130,7 +130,11 @@ export function ProductApp() {
   const [maxDistanceMeters, setMaxDistanceMeters] = useState(2500);
   const [radiusMeters, setRadiusMeters] = useState(5000);
   const [audience, setAudience] = useState<Audience>("general");
+  /* 우천이면 실내 조건을 기본으로 켠다. 엔진이 더 이상 우천을 이유로 실내를
+     강제하지 않으므로(명시적으로 보낸 값이 이긴다) 그 기본값을 화면이 만들어야
+     한다. 사용자가 끄면 그 선택이 유지되며, 그때 비로소 실외 후보까지 검토된다. */
   const [indoorOnly, setIndoorOnly] = useState(false);
+  const [indoorTouched, setIndoorTouched] = useState(false);
   const [analyticsConsent, setAnalyticsConsent] = useState(false);
   const [deleteState, setDeleteState] = useState<LoadState>("idle");
   const [deleteMessage, setDeleteMessage] = useState("");
@@ -2277,7 +2281,14 @@ export function ProductApp() {
                           name="incident"
                           value={item.value}
                           checked={incident === item.value}
-                          onChange={() => setIncident(item.value)}
+                          onChange={() => {
+                            setIncident(item.value);
+                            /* 사용자가 직접 손대지 않았다면 상황에 맞는 기본값을
+                               따라간다. 손댄 뒤에는 그 선택을 덮지 않는다. */
+                            if (!indoorTouched) {
+                              setIndoorOnly(item.value === "rain");
+                            }
+                          }}
                         />
                         <span className="incident-marker" aria-hidden="true">
                           {item.marker}
@@ -2363,14 +2374,18 @@ export function ProductApp() {
                         <input
                           type="checkbox"
                           checked={indoorOnly}
-                          onChange={(event) =>
-                            setIndoorOnly(event.target.checked)
-                          }
+                          onChange={(event) => {
+                            setIndoorTouched(true);
+                            setIndoorOnly(event.target.checked);
+                          }}
                         />
                         <span>
                           <strong>실내 후보만 찾기</strong>
                           <small>
                             실내 여부가 확인되지 않은 후보는 제외합니다.
+                            {incident === "rain" && !indoorOnly
+                              ? " 지금은 꺼져 있어 실외 후보까지 함께 검토합니다."
+                              : ""}
                           </small>
                         </span>
                       </label>

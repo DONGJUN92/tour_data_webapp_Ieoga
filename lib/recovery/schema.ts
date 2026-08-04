@@ -391,7 +391,11 @@ export const recoveryRequestSchema = z
     audience: z
       .enum(["general", "stroller", "wheelchair", "senior"])
       .default("general"),
-    indoorOnly: z.boolean().default(false),
+    /* 3상태다. 미지정이면 우천 상황에서 실내를 요구하고, 명시적 `false`는
+       그 기본값을 이긴다. `.default(false)`였을 때는 두 값이 구분되지 않아
+       여행자가 실내 조건을 풀 수단이 아예 없었다 — 우천을 고르면 실외 후보가
+       전부 사라지고 그 상태를 되돌릴 방법이 화면에 없었다. */
+    indoorOnly: z.boolean().optional(),
     /* 여행자가 고른 이동수단. 도보·자차는 TMAP, 대중교통·자전거는 카카오맵
        길찾기로 계산한다. 네 수단 모두 2026-08-04 실호출로 응답을 확인했다.
        확인되지 않은 수단은 목록에 두지 않는다 — 고를 수는 있는데 검증은 안 되는

@@ -457,6 +457,12 @@ test("rain recovery never promotes an outdoor park to a verified option", async 
     });
     delete input.__candidateLongitude;
     input.incident = "rain";
+    /* `indoorOnly`는 3상태다. 미지정이면 우천 상황의 기본값(실내 요구)을 따르고,
+       명시적 `false`는 그 기본값을 이긴다. 이 테스트가 지키려는 불변조건은
+       "우천 기본값에서 실외 공원이 검증된 후보로 올라오지 않는다"이므로 값을
+       지워 기본값 경로를 검사한다. 명시적으로 끈 경우의 동작은
+       `tests/indoor-and-related.test.mjs`가 따로 고정한다. */
+    delete input.indoorOnly;
     const result = await recoverTrip(input, "rain-outdoor-regression");
 
     assert.equal(result.options.length, 0);

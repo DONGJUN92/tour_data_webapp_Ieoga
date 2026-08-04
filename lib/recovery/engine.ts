@@ -398,11 +398,30 @@ function currentForecastByTitle(items: KtoItem[]): Map<
   return selected;
 }
 
+/* 연관 관광지의 대분류를 후보의 콘텐츠 유형으로 옮긴다. 실데이터의 대분류는
+   `음식`·`숙박`·`관광지` 셋뿐이어서(서울 종로·부산 해운대·제주 3,000여 행 확인)
+   모호함 없이 매핑된다. */
+function relatedCategoryAllowsType(
+  majorCategory: string,
+  contentTypeId: string,
+): boolean {
+  if (majorCategory === "음식") return contentTypeId === "39";
+  if (majorCategory === "숙박") return contentTypeId === "32";
+  if (majorCategory === "관광지") {
+    return contentTypeId !== "39" && contentTypeId !== "32";
+  }
+  /* 모르는 분류는 통과시키지 않는다. 새 분류가 생겼을 때 조용히 느슨해지는
+     것보다 연결하지 않는 쪽이 안전하다. */
+  return false;
+}
+
+type RelatedMatch = { rank: number; majorCategory: string };
+
 function relatedRankByTitle(
   items: KtoItem[],
   originLabel: string,
-): Map<string, number> {
-  const ranks = new Map<string, number>();
+): Map<string, RelatedMatch> {
+  const ranks = new Map<string, RelatedMatch>();
   const normalizedOrigin = normalizeName(originLabel);
   if (!normalizedOrigin || normalizedOrigin === normalizeName("현재 위치")) {
     return ranks;
@@ -413,9 +432,55 @@ function relatedRankByTitle(
     const rank = numberInRange(item.rlteRank, 1, 100_000);
     if (!name || rank === undefined) continue;
     const current = ranks.get(name);
-    if (current === undefined || rank < current) ranks.set(name, rank);
+    if (current === undefined || rank < current.rank) {
+      ranks.set(name, {
+        rank,
+        majorCategory: stringValue(item.rlteCtgryLclsNm),
+      });
+    }
   }
   return ranks;
+}
+
+/* 두 공사 API가 같은 장소를 다르게 표기한다. 연관 관광지는 `동백섬`, 국문
+   관광정보는 `해운대 동백섬`처럼 시군구 접두어가 붙는다. 정확 일치만 보면
+   실측에서 50개 연관 후보 중 6개만 연결됐다.
+
+   그래서 한쪽이 다른 쪽을 경계에서 포함하는 경우까지 허용하되, **분류가
+   맞을 때만** 연결한다. 분류 검사가 없으면 `동백섬횟집`(음식점)이 `동백섬`
+   (자연관광)에 붙어 "함께 방문한 기록이 있는 곳"이라는 사실 주장이 거짓이 된다.
+   실측 표본에서 이 규칙은 참 1건을 더 얻고 거짓 1건을 정확히 배제했다.
+
+   기획 7.5의 "자동 매칭 신뢰도가 기준 미만이면 연결하지 않음"을 따른다. */
+function findRelatedMatch(
+  ranks: Map<string, RelatedMatch>,
+  title: string,
+  contentTypeId: string,
+): number | undefined {
+  const normalized = normalizeName(title);
+  if (!normalized) return undefined;
+
+  const exact = ranks.get(normalized);
+  /* 이름이 같으면 그 자체로 가장 강한 신호다. 분류가 어긋나는 경우는 두 API의
+     분류 체계 차이일 수 있으므로 이름 일치를 우선한다. */
+  if (exact) return exact.rank;
+
+  const MIN_SHARED_LENGTH = 3;
+  let best: number | undefined;
+  for (const [relatedName, match] of ranks) {
+    if (relatedName.length < MIN_SHARED_LENGTH) continue;
+    if (
+      !normalized.startsWith(relatedName) &&
+      !normalized.endsWith(relatedName)
+    ) {
+      continue;
+    }
+    if (!relatedCategoryAllowsType(match.majorCategory, contentTypeId)) {
+      continue;
+    }
+    if (best === undefined || match.rank < best) best = match.rank;
+  }
+  return best;
 }
 
 function disruptedNode(input: RecoveryRequest): ItineraryNode | undefined {
@@ -1203,6 +1268,14 @@ function routeModeLabel(provider: WalkingRouteProvider): string {
 }
 
 /* 사용자가 고른 수단의 이름. 경로 조회 이전 단계의 문구에 쓴다. */
+/* 실내 조건은 여기 한 곳에서만 결정한다. 예전에는 세 곳에서 각자
+   `incident === "rain" || indoorOnly`를 계산해, 클라이언트가 실내를 끄고
+   보내도 엔진이 우천이라는 이유로 다시 켰다. 여행자에게는 되돌릴 방법이
+   없는 상태였다. 명시적으로 보낸 값이 항상 이긴다. */
+function indoorRequirement(input: RecoveryRequest): boolean {
+  return input.indoorOnly ?? input.incident === "rain";
+}
+
 function travelModeLabel(mode: RecoveryRequest["travelMode"]): string {
   return mode === "car"
     ? "자동차"
@@ -1693,7 +1766,7 @@ function buildWhy(
       "Official hours exist but cannot be parsed, so confirm before you set out.",
     );
   }
-  if (candidate.indoor && (input.incident === "rain" || input.indoorOnly)) {
+  if (candidate.indoor && indoorRequirement(input)) {
     push(
       "한국관광공사 콘텐츠 유형상 실내에서 지낼 수 있는 곳입니다.",
       "The official content type indicates you can stay indoors here.",
@@ -1889,7 +1962,7 @@ function toOption(
         : undefined,
     availability: candidate.availability,
     indoorSuitability:
-      input.incident === "rain" || input.indoorOnly
+      indoorRequirement(input)
         ? {
             status: "type_based",
             note: "한국관광공사 콘텐츠 유형으로 실내 여부를 판단했습니다. 건물 안 동선은 방문 전에 확인해 주세요.",
@@ -2390,12 +2463,12 @@ export async function recoverTrip(
     (context?.changeKind === "insert" ? undefined : input.origin.label);
   const relatedRanks = relatedAnchorTitle
     ? relatedRankByTitle(relatedItems, relatedAnchorTitle)
-    : new Map<string, number>();
+    : new Map<string, RelatedMatch>();
   const forecasts = currentForecastByTitle(crowdItems);
   const accessibleIds = new Set(
     accessibleItems.map((item) => stringValue(item.contentid)).filter(Boolean),
   );
-  const indoorRequired = input.indoorOnly || input.incident === "rain";
+  const indoorRequired = indoorRequirement(input);
 
   const preliminary: WorkingCandidate[] = [];
   for (const item of nearby.items) {
@@ -2434,7 +2507,7 @@ export async function recoverTrip(
       continue;
     }
 
-    const relatedRank = relatedRanks.get(normalizeName(title));
+    const relatedRank = findRelatedMatch(relatedRanks, title, contentTypeId);
     if (
       !preservesTravelPurpose({
         input,

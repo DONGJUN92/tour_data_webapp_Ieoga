@@ -449,6 +449,9 @@ export default function FlowApp() {
      전자만 남았다. 그래서 유아차·휠체어·고령자를 고르면 무장애 목록에 없는
      후보가 전부 영구 차단되고 전환율이 0이 됐다. 확인을 받으면 적용은 열되,
      무엇이 확인되지 않았는지는 그대로 남겨 카드가 "검증됨"으로 바뀌지는 않는다. */
+  /* 우천을 골랐지만 실외까지 포함해 다시 찾고 싶은 경우. 예전에는 이 상태가
+     없어 우천을 고르면 실외 후보가 사라지고 되돌릴 방법이 화면에 없었다. */
+  const [allowOutdoor, setAllowOutdoor] = useState(false);
   const [acknowledgedOptionId, setAcknowledgedOptionId] = useState("");
   const [rejectionSummary, setRejectionSummary] = useState<
     Array<{ reasonCode: RejectionReasonCode; count: number }>
@@ -861,7 +864,13 @@ export default function FlowApp() {
 
   /* Registers the synthesised two-node itinerary, then runs recovery. The
      traveller sees one "찾는 중" screen while both calls happen. */
-  const runRecovery = useCallback(async () => {
+  const runRecovery = useCallback(async (
+    options: { includeOutdoor?: boolean } = {},
+  ) => {
+    /* 실외 포함 여부를 인자로 받는다. 상태를 세팅하고 곧바로 실행하면 이
+       콜백의 클로저가 아직 옛 값을 보므로, 버튼이 한 번 더 눌려야 반영되는
+       경합이 생긴다. */
+    const includeOutdoor = options.includeOutdoor ?? allowOutdoor;
     if (
       !incident ||
       !origin ||
@@ -977,7 +986,8 @@ export default function FlowApp() {
         origin,
         incident,
         audience,
-        indoorOnly: incident === "rain",
+        /* 명시적으로 보낸 값이 엔진의 우천 기본값을 이긴다. */
+        indoorOnly: incident === "rain" ? !includeOutdoor : false,
         availableMinutes: Math.min(240, availableMinutes),
         maxDistanceMeters: audience === "general" ? 2500 : 1500,
         radiusMeters: 5000,
@@ -1046,6 +1056,7 @@ export default function FlowApp() {
     apptTime,
     availableMinutes,
     audience,
+    allowOutdoor,
     go,
     tr,
   ]);
@@ -2331,9 +2342,30 @@ export default function FlowApp() {
 
         {step === "error" && (
           <div className={styles.footStack}>
+            {incident === "rain" && !allowOutdoor && (
+              /* 실측 최다 탈락 사유가 실내 미확인이었는데 그 조건을 풀 수단이
+                 화면에 없었다. 되돌릴 수 있는 조건은 되돌릴 수 있어야 한다. */
+              <button
+                type="button"
+                className={styles.cta}
+                onClick={() => {
+                  setAllowOutdoor(true);
+                  void runRecovery({ includeOutdoor: true });
+                }}
+              >
+                {tr(
+                  "실외 후보까지 포함해 다시 찾기",
+                  "Search again including outdoor places",
+                )}
+              </button>
+            )}
             <button
               type="button"
-              className={styles.cta}
+              className={
+                incident === "rain" && !allowOutdoor
+                  ? styles.secondaryButton
+                  : styles.cta
+              }
               onClick={() => void runRecovery()}
             >
               {tr("같은 조건으로 다시 시도", "Retry the same request")}

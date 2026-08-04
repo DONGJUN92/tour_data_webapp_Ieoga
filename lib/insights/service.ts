@@ -25,7 +25,10 @@ export type PolicyInsightPayload = {
   districtCode?: string;
   regionName: string;
   districtName: string;
-  status: "live" | "degraded" | "data_gap";
+  /* `data_gap`은 "공사에 값이 없다"는 판정이고 `upstream_unavailable`은
+     "우리가 조회하지 못했다"는 판정이다. 둘을 한 값으로 뭉치면 조회 실패를
+     공사 데이터 공백으로 보고하게 된다. */
+  status: "live" | "degraded" | "data_gap" | "upstream_unavailable";
   coverage: {
     available: number;
     expected: number;
@@ -145,8 +148,13 @@ export async function buildPolicyInsight(params: {
   }
 
   let policyBaseYm = baseYm;
+  /* 값이 비어 있는 이유가 우리 쪽 호출 실패인가. 이 값이 참일 때 화면이
+     "공사 데이터 공백"이라고 말하면, 심사 주체인 공사에 있는 데이터를 없다고
+     보고하는 셈이 된다. */
+  let policyUpstreamFailed = false;
   const metrics: PolicyInsightPayload["metrics"] = [];
   if (policySettled.status === "fulfilled") {
+    policyUpstreamFailed = policySettled.value.upstreamFailed;
     policyBaseYm = policySettled.value.baseYm;
     for (const entry of policySettled.value.results) {
       sourceLedger.push(entry.audit);
@@ -173,7 +181,19 @@ export async function buildPolicyInsight(params: {
       if (!districtName) districtName = String(entry.item?.signguNm ?? "");
     }
   } else {
+    policyUpstreamFailed = true;
     warnings.push("정책 지표 묶음을 확인하지 못했습니다.");
+  }
+  /* 중심 관광지 호출도 같은 기준으로 본다. */
+  const hubUpstreamFailed = sourceLedger.some(
+    (audit) =>
+      audit.apiName === "LocgoHubTarService1" && audit.status === "error",
+  );
+  const upstreamFailed = policyUpstreamFailed || hubUpstreamFailed;
+  if (upstreamFailed) {
+    warnings.push(
+      "일부 공식 지표를 조회하지 못했습니다. 값이 비어 있는 것은 이어가의 조회 실패 때문이며, 한국관광공사에 해당 데이터가 없다는 뜻이 아닙니다.",
+    );
   }
 
   const expectedEvidenceCount = params.districtCode ? 8 : 7;
@@ -183,12 +203,17 @@ export async function buildPolicyInsight(params: {
   const coveragePercent = Math.round(
     (availableEvidenceCount / expectedEvidenceCount) * 100,
   );
+  /* `data_gap`은 "공사에 값이 없다"는 판정이므로, 우리 호출이 실패했을 때는
+     쓰지 않는다. 이 구분이 없던 동안 화면은 조회 실패를 공사 데이터 공백으로
+     표기하고 개선 미션까지 발행했다. */
   const status =
-    availableEvidenceCount === 0
-      ? "data_gap"
-      : availableEvidenceCount === expectedEvidenceCount
-        ? "live"
-        : "degraded";
+    upstreamFailed && availableEvidenceCount < expectedEvidenceCount
+      ? "upstream_unavailable"
+      : availableEvidenceCount === 0
+        ? "data_gap"
+        : availableEvidenceCount === expectedEvidenceCount
+          ? "live"
+          : "degraded";
 
   return {
     scope: "nationwide",

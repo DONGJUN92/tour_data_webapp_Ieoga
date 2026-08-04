@@ -2590,7 +2590,16 @@ export function ProductApp() {
                               {recovery.counterfactual.requiredRelaxation.description}
                             </strong>
                           )}
-                          <small>다른 일정과 다음 예약은 그대로 보존합니다.</small>
+                          {/* 사전 걸러내기 단계 탈락안은 경로·운영시간을 아직
+                              확인하지 않았다. 그 후보에까지 "예약을 그대로
+                              보존합니다"라고 쓰면 검증하지 않은 것을 보증하는
+                              문장이 된다. */}
+                          <small>
+                            {recovery.counterfactual.verificationDepth ===
+                            "pre_filter"
+                              ? "거리·시간 조건만 비교한 단계입니다. 실제 경로와 운영시간, 다음 예약 보존은 이 조건을 적용한 뒤 다시 검증합니다."
+                              : "다른 일정과 다음 예약은 그대로 보존합니다."}
+                          </small>
                         </div>
                         <button
                           type="button"

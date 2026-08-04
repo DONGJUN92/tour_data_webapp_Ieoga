@@ -490,8 +490,17 @@ export async function getPolicyBundle(params: {
     audit: KtoAudit;
     item?: KtoItem;
   }>;
+  /* 값이 없는 이유가 우리 쪽 호출 실패인가. 참이면 "공사 데이터 공백"이라고
+     말해서는 안 된다. */
+  upstreamFailed: boolean;
 }> {
   let baseYm = params.startingBaseYm ?? previousCompleteMonth();
+  let lastResults: Array<{
+    indicator: (typeof POLICY_INDICATORS)[number];
+    result?: KtoCallResult;
+    audit: KtoAudit;
+    item?: KtoItem;
+  }> = [];
 
   for (let monthAttempt = 0; monthAttempt < 3; monthAttempt += 1) {
     const results: Array<{
@@ -540,12 +549,21 @@ export async function getPolicyBundle(params: {
     }
 
     if (results.some((entry) => entry.result?.items.length)) {
-      return { baseYm, results };
+      return { baseYm, results, upstreamFailed: false };
     }
+    lastResults = results;
     baseYm = priorMonth(baseYm);
   }
 
-  return { baseYm, results: [] };
+  /* 세 달을 다 써도 값이 없을 때 예전 구현은 빈 배열을 돌려주며 감사 기록까지
+     버렸다. 그러면 호출자는 "우리 호출이 실패했다"와 "공사에 그 값이 없다"를
+     구분할 수 없고, 화면은 후자로 단정해 공사 담당부서에 개선 미션을 발행했다.
+     실제로는 같은 파라미터로 직접 호출하면 값이 나오는 경우가 있었다.
+     마지막 시도의 감사를 그대로 넘겨 두 상태를 호출자가 가릴 수 있게 한다. */
+  const upstreamFailed = lastResults.some(
+    (entry) => entry.audit.status === "error",
+  );
+  return { baseYm, results: lastResults, upstreamFailed };
 }
 
 export function normalizeAnalysisCodes(item: KtoItem): {

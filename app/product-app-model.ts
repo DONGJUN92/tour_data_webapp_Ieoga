@@ -90,6 +90,9 @@ export type ScheduleDiff = {
 
 export type Counterfactual = {
   proofType?: string;
+  /* 이 판정이 어디까지 확인된 것인가. `pre_filter`는 거리·시간만 비교한 단계라
+     예약 보존을 주장할 수 없다. */
+  verificationDepth?: "pre_filter" | "route_verified";
   title?: string;
   reason?: string;
   reasonCode?: string;
@@ -269,11 +272,16 @@ export const INCIDENTS_EN: Record<Incident, { title: string; description: string
 /* 이동수단은 두 화면이 같은 목록을 써야 한다. 화면마다 따로 두면 한쪽에만 수단이
    추가되어 같은 엔진이 다른 선택지를 받게 된다.
 
-   확인된 국내 제공자가 있는 수단만 둔다. 2026-08-04 실호출 결과: TMAP 보행자와
-   TMAP 자동차는 같은 `TMAP_APP_KEY`로 동작하고, Kakao Navi는 자동차 전용이며
-   (유효 priority는 RECOMMEND·TIME·DISTANCE뿐) 대중교통·자전거 엔드포인트는
-   404였다. 고를 수는 있는데 검증은 못 하는 수단을 목록에 두면 여행자에게 잘못된
-   도착 시각을 주는 것과 같으므로 넣지 않는다. */
+   확인된 국내 제공자가 있는 수단만 둔다. 2026-08-04 실호출 결과:
+   - 도보·자차: TMAP. 같은 `TMAP_APP_KEY`로 동작한다.
+   - 대중교통·자전거: 카카오맵 `dapi.kakao.com/v2/routing/publictraffic`·`/bicycle`.
+     `KAKAO_REST_API_KEY`로 동작하고, 자전거는 `via`로 경유지 구간이 갈린다.
+   (카카오 *내비* API `apis-navi.kakaomobility.com`은 자동차 전용이어서 여기 쓰지
+   않는다. 유효 priority가 RECOMMEND·TIME·DISTANCE뿐이고 대중교통·자전거 경로는
+   404다. 처음 그 호스트만 확인해 두 수단이 불가능하다고 잘못 판단했다.)
+
+   반경·거리 상한은 수단별로 다르다. 도보 기준을 그대로 쓰면 차나 지하철로 20분이면
+   닿는 곳이 후보에 들어오지도 않는다. */
 export const TRAVEL_MODES = [
   {
     value: "walk",
@@ -281,6 +289,20 @@ export const TRAVEL_MODES = [
     en: "Walking",
     radius: 8_000,
     distance: 5_000,
+  },
+  {
+    value: "transit",
+    ko: "대중교통",
+    en: "Transit",
+    radius: 20_000,
+    distance: 20_000,
+  },
+  {
+    value: "bicycle",
+    ko: "자전거",
+    en: "Bicycle",
+    radius: 15_000,
+    distance: 12_000,
   },
   {
     value: "car",

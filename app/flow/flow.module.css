@@ -1005,3 +1005,37 @@
   font-weight: 600;
   line-height: 1.45;
 }
+
+/* 확인되지 않은 조건에 대한 명시적 동의. 적용 버튼 바로 위에 두어, 무엇을
+   확인하지 못했는지 읽지 않고 누르는 일이 없게 한다. */
+.ackRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--disrupt);
+  border-radius: var(--r-control);
+  background: var(--disrupt-tint);
+  cursor: pointer;
+}
+
+.ackRow input {
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+}
+
+.ackRow strong {
+  display: block;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.ackRow small {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}

@@ -392,10 +392,13 @@ export const recoveryRequestSchema = z
       .enum(["general", "stroller", "wheelchair", "senior"])
       .default("general"),
     indoorOnly: z.boolean().default(false),
-    /* 여행자가 고른 이동수단. 도보는 TMAP 보행자, 자차는 TMAP 자동차로 계산한다.
-       자전거·대중교통은 호출 가능한 국내 제공자를 확인하지 못해 넣지 않는다.
-       고를 수 없는 수단을 목록에 두면 선택은 되고 검증은 안 되는 상태가 된다. */
-    travelMode: z.enum(["walk", "car"]).default("walk"),
+    /* 여행자가 고른 이동수단. 도보·자차는 TMAP, 대중교통·자전거는 카카오맵
+       길찾기로 계산한다. 네 수단 모두 2026-08-04 실호출로 응답을 확인했다.
+       확인되지 않은 수단은 목록에 두지 않는다 — 고를 수는 있는데 검증은 안 되는
+       선택지는 여행자에게 잘못된 도착 시각을 주는 것과 같다. */
+    travelMode: z
+      .enum(["walk", "car", "transit", "bicycle"])
+      .default("walk"),
     radiusMeters: z.number().int().min(500).max(20_000).default(5_000),
     safetyBufferMinutes: z.number().int().min(5).max(90).default(15),
     minimumStayMinutes: z.number().int().min(10).max(180).default(30),

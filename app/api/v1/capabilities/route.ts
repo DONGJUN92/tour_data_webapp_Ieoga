@@ -48,11 +48,26 @@ export async function GET() {
           supported: true,
           method: "single_constraint_minimum_relaxation",
           autoApply: false,
+          /* 완화 대상은 실제로 계산되는 것만 적는다. 예전에는 `supported: true`와
+             보존 계약만 공표해, 응답의 counterfactual이 항상 null인데도 기계
+             판독 계약은 지원한다고 말했다. */
+          relaxableConstraints: [
+            "maximum_distance",
+            "available_time",
+            "minimum_stay",
+            "safety_buffer",
+            "indoor_requirement",
+          ],
+          /* 사전 걸러내기 단계 탈락안은 경로·운영시간을 아직 확인하지 않았으므로
+             예약 보존을 주장하지 않는다. 어느 단계에서 나온 판정인지 응답의
+             `verificationDepth`로 구분한다. */
+          verificationDepths: ["route_verified", "pre_filter"],
           preservedContract: [
             "unchanged_itinerary_nodes",
             "locked_nodes",
             "next_fixed_appointment",
           ],
+          preservedContractAppliesTo: "route_verified",
         },
         routeEta: {
           supported: true,

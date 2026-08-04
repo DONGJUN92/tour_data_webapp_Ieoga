@@ -6,6 +6,7 @@ import type {
   JourneyExecution,
   JourneyExecutionStep,
 } from "@/lib/recovery/execution";
+import type { RejectionReasonCode } from "@/lib/recovery/types";
 import {
   MAX_APPOINTMENT_MINUTES,
   MIN_APPOINTMENT_MINUTES,
@@ -148,8 +149,16 @@ function appliedSources(option: RecoveryOption): {
   };
 }
 
-/* Engine reason codes rendered as something a traveller can act on. */
-const REJECTION_LABELS: Record<string, { ko: string; en: string }> = {
+/* Engine reason codes rendered as something a traveller can act on.
+
+   유니온으로 좁혀 둔다. `Record<string, ...>`이었을 때 다섯 개 사유가 라벨 없이
+   남아 0건 화면 첫 줄에 `INDOOR_UNVERIFIED · 14곳`처럼 내부 코드가 그대로 찍혔다.
+   아래 두 줄은 정상 한국어라 대비까지 됐다. 이제 사유를 추가하고 라벨을 빼먹으면
+   컴파일이 막힌다. */
+const REJECTION_LABELS: Record<
+  RejectionReasonCode,
+  { ko: string; en: string }
+> = {
   TIME_LIMIT: {
     ko: "약속 시각까지 왕복이 어려움",
     en: "Not enough time before the appointment",
@@ -186,7 +195,45 @@ const REJECTION_LABELS: Record<string, { ko: string; en: string }> = {
     ko: "공식 좌표를 확인하지 못함",
     en: "Official coordinates could not be verified",
   },
+  INDOOR_UNVERIFIED: {
+    ko: "실내에서 지낼 수 있는지 확인되지 않음",
+    en: "Indoor use could not be confirmed",
+  },
+  ACCESSIBILITY_UNVERIFIED: {
+    ko: "요청한 이동 편의 조건이 확인되지 않음",
+    en: "Requested accessibility could not be confirmed",
+  },
+  CONCENTRATION_UNVERIFIED: {
+    ko: "혼잡 예측을 확인하지 못함",
+    en: "Crowd forecast could not be confirmed",
+  },
+  CONTINUITY_WAYPOINT_AT_RISK: {
+    ko: "남은 원래 일정 도착이 위태로움",
+    en: "A remaining original stop would be at risk",
+  },
+  OPEN_WINDOW_OVERFLOW: {
+    ko: "남은 시간 안에 다녀오기 어려움",
+    en: "Cannot get there and back within your window",
+  },
 };
+
+/* 서버가 새 사유를 추가하고 이 화면이 아직 라벨을 모르는 경우, 내부 코드를 그대로
+   보여주는 대신 그 줄을 빼는 쪽을 고른다. 여행자에게 `INDOOR_UNVERIFIED`는 아무
+   정보가 아니고, 사유 목록은 전부 보여야 하는 종류의 정보가 아니기 때문이다.
+   합계는 rejectedCount로 따로 표시되므로 수치가 어긋나지도 않는다. */
+function knownRejectionSummary(
+  value: unknown,
+): Array<{ reasonCode: RejectionReasonCode; count: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const record = entry as { reasonCode?: unknown; count?: unknown };
+    const code = String(record?.reasonCode ?? "");
+    const count = Number(record?.count);
+    return code in REJECTION_LABELS && Number.isFinite(count) && count > 0
+      ? [{ reasonCode: code as RejectionReasonCode, count }]
+      : [];
+  });
+}
 
 const INCIDENTS: {
   value: Incident;
@@ -397,8 +444,14 @@ export default function FlowApp() {
   } | null>(null);
   const [options, setOptions] = useState<RecoveryOption[]>([]);
   const [rejectedCount, setRejectedCount] = useState(0);
+  /* 미확인 조건을 사용자가 명시적으로 확인했는가. 기획 5.4는 정보가 없을 때
+     "제외하거나 **사용자 확인을 요구**한다"이고, 예전 구현은 후자를 구현하지 않아
+     전자만 남았다. 그래서 유아차·휠체어·고령자를 고르면 무장애 목록에 없는
+     후보가 전부 영구 차단되고 전환율이 0이 됐다. 확인을 받으면 적용은 열되,
+     무엇이 확인되지 않았는지는 그대로 남겨 카드가 "검증됨"으로 바뀌지는 않는다. */
+  const [acknowledgedOptionId, setAcknowledgedOptionId] = useState("");
   const [rejectionSummary, setRejectionSummary] = useState<
-    Array<{ reasonCode: string; count: number }>
+    Array<{ reasonCode: RejectionReasonCode; count: number }>
   >([]);
   const [errorText, setErrorText] = useState("");
   const [errorRequestId, setErrorRequestId] = useState("");
@@ -541,6 +594,41 @@ export default function FlowApp() {
         ),
       };
     }
+    /* 실측에서 가장 많이 나오는 두 사유였는데 둘 다 아래 일반 문구로 떨어져,
+       화면이 "왜 없는지"를 말하지 못했다. 우천을 고르면 실내 조건이 함께 걸리므로
+       무엇이 후보를 걸러냈는지 이름을 붙여 준다. */
+    if (top === "INDOOR_UNVERIFIED") {
+      return {
+        headline: tr(
+          "비를 피할 수 있다고 공식 정보로 확인된 곳이 이 범위에 없었습니다. 상황을 '지연'으로 바꾸면 실외 후보까지 함께 찾습니다.",
+          "No place in range is confirmed usable indoors. Switch the situation to a delay to include outdoor options.",
+        ),
+      };
+    }
+    if (top === "TRAVEL_PURPOSE_MISMATCH") {
+      return {
+        headline: tr(
+          "원래 하려던 일정과 같은 종류의 장소가 이 범위에 없었습니다. 다른 종류라도 괜찮으시면 조건을 넓혀 다시 찾아보세요.",
+          "No place in range matches the kind of stop you planned. Widen the conditions if a different kind is acceptable.",
+        ),
+      };
+    }
+    if (top === "ACCESSIBILITY_UNVERIFIED") {
+      return {
+        headline: tr(
+          "요청한 이동 편의 조건이 공식 무장애 정보로 확인된 곳이 없었습니다. 확인되지 않은 곳을 임의로 통과시키지는 않습니다.",
+          "No place has your requested accessibility confirmed in the official barrier-free data. We do not pass unverified places through.",
+        ),
+      };
+    }
+    if (top === "OPEN_WINDOW_OVERFLOW") {
+      return {
+        headline: tr(
+          "다녀오면 남은 시간을 넘깁니다. 머무는 시간을 줄이거나 시간을 더 확보하면 결과가 달라집니다.",
+          "Every candidate would overrun your window. Shorten the stay or allow more time.",
+        ),
+      };
+    }
     return {
       headline: tr(
         "억지로 추천하지 않습니다. 확인하지 못한 후보는 보여드리지 않습니다.",
@@ -548,6 +636,12 @@ export default function FlowApp() {
       ),
     };
   }, [rejectionSummary, availableMinutes, tr]);
+
+  const selectedNeedsAcknowledgement = Boolean(
+    selectedOption &&
+      (selectedOption.confirmationRequired ||
+        (selectedOption.evidenceGaps?.length ?? 0) > 0),
+  );
 
   const detectOrigin = useCallback(() => {
     if (!navigator.geolocation) {
@@ -918,15 +1012,9 @@ export default function FlowApp() {
       setRejectedCount(
         typeof root?.rejectedCount === "number" ? root.rejectedCount : 0,
       );
-      setRejectionSummary(
-        Array.isArray(root?.rejectionSummary)
-          ? (root.rejectionSummary as Array<{
-              reasonCode: string;
-              count: number;
-            }>)
-          : [],
-      );
+      setRejectionSummary(knownRejectionSummary(root?.rejectionSummary));
       setOptions(list);
+      setAcknowledgedOptionId("");
       setSelectedOptionId(
         list.find(
           (option) =>
@@ -969,14 +1057,14 @@ export default function FlowApp() {
       );
       return;
     }
-    if (
+    const needsAcknowledgement =
       selectedOption.confirmationRequired ||
-      (selectedOption.evidenceGaps?.length ?? 0) > 0
-    ) {
+      (selectedOption.evidenceGaps?.length ?? 0) > 0;
+    if (needsAcknowledgement && acknowledgedOptionId !== selectedOption.id) {
       setActionMessage(
         tr(
-          "공식 근거가 확인되지 않은 후보는 일정에 적용할 수 없습니다.",
-          "An option with an unverified required condition cannot be applied.",
+          "확인하지 못한 조건이 있습니다. 아래에서 무엇이 확인되지 않았는지 읽고 동의하면 이어갈 수 있습니다.",
+          "Some conditions were not verified. Read what is unconfirmed below and acknowledge it to continue.",
         ),
       );
       return;
@@ -1039,6 +1127,7 @@ export default function FlowApp() {
     }
   }, [
     selectedOption,
+    acknowledgedOptionId,
     recoveryRequestId,
     recoveryPersisted,
     go,
@@ -2125,8 +2214,7 @@ export default function FlowApp() {
                 <ul className={styles.why}>
                   {rejectionSummary.slice(0, 4).map((entry) => (
                     <li key={entry.reasonCode}>
-                      {REJECTION_LABELS[entry.reasonCode]?.[language] ??
-                        entry.reasonCode}{" "}
+                      {REJECTION_LABELS[entry.reasonCode][language]}{" "}
                       ·{" "}
                       {tr(
                         `${entry.count}곳`,
@@ -2262,14 +2350,62 @@ export default function FlowApp() {
 
         {step === "options" && (
           <div className={styles.footStack}>
+            {selectedNeedsAcknowledgement && selectedOption && (
+              /* 확인하지 못한 조건을 읽고 동의하면 적용을 연다. 동의해도 카드가
+                 "검증됨"으로 바뀌지는 않으며, 무엇이 확인되지 않았는지는 그대로
+                 남는다. 공유는 여전히 완전 검증된 결과에만 허용한다. */
+              <label className={styles.ackRow}>
+                <input
+                  type="checkbox"
+                  checked={acknowledgedOptionId === selectedOption.id}
+                  onChange={(event) =>
+                    setAcknowledgedOptionId(
+                      event.target.checked ? selectedOption.id : "",
+                    )
+                  }
+                />
+                <span>
+                  <strong>
+                    {tr(
+                      "확인되지 않은 조건을 알고 이어갑니다",
+                      "I understand what was not verified",
+                    )}
+                  </strong>
+                  <small>
+                    {(selectedOption.evidenceGaps ?? [])
+                      .map(
+                        (gap) =>
+                          (language === "en" ? gap.noteEn : "") ||
+                          gap.note ||
+                          REJECTION_LABELS[
+                            gap.code as RejectionReasonCode
+                          ]?.[language] ||
+                          "",
+                      )
+                      .filter(Boolean)
+                      .join(" · ") ||
+                      tr(
+                        "원래 하려던 활동과 종류가 다릅니다.",
+                        "This is a different kind of stop than you planned.",
+                      )}
+                  </small>
+                  <small>
+                    {tr(
+                      "출발 전에 운영기관에 직접 확인해 주세요. 이어가는 확인되지 않은 조건을 충족으로 바꾸지 않습니다.",
+                      "Please confirm with the venue before you set out. IEOGA does not mark an unverified condition as met.",
+                    )}
+                  </small>
+                </span>
+              </label>
+            )}
             <button
               type="button"
               className={styles.cta}
               onClick={() => void applySelectedOption()}
               disabled={
                 !selectedOption ||
-                selectedOption.confirmationRequired ||
-                (selectedOption.evidenceGaps?.length ?? 0) > 0 ||
+                (selectedNeedsAcknowledgement &&
+                  acknowledgedOptionId !== selectedOption.id) ||
                 actionBusy ||
                 !recoveryPersisted
               }
@@ -2277,13 +2413,18 @@ export default function FlowApp() {
               {actionBusy
                 ? tr("적용 중…", "Applying…")
                 : selectedOption
-                  ? tr(
-                      `${withParticle(selectedOption.title, "으로/로")} 이어가기`,
-                      `Continue with ${selectedOption.title}`,
-                    )
+                  ? selectedNeedsAcknowledgement
+                    ? tr(
+                        `확인하고 ${withParticle(selectedOption.title, "으로/로")} 이어가기`,
+                        `Acknowledge and continue with ${selectedOption.title}`,
+                      )
+                    : tr(
+                        `${withParticle(selectedOption.title, "으로/로")} 이어가기`,
+                        `Continue with ${selectedOption.title}`,
+                      )
                   : tr(
-                      "검증된 복구안을 선택해 주세요",
-                      "Select a verified recovery option",
+                      "복구안을 선택해 주세요",
+                      "Select a recovery option",
                     )}
             </button>
             <button

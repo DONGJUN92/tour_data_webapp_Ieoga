@@ -128,6 +128,28 @@ export function carRouteChain(): string[] {
   return tmapCarConfigured() ? [TMAP_CAR_URL] : [];
 }
 
+/* 카카오 대중교통·자전거 경로. 2026-08-04 실호출로 확인. 자동차와 달리
+   `dapi.kakao.com/v2/routing/*`이며 `KAKAO_REST_API_KEY` 하나로 동작한다.
+   도보·자차는 TMAP을 쓰므로 여기에는 두지 않는다. */
+export const KAKAO_TRANSIT_ROUTE_URL =
+  "https://dapi.kakao.com/v2/routing/publictraffic";
+export const KAKAO_BICYCLE_ROUTE_URL =
+  "https://dapi.kakao.com/v2/routing/bicycle";
+
+export function kakaoRoutingConfigured(): boolean {
+  return Boolean(getRuntimeSecret("KAKAO_REST_API_KEY"));
+}
+
+/* 대중교통·자전거에도 공개 폴백을 붙이지 않는다. 공개 OSRM은 두 수단의
+   프로파일이 없어 대체하면 단위가 다른 시간이 도착 판정에 들어간다. */
+export function transitRouteChain(): string[] {
+  return kakaoRoutingConfigured() ? [KAKAO_TRANSIT_ROUTE_URL] : [];
+}
+
+export function bicycleRouteChain(): string[] {
+  return kakaoRoutingConfigured() ? [KAKAO_BICYCLE_ROUTE_URL] : [];
+}
+
 /* The complete chain a walking-route request can actually reach, in call
    order. TMAP is not an OSRM-compatible endpoint and cannot be expressed in
    ROUTING_BASE_URL, so it is joined here rather than classified on its own.

@@ -294,8 +294,16 @@ test("이동수단 목록은 한 곳에서만 정의되고 검증 가능한 수�
   );
   assert.match(panel, /TRAVEL_MODES,/);
   assert.match(product, /TRAVEL_MODES,/);
-  /* 확인되지 않은 수단을 넣으면 선택은 되고 검증은 안 되는 상태가 된다. */
-  for (const absent of ["bicycle", "bike", "transit", "bus", "subway"]) {
+  /* 실호출로 확인한 네 수단만 둔다. 확인되지 않은 수단을 넣으면 선택은 되고
+     검증은 안 되는 상태가 되어 잘못된 도착 시각을 준다.
+     (`tests/kakao-modes.test.mjs`가 네 수단의 제공자 분기를 고정한다.) */
+  for (const present of ["walk", "car", "transit", "bicycle"]) {
+    assert.ok(
+      new RegExp(`value: "${present}"`).test(model),
+      `확인된 수단 ${present}이 목록에 없다`,
+    );
+  }
+  for (const absent of ["bike", "bus", "subway", "helicopter"]) {
     assert.ok(
       !new RegExp(`value: "${absent}"`).test(model),
       `검증되지 않은 수단 ${absent}이 목록에 있다`,
@@ -305,7 +313,10 @@ test("이동수단 목록은 한 곳에서만 정의되고 검증 가능한 수�
     new URL("../lib/recovery/schema.ts", import.meta.url),
     "utf8",
   );
-  assert.match(schema, /travelMode: z\.enum\(\["walk", "car"\]\)/);
+  assert.ok(
+    schema.includes('.enum(["walk", "car", "transit", "bicycle"])'),
+    "스키마가 네 수단을 받지 않는다",
+  );
 });
 
 test("기여 원장은 실제로 응답한 경로·기상 제공자 이름을 적는다", async () => {

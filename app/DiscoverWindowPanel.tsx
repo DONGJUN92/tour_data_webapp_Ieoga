@@ -546,11 +546,23 @@ export default function DiscoverWindowPanel({
                   "TMAP 자동차 경로로 계산합니다. 주차 시간은 포함하지 않으니 여유를 조금 더 두세요.",
                   "Calculated with TMAP car routing. Parking time is not included.",
                 )
-              : tr(
-                  language,
-                  "TMAP 보행자 경로로 계산합니다.",
-                  "Calculated with TMAP pedestrian routing.",
-                )}
+              : travelMode === "transit"
+                ? tr(
+                    language,
+                    "카카오맵 대중교통 길찾기로 계산합니다. 배차 간격에 따라 실제 소요시간이 달라질 수 있습니다.",
+                    "Calculated with KakaoMap transit routing. Actual time varies with service frequency.",
+                  )
+                : travelMode === "bicycle"
+                  ? tr(
+                      language,
+                      "카카오맵 자전거 길찾기로 계산합니다. 자전거 대여·주차 시간은 포함하지 않습니다.",
+                      "Calculated with KakaoMap cycling routing. Rental and parking time are not included.",
+                    )
+                  : tr(
+                      language,
+                      "TMAP 보행자 경로로 계산합니다.",
+                      "Calculated with TMAP pedestrian routing.",
+                    )}
           </p>
         </section>
 
@@ -692,11 +704,21 @@ function DiscoverResults({
           /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
              화면 상태(선택한 수단)로 쓰면 자차 조회가 실패해 보행으로 내려간
              경우에도 "차로 12분"이라고 적힌다. */
-          const byCar =
-            readText(
-              asRecord(asRecord(option.continuityProof)?.routeEvidence),
-              ["provider"],
-            ) === "tmap_car";
+          /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
+             화면 상태(선택한 수단)로 쓰면 조회가 실패해 다른 수단으로 내려간
+             경우에도 잘못된 이름이 적힌다. */
+          const routeProvider = readText(
+            asRecord(asRecord(option.continuityProof)?.routeEvidence),
+            ["provider"],
+          );
+          const modeVerb =
+            routeProvider === "tmap_car"
+              ? { ko: "차로", noun: "자동차", en: "drive" }
+              : routeProvider === "kakao_transit"
+                ? { ko: "대중교통으로", noun: "대중교통", en: "transit" }
+                : routeProvider === "kakao_bicycle"
+                  ? { ko: "자전거로", noun: "자전거", en: "cycle" }
+                  : { ko: "걸어서", noun: "보행", en: "walk" };
           const unverified =
             option.confirmationRequired ||
             (option.evidenceGaps?.length ?? 0) > 0;
@@ -726,8 +748,8 @@ function DiscoverResults({
                     <strong>
                       {tr(
                         language,
-                        `${byCar ? "차로" : "걸어서"} ${window.travelToMinutes}분`,
-                        `${window.travelToMinutes} min ${byCar ? "drive" : "walk"}`,
+                        `${modeVerb.ko} ${window.travelToMinutes}분`,
+                        `${window.travelToMinutes} min ${modeVerb.en}`,
                       )}
                     </strong>
                   </li>
@@ -777,8 +799,8 @@ function DiscoverResults({
                       )
                     : tr(
                         language,
-                        `${window.leftoverMinutes}분 여유가 남습니다. 돌아오는 시간은 같은 ${byCar ? "자동차" : "보행"} 경로 기준입니다.`,
-                        `${window.leftoverMinutes} min of slack. Return time uses the same ${byCar ? "driving" : "walking"} route.`,
+                        `${window.leftoverMinutes}분 여유가 남습니다. 돌아오는 시간은 같은 ${modeVerb.noun} 경로 기준입니다.`,
+                        `${window.leftoverMinutes} min of slack. Return time uses the same ${modeVerb.en} route.`,
                       )}
                 </p>
               )}

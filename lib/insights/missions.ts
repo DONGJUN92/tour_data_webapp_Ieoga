@@ -476,12 +476,19 @@ function percent(numerator: number, denominator: number): number {
   return Math.round((numerator / denominator) * 1_000) / 10;
 }
 
-function activePolicySources(payload: PolicyInsightPayload): string[] {
+/* 원천이 "값이 없다"고 답한 것과 우리가 "못 물어봤다"는 것을 가른다. 예전에는
+   둘을 한 목록으로 묶어 개선 미션의 근거로 썼고, 그 미션은 공사 데이터 품질
+   책임자에게 배정됐다. 즉 우리 조회 실패를 공사 데이터 공백으로 보고했다.
+   실제로 같은 파라미터를 직접 호출하면 값이 나오는 경우가 있었다. */
+function emptyPolicySources(payload: PolicyInsightPayload): string[] {
   return payload.sourceLedger
-    .filter(
-      (source) =>
-        source.status === "empty" || source.status === "error",
-    )
+    .filter((source) => source.status === "empty")
+    .map((source) => `${source.apiName}.${source.operation}`);
+}
+
+function erroredPolicySources(payload: PolicyInsightPayload): string[] {
+  return payload.sourceLedger
+    .filter((source) => source.status === "error")
     .map((source) => `${source.apiName}.${source.operation}`);
 }
 
@@ -806,8 +813,12 @@ export function buildMissionCandidates(
   const missingMetrics = payload.metrics
     .filter((metric) => metric.value === null)
     .map((metric) => metric.officialName || metric.label);
-  const incompleteSources = activePolicySources(payload);
+  const incompleteSources = emptyPolicySources(payload);
+  const retrievalFailures = erroredPolicySources(payload);
   const availableMetricCount = payload.metrics.length - missingMetrics.length;
+  /* 조회 실패만 있는 경우에는 미션을 만들지 않는다. 고쳐야 할 대상이 공사
+     데이터가 아니라 우리 호출이기 때문이다. 그 사실은 아래 evidence에
+     남겨 운영자가 볼 수 있게 한다. */
   const policyActive =
     missingMetrics.length > 0 || incompleteSources.length > 0;
 
@@ -845,6 +856,9 @@ export function buildMissionCandidates(
       expectedMetricCount: 7,
       missingMetrics,
       incompleteSources,
+      /* 우리 조회가 실패한 원천. 공사에 요구할 개선 대상이 아니라 이어가가
+         고쳐야 할 항목이므로 별도 필드로 분리해 둔다. */
+      retrievalFailures,
       coverageMeaning:
         "관광지 품질 점수가 아니라 공식 정책 근거의 값 확인 여부입니다.",
     },
@@ -858,11 +872,12 @@ export function buildMissionCandidates(
     (source) => source.apiName === "LocgoHubTarService1",
   );
   const hubRequired = Boolean(payload.districtCode);
+  /* 중심 관광지도 같은 기준이다. 우리 호출이 실패한 경우(`error`)는 공사에
+     보완을 요구할 근거가 되지 않는다. */
   const hubActive =
     hubRequired &&
-    (payload.hubs.length === 0 ||
-      hubAudit?.status === "empty" ||
-      hubAudit?.status === "error");
+    hubAudit?.status !== "error" &&
+    (payload.hubs.length === 0 || hubAudit?.status === "empty");
   const hubMission: MissionCandidateSeed = {
     id: missionId(
       payload.areaCode,

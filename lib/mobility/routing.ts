@@ -1,9 +1,14 @@
 import {
+  kakaoRoutingConfigured,
   routingEndpoints,
   routingProviderConfig,
   tmapCarConfigured,
   tmapPedestrianConfigured,
 } from "@/lib/external-providers";
+import {
+  getKakaoBicycleRoute,
+  getKakaoTransitRoute,
+} from "@/lib/mobility/kakao-routing";
 import { getTmapCarRoute } from "@/lib/mobility/tmap-car";
 import { getTmapPedestrianRoute } from "@/lib/mobility/tmap-pedestrian";
 
@@ -19,11 +24,13 @@ export type RouteLeg = {
 
 /* 여행자가 고르는 이동수단. 도착 시각이 "다음 약속을 지킬 수 있는가"의 판정
    근거이므로, 어느 수단으로 계산했는지는 결과와 함께 반드시 드러나야 한다. */
-export type TravelMode = "walk" | "car";
+export type TravelMode = "walk" | "car" | "transit" | "bicycle";
 
 export type WalkingRouteProvider =
   | "tmap_pedestrian"
   | "tmap_car"
+  | "kakao_transit"
+  | "kakao_bicycle"
   | "openstreetmap_osrm";
 
 export type WalkingRouteEvidence =
@@ -39,6 +46,17 @@ export type WalkingRouteEvidence =
       /* 자동차 경로에서 제공자가 준 예상 요금. 계산해 만들지 않는다. */
       taxiFareKrw?: number;
       tollFareKrw?: number;
+      /* 대중교통에서 제공자가 준 요금·환승·구간 구성. */
+      fareKrw?: number;
+      transfers?: number;
+      transitSteps?: Array<{
+        type: "BUS" | "SUBWAY" | "WALKING";
+        durationMinutes: number;
+        guidance?: string;
+      }>;
+      /* 배차에 따라 달라지는 소요시간인가. 참이면 도착 시각을 확정값처럼
+         제시해서는 안 된다. */
+      scheduleDependent?: boolean;
     }
   | {
       status: "unavailable";
@@ -51,7 +69,16 @@ export type WalkingRouteEvidence =
 const ATTRIBUTION: Record<WalkingRouteProvider, string> = {
   tmap_pedestrian: "보행 경로 · TMAP 보행자 경로안내 (SK텔레콤)",
   tmap_car: "자동차 경로 · TMAP 자동차 경로안내 (SK텔레콤)",
+  kakao_transit: "대중교통 경로 · 카카오맵 대중교통 길찾기 (카카오)",
+  kakao_bicycle: "자전거 경로 · 카카오맵 자전거 길찾기 (카카오)",
   openstreetmap_osrm: "© OpenStreetMap contributors",
+};
+
+const MODE_PROVIDER: Record<TravelMode, WalkingRouteProvider> = {
+  walk: "tmap_pedestrian",
+  car: "tmap_car",
+  transit: "kakao_transit",
+  bicycle: "kakao_bicycle",
 };
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -122,11 +149,11 @@ export async function getRoute(
   const mode: TravelMode = options.mode ?? "walk";
   const calculatedAt = new Date().toISOString();
   const attribution =
-    mode === "car"
-      ? ATTRIBUTION.tmap_car
-      : ATTRIBUTION.openstreetmap_osrm;
+    mode === "walk"
+      ? ATTRIBUTION.openstreetmap_osrm
+      : ATTRIBUTION[MODE_PROVIDER[mode]];
   const unavailableProvider: WalkingRouteProvider =
-    mode === "car" ? "tmap_car" : "openstreetmap_osrm";
+    mode === "walk" ? "openstreetmap_osrm" : MODE_PROVIDER[mode];
   if (points.length < 2 || points.length > 32) {
     return {
       status: "unavailable",
@@ -185,6 +212,66 @@ export async function getRoute(
       status: "unavailable",
       provider: "tmap_car",
       reason: "자동차 경로 공급자가 현재 응답하지 않습니다.",
+      calculatedAt,
+      attribution,
+    };
+  }
+
+  /* 대중교통·자전거는 카카오만 쓴다. 공개 OSRM에는 두 프로파일이 없으므로
+     실패하면 확인하지 못한 채 탈락시킨다. 자동차와 같은 규칙이다. */
+  if (mode === "transit" || mode === "bicycle") {
+    const provider = MODE_PROVIDER[mode];
+    if (!kakaoRoutingConfigured()) {
+      return {
+        status: "unavailable",
+        provider,
+        reason:
+          mode === "transit"
+            ? "대중교통 경로 제공자가 설정되지 않아 이동시간을 확인하지 못했습니다."
+            : "자전거 경로 제공자가 설정되지 않아 이동시간을 확인하지 못했습니다.",
+        calculatedAt,
+        attribution,
+      };
+    }
+    try {
+      const kakao =
+        mode === "transit"
+          ? await getKakaoTransitRoute(points, { signal: options.signal })
+          : await getKakaoBicycleRoute(points, { signal: options.signal });
+      if (kakao) {
+        const routed: WalkingRouteEvidence = {
+          status: "routed",
+          provider,
+          distanceMeters: kakao.distanceMeters,
+          durationMinutes: kakao.durationMinutes,
+          legs: kakao.legs,
+          geometry: kakao.geometry,
+          calculatedAt,
+          attribution: ATTRIBUTION[provider],
+          fareKrw: kakao.fareKrw,
+          transfers: kakao.transfers,
+          transitSteps: kakao.transitSteps,
+          scheduleDependent: kakao.scheduleDependent,
+        };
+        cache.set(key, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          value: routed,
+        });
+        return routed;
+      }
+    } catch (error) {
+      if (options.signal?.aborted) {
+        throw new DOMException("Routing request cancelled", "AbortError");
+      }
+      void error;
+    }
+    return {
+      status: "unavailable",
+      provider,
+      reason:
+        mode === "transit"
+          ? "대중교통 경로 공급자가 현재 응답하지 않습니다."
+          : "자전거 경로 공급자가 현재 응답하지 않습니다.",
       calculatedAt,
       attribution,
     };

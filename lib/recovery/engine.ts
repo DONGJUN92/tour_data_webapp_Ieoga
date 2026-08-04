@@ -18,7 +18,9 @@ import {
   type KtoServiceName,
 } from "@/lib/kto/types";
 import {
+  conservativeCyclingMinutes,
   conservativeDrivingMinutes,
+  conservativeTransitMinutes,
   conservativeWalkingMinutes,
   haversineMeters,
 } from "@/lib/geo";
@@ -42,6 +44,7 @@ import type {
   RecoveryOption,
   RecoveryResult,
   RejectedCandidate,
+  RejectionReasonCode,
   ScheduleDiff,
   ScheduleNodeSummary,
   TravelPurposeProof,
@@ -1184,8 +1187,30 @@ function itineraryScheduleDiff(params: {
    도착 검증이 이미 끝났으므로 남는 여유를 그대로 쓰고, 알려 주지 않은 경우에는
    같은 보행 경로를 되짚어 오는 시간을 복귀로 잡는다. 왕복을 직선거리로
    추정하지 않고 실제 경로 구간을 재사용하는 것이 요점이다. */
+const PROVIDER_MODE_LABEL: Record<
+  WalkingRouteProvider,
+  { ko: string; en: string }
+> = {
+  tmap_pedestrian: { ko: "보행", en: "walking" },
+  openstreetmap_osrm: { ko: "보행", en: "walking" },
+  tmap_car: { ko: "자동차", en: "driving" },
+  kakao_transit: { ko: "대중교통", en: "transit" },
+  kakao_bicycle: { ko: "자전거", en: "cycling" },
+};
+
 function routeModeLabel(provider: WalkingRouteProvider): string {
-  return provider === "tmap_car" ? "자동차" : "보행";
+  return PROVIDER_MODE_LABEL[provider].ko;
+}
+
+/* 사용자가 고른 수단의 이름. 경로 조회 이전 단계의 문구에 쓴다. */
+function travelModeLabel(mode: RecoveryRequest["travelMode"]): string {
+  return mode === "car"
+    ? "자동차"
+    : mode === "transit"
+      ? "대중교통"
+      : mode === "bicycle"
+        ? "자전거"
+        : "보행";
 }
 
 function openWindowProof(params: {
@@ -1277,7 +1302,7 @@ async function enrichForContinuity(params: {
         title: candidate.title,
         reasonCode: "ROUTE_UNAVAILABLE",
         reason:
-          `대체 일정부터 복귀 지점까지 이어지는 전체 ${input.travelMode === "car" ? "자동차" : "보행"} 경로를 검증하지 못해 결과에서 제외했습니다.`,
+          `대체 일정부터 복귀 지점까지 이어지는 전체 ${travelModeLabel(input.travelMode)} 경로를 검증하지 못해 결과에서 제외했습니다.`,
         distanceMeters: candidate.distanceMeters,
         changedNodeCount: 1,
       });
@@ -1379,6 +1404,7 @@ async function enrichForContinuity(params: {
           preservesLockedNodes: true,
           preservesNextFixedAppointment: true,
         },
+        verificationDepth: "route_verified",
       });
     }
     if (routedMinutes > input.availableMinutes) {
@@ -1588,23 +1614,50 @@ function buildWhy(
   if (candidate.routeEvidence.status === "routed") {
     /* 어느 경로 공급자로 계산했는지 문장에 그대로 쓴다. 공급자 이름을
        고정해 두면 TMAP으로 계산한 결과에도 OpenStreetMap이라고 적힌다. */
+    const provider = candidate.routeEvidence.provider;
     const routeSource =
-      candidate.routeEvidence.provider === "tmap_pedestrian"
+      provider === "tmap_pedestrian"
         ? { ko: "TMAP 보행자 경로", en: "TMAP pedestrian routing" }
-        : candidate.routeEvidence.provider === "tmap_car"
+        : provider === "tmap_car"
           ? { ko: "TMAP 자동차 경로", en: "TMAP car routing" }
-          : { ko: "OpenStreetMap 보행 경로", en: "OpenStreetMap walking route" };
+          : provider === "kakao_transit"
+            ? { ko: "카카오맵 대중교통", en: "KakaoMap transit" }
+            : provider === "kakao_bicycle"
+              ? { ko: "카카오맵 자전거 경로", en: "KakaoMap cycling route" }
+              : {
+                  ko: "OpenStreetMap 보행 경로",
+                  en: "OpenStreetMap walking route",
+                };
     /* 수단도 문장에 드러나야 한다. 자차로 계산한 20분을 "보행 경로로 20분"이라고
        적으면 여행자가 걸어서 갈 수 있다고 읽는다. */
-    const byCar = candidate.routeEvidence.provider === "tmap_car";
+    const modeWords = PROVIDER_MODE_LABEL[provider];
     push(
-      `실제 ${byCar ? "자동차" : "보행"} 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
-      `${meters.toLocaleString("en-US")} m on a real ${byCar ? "driving" : "walking"} route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
+      `실제 ${modeWords.ko} 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
+      `${meters.toLocaleString("en-US")} m on a real ${modeWords.en} route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
     );
-    if (byCar && typeof candidate.routeEvidence.taxiFareKrw === "number") {
+    if (typeof candidate.routeEvidence.taxiFareKrw === "number") {
       push(
         `TMAP 예상 택시요금 ${candidate.routeEvidence.taxiFareKrw.toLocaleString("ko-KR")}원입니다. 자차 유류비·주차비는 포함하지 않습니다.`,
         `TMAP estimates a ${candidate.routeEvidence.taxiFareKrw.toLocaleString("en-US")} KRW taxi fare. Fuel and parking for your own car are not included.`,
+      );
+    }
+    if (typeof candidate.routeEvidence.fareKrw === "number") {
+      const transfers = candidate.routeEvidence.transfers;
+      push(
+        `카카오맵 기준 대중교통 요금 ${candidate.routeEvidence.fareKrw.toLocaleString("ko-KR")}원${
+          typeof transfers === "number" ? `, 환승 ${transfers}회` : ""
+        }입니다.`,
+        `KakaoMap estimates a ${candidate.routeEvidence.fareKrw.toLocaleString("en-US")} KRW fare${
+          typeof transfers === "number" ? ` with ${transfers} transfer(s)` : ""
+        }.`,
+      );
+    }
+    /* 배차를 모르는 값이므로 확정 도착 시각처럼 제시하지 않는다. 도보·자차와
+       같은 등급으로 보여 주면 도착 시각을 보증하는 셈이 된다. */
+    if (candidate.routeEvidence.scheduleDependent) {
+      push(
+        "대중교통 소요시간은 배차 간격에 따라 달라질 수 있습니다. 출발 직전 실시간 도착 정보를 확인해 주세요.",
+        "Transit time varies with service frequency. Check live arrivals before you set out.",
       );
     }
   } else {
@@ -1723,7 +1776,11 @@ function dataContributionsFor(
           ? "TMAP 보행자 경로안내"
           : routeProvider === "tmap_car"
             ? "TMAP 자동차 경로안내"
-            : "OpenStreetMap Routing",
+            : routeProvider === "kakao_transit"
+              ? "카카오맵 대중교통 길찾기"
+              : routeProvider === "kakao_bicycle"
+                ? "카카오맵 자전거 길찾기"
+                : "OpenStreetMap Routing",
       fields: ["distance", "duration", "legs", "geometry"],
       decision: `현재 위치→대체 일정→다음 고정 일정의 실제 ${routeModeLabel(routeProvider)} 경로와 도착 버퍼를 계산했습니다.`,
       effect: "verified",
@@ -1913,12 +1970,21 @@ function pickOptions(
   const addFirstUnused = (
     sorted: WorkingCandidate[],
     strategy: RecoveryOption["strategy"],
-    label: { ko: string; en: string },
+    /* 라벨이 고른 후보에 따라 달라져야 하는 경우가 있다. 접근성 카드가 그렇다 —
+       조건이 확인되지 않은 후보에 "조건이 가장 잘 맞는 곳"이라고 붙이면 같은
+       카드 안의 미확인 경고와 정면으로 모순된다. */
+    label:
+      | { ko: string; en: string }
+      | ((candidate: WorkingCandidate) => { ko: string; en: string }),
   ) => {
     const candidate = sorted.find((entry) => !used.has(entry.contentId));
     if (!candidate) return;
     used.add(candidate.contentId);
-    selected.push({ candidate, strategy, label });
+    selected.push({
+      candidate,
+      strategy,
+      label: typeof label === "function" ? label(candidate) : label,
+    });
   };
 
   const travelMinutes = (candidate: WorkingCandidate) =>
@@ -1956,9 +2022,21 @@ function pickOptions(
         (a, b) => b.comfortScore - a.comfortScore || b.baseScore - a.baseScore,
       ),
       "comfortable",
-      input.audience === "general"
-        ? { ko: "이동 부담이 가장 적은 곳", en: "Least walking and transfers" }
-        : { ko: "이동 편의 조건이 가장 잘 맞는 곳", en: "Best match for your mobility need" },
+      /* 접근성이 확인되지 않은 후보에 "조건이 가장 잘 맞는 곳"이라고 붙이면,
+         같은 카드 안의 "요청한 조건을 확인하지 못했습니다"와 정면으로 모순된다.
+         확인된 경우에만 그렇게 말한다. */
+      (candidate) =>
+        input.audience === "general"
+          ? { ko: "이동 부담이 가장 적은 곳", en: "Least walking and transfers" }
+          : candidate.accessibility.status === "verified"
+            ? {
+                ko: "이동 편의 조건이 확인된 곳",
+                en: "Mobility need confirmed by official data",
+              }
+            : {
+                ko: "이동 부담이 가장 적은 곳 (편의 조건 미확인)",
+                en: "Least travel burden (mobility need unconfirmed)",
+              },
     );
   }
 
@@ -2035,8 +2113,8 @@ function pickOptions(
 /* Groups rejections by reason so an empty result can explain itself. */
 function summariseRejections(
   rejected: RejectedCandidate[],
-): Array<{ reasonCode: string; count: number }> {
-  const counts = new Map<string, number>();
+): Array<{ reasonCode: RejectionReasonCode; count: number }> {
+  const counts = new Map<RejectionReasonCode, number>();
   for (const entry of rejected) {
     counts.set(entry.reasonCode, (counts.get(entry.reasonCode) ?? 0) + 1);
   }
@@ -2059,16 +2137,25 @@ function selectCounterfactual(
       } => Boolean(candidate.requiredRelaxation),
     )
     .sort((a, b) => {
-      const normalizedA =
-        a.requiredRelaxation.unit === "meters"
-          ? a.requiredRelaxation.amount / 100
-          : a.requiredRelaxation.amount;
-      const normalizedB =
-        b.requiredRelaxation.unit === "meters"
-          ? b.requiredRelaxation.amount / 100
-          : b.requiredRelaxation.amount;
+      /* 경로까지 검증한 탈락안이 먼저다. 같은 "조건 하나만 풀면 된다"라도
+         예약 보존을 확인한 쪽이 사용자에게 더 확실한 정보이기 때문이다.
+         사전 걸러내기 단계 탈락안은 그것이 없을 때만 올라온다. */
+      const depthRank = (entry: RejectedCandidate) =>
+        entry.verificationDepth === "route_verified" ? 0 : 1;
+      const depth = depthRank(a) - depthRank(b);
+      if (depth) return depth;
+      /* 단위를 비교 가능한 축으로 환산한다. 조건 해제는 숫자 완화와 견줄 수
+         없으므로 가장 뒤로 보낸다 — "5분만 더"가 있으면 그것이 더 가깝다. */
+      const normalize = (
+        relaxation: NonNullable<RejectedCandidate["requiredRelaxation"]>,
+      ) =>
+        relaxation.unit === "meters"
+          ? relaxation.amount / 100
+          : relaxation.unit === "condition"
+            ? Number.MAX_SAFE_INTEGER
+            : relaxation.amount;
       return (
-        normalizedA - normalizedB ||
+        normalize(a.requiredRelaxation) - normalize(b.requiredRelaxation) ||
         (a.distanceMeters ?? Number.POSITIVE_INFINITY) -
           (b.distanceMeters ?? Number.POSITIVE_INFINITY)
       );
@@ -2078,7 +2165,7 @@ function selectCounterfactual(
   return {
     ...best,
     proofType: "single_constraint_minimum_relaxation",
-    changedNodeCount: 1,
+    verificationDepth: best.verificationDepth ?? "pre_filter",
   };
 }
 
@@ -2096,8 +2183,8 @@ export async function recoverTrip(
         ...(context.changeKind === "insert"
           ? [
               context.openWindow?.nextPlaceLabel
-                ? `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${input.travelMode === "car" ? "자동차" : "보행"} 경로로 검증했습니다.`
-                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 같은 ${input.travelMode === "car" ? "자동차" : "보행"} 경로로 되돌아오는 시간을 복귀로 계산했으며, 목적 유지 여부는 판단하지 않았습니다.`,
+                ? `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 검증했습니다.`
+                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 같은 ${travelModeLabel(input.travelMode)} 경로로 되돌아오는 시간을 복귀로 계산했으며, 목적 유지 여부는 판단하지 않았습니다.`,
             ]
           : []),
       ]
@@ -2385,6 +2472,21 @@ export async function recoverTrip(
         reasonCode: "DISTANCE_LIMIT",
         reason: `최대 이동거리 ${input.maxDistanceMeters.toLocaleString("ko-KR")}m를 초과합니다.`,
         distanceMeters,
+        /* 사전 걸러내기에서도 "조건 하나만 풀면 검토 대상이 된다"를 계산해
+           둔다. 예전에는 이 단계 탈락에 완화량이 없어, 탈락이 서른 건이어도
+           반사실 설명이 항상 비어 있었다. 경로·운영시간은 아직 확인하지
+           않았으므로 보존은 주장하지 않는다. */
+        requiredRelaxation: {
+          constraint: "maximum_distance",
+          amount: Math.ceil(distanceMeters - input.maxDistanceMeters),
+          unit: "meters",
+          currentLimit: input.maxDistanceMeters,
+          requiredLimit: Math.ceil(distanceMeters),
+          description: `최대 이동거리 ${input.maxDistanceMeters.toLocaleString("ko-KR")}m → ${Math.ceil(distanceMeters).toLocaleString("ko-KR")}m`,
+          preservesLockedNodes: false,
+          preservesNextFixedAppointment: false,
+        },
+        verificationDepth: "pre_filter",
       });
       continue;
     }
@@ -2396,7 +2498,11 @@ export async function recoverTrip(
     const estimatedTravelMinutes =
       input.travelMode === "car"
         ? conservativeDrivingMinutes(distanceMeters)
-        : conservativeWalkingMinutes(distanceMeters);
+        : input.travelMode === "bicycle"
+          ? conservativeCyclingMinutes(distanceMeters)
+          : input.travelMode === "transit"
+            ? conservativeTransitMinutes(distanceMeters)
+            : conservativeWalkingMinutes(distanceMeters);
     if (
       estimatedTravelMinutes > input.availableMinutes &&
       (!context ||
@@ -2406,8 +2512,19 @@ export async function recoverTrip(
         contentId,
         title,
         reasonCode: "TIME_LIMIT",
-        reason: `${input.travelMode === "car" ? "자동차" : "보행"} 보수 추정 이동시간이 가용시간 ${input.availableMinutes}분을 초과합니다.`,
+        reason: `${travelModeLabel(input.travelMode)} 보수 추정 이동시간이 가용시간 ${input.availableMinutes}분을 초과합니다.`,
         distanceMeters,
+        requiredRelaxation: {
+          constraint: "available_time",
+          amount: Math.ceil(estimatedTravelMinutes - input.availableMinutes),
+          unit: "minutes",
+          currentLimit: input.availableMinutes,
+          requiredLimit: Math.ceil(estimatedTravelMinutes),
+          description: `사용 가능한 시간 ${input.availableMinutes}분 → ${Math.ceil(estimatedTravelMinutes)}분`,
+          preservesLockedNodes: false,
+          preservesNextFixedAppointment: false,
+        },
+        verificationDepth: "pre_filter",
       });
       continue;
     }
@@ -2426,6 +2543,21 @@ export async function recoverTrip(
         reason:
           "공식 관광 콘텐츠 분류에서 실내 이용 가능성을 확인할 수 없어 실내 필수 후보에서 제외했습니다.",
         distanceMeters,
+        /* 실측에서 가장 많은 탈락 사유였다. 숫자 한도가 아니라 켜고 끄는
+           조건이므로 완화량은 "조건 1건 해제"다. 실내를 요구하지 않으면
+           검토 대상이 된다는 사실 자체가 사용자에게 가장 실행 가능한
+           정보인데, 예전에는 이것이 반사실 설명에 전혀 나타나지 않았다. */
+        requiredRelaxation: {
+          constraint: "indoor_requirement",
+          amount: 1,
+          unit: "condition",
+          currentLimit: 1,
+          requiredLimit: 0,
+          description: "실내 필수 조건을 해제",
+          preservesLockedNodes: false,
+          preservesNextFixedAppointment: false,
+        },
+        verificationDepth: "pre_filter",
       });
       continue;
     }
@@ -2535,12 +2667,26 @@ export async function recoverTrip(
       };
     })
     .map((candidate) => {
+      if (input.audience === "general") return candidate;
+
+      /* 앞 단계는 "주변 무장애 목록에 이 곳이 있는가"만 보고 공백을 붙인다.
+         그 목록에 없더라도 `detailWithTour2`가 필수 동선을 확인해 주는 경우가
+         있는데, 예전 구현은 공백을 지우지 않아 확인된 곳도 영구히 미확인으로
+         남았다. 그러면 유아차·휠체어·고령자를 고른 여행자는 접근성이 실제로
+         확인된 후보조차 적용할 수 없다. 상세 조회 결과가 최종 판정이다. */
+      if (candidate.accessibility.status === "verified") {
+        return {
+          ...candidate,
+          evidenceGaps: candidate.evidenceGaps.filter(
+            (gap) => gap.code !== "ACCESSIBILITY_UNVERIFIED",
+          ),
+        };
+      }
+
       /* Same three-tier rule as the earlier checks: a detail lookup that came
          back without accessibility fields records a gap, it does not delete
          the candidate. */
       if (
-        input.audience !== "general" &&
-        candidate.accessibility.status !== "verified" &&
         !candidate.evidenceGaps.some(
           (gap) => gap.code === "ACCESSIBILITY_UNVERIFIED",
         )

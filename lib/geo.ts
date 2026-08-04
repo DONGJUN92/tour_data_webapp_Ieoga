@@ -37,6 +37,17 @@ export function conservativeDrivingMinutes(distanceMeters: number): number {
   return Math.max(1, Math.ceil(distanceMeters / 333) + 6);
 }
 
+/* 자전거는 도심 15km/h(=250m/분)에 주차·잠금 3분. */
+export function conservativeCyclingMinutes(distanceMeters: number): number {
+  return Math.max(1, Math.ceil(distanceMeters / 250) + 3);
+}
+
+/* 대중교통은 표정속도 18km/h(=300m/분)에 도보 접근·대기 12분을 더한다. 배차를
+   모르는 단계이므로 넉넉해야 한다. 실제 소요시간은 카카오 응답으로 덮어쓴다. */
+export function conservativeTransitMinutes(distanceMeters: number): number {
+  return Math.max(1, Math.ceil(distanceMeters / 300) + 12);
+}
+
 export function distanceBucket(distanceMeters: number): string {
   if (distanceMeters < 500) return "0-499m";
   if (distanceMeters < 1_000) return "500-999m";

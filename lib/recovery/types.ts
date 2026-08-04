@@ -158,6 +158,8 @@ export type ContinuityProof = {
 export type RoutingContributionSource =
   | "TMAP 보행자 경로안내"
   | "TMAP 자동차 경로안내"
+  | "카카오맵 대중교통 길찾기"
+  | "카카오맵 자전거 길찾기"
   | "OpenStreetMap Routing";
 
 export type WeatherContributionSource =
@@ -249,25 +251,30 @@ export type EvidenceGap = {
   noteEn?: string;
 };
 
+/* 탈락 사유 코드를 이름 있는 유니온으로 둔다. 화면의 라벨 사전을 이 유니온으로
+   좁히면, 새 사유를 추가하고 라벨을 빼먹었을 때 컴파일이 막힌다. 라벨이 없으면
+   0건 화면 첫 줄에 `INDOOR_UNVERIFIED` 같은 내부 코드가 그대로 찍혔다. */
+export type RejectionReasonCode =
+  | "INVALID_COORDINATE"
+  | "DISTANCE_LIMIT"
+  | "TIME_LIMIT"
+  | "INDOOR_UNVERIFIED"
+  | "ACCESSIBILITY_UNVERIFIED"
+  | "CONCENTRATION_UNVERIFIED"
+  | "CONCENTRATION_HIGH"
+  | "SAME_AS_DISRUPTED_PLACE"
+  | "TRAVEL_PURPOSE_MISMATCH"
+  | "OFFICIALLY_CLOSED"
+  | "CONTINUITY_WAYPOINT_AT_RISK"
+  | "NEXT_FIXED_APPOINTMENT_AT_RISK"
+  /* 빈 시간 추천에서 이동+체류+복귀가 남은 시간을 넘긴 후보. */
+  | "OPEN_WINDOW_OVERFLOW"
+  | "ROUTE_UNAVAILABLE";
+
 export type RejectedCandidate = {
   contentId?: string;
   title: string;
-  reasonCode:
-    | "INVALID_COORDINATE"
-    | "DISTANCE_LIMIT"
-    | "TIME_LIMIT"
-    | "INDOOR_UNVERIFIED"
-    | "ACCESSIBILITY_UNVERIFIED"
-    | "CONCENTRATION_UNVERIFIED"
-    | "CONCENTRATION_HIGH"
-    | "SAME_AS_DISRUPTED_PLACE"
-    | "TRAVEL_PURPOSE_MISMATCH"
-    | "OFFICIALLY_CLOSED"
-    | "CONTINUITY_WAYPOINT_AT_RISK"
-    | "NEXT_FIXED_APPOINTMENT_AT_RISK"
-    /* 빈 시간 추천에서 이동+체류+복귀가 남은 시간을 넘긴 후보. */
-    | "OPEN_WINDOW_OVERFLOW"
-    | "ROUTE_UNAVAILABLE";
+  reasonCode: RejectionReasonCode;
   reason: string;
   distanceMeters?: number;
   changedNodeCount?: number;
@@ -277,15 +284,25 @@ export type RejectedCandidate = {
       | "maximum_distance"
       | "available_time"
       | "minimum_stay"
-      | "safety_buffer";
+      | "safety_buffer"
+      /* 숫자 한도가 아니라 켜고 끄는 조건. 실측에서 가장 많은 탈락 사유였는데
+         완화 대상 유니온에 없어 반사실 설명이 항상 비어 있었다. */
+      | "indoor_requirement";
     amount: number;
-    unit: "meters" | "minutes";
+    unit: "meters" | "minutes" | "condition";
     currentLimit: number;
     requiredLimit: number;
     description: string;
-    preservesLockedNodes: true;
-    preservesNextFixedAppointment: true;
+    /* 사전 걸러내기 단계의 후보는 경로를 아직 검증하지 않았으므로 예약 보존을
+       주장할 수 없다. `true` 리터럴이었을 때는 검증하지 않은 것을 보존했다고
+       단정하게 됐다. */
+    preservesLockedNodes: boolean;
+    preservesNextFixedAppointment: boolean;
   };
+  /* 이 판정이 어디까지 확인된 것인가. `pre_filter`는 거리·시간 조건만 비교한
+     단계이고 경로·운영시간·예약 보존은 확인하지 않았다. 화면이 그 차이를
+     그대로 말해야 한다. */
+  verificationDepth?: "pre_filter" | "route_verified";
 };
 
 export type CounterfactualProof = RejectedCandidate & {
@@ -293,7 +310,6 @@ export type CounterfactualProof = RejectedCandidate & {
   requiredRelaxation: NonNullable<
     RejectedCandidate["requiredRelaxation"]
   >;
-  changedNodeCount: 1;
 };
 
 export type RecoveryResult = {
@@ -327,7 +343,7 @@ export type RecoveryResult = {
   rejectedCount: number;
   /* Constraint-by-constraint breakdown of why candidates were removed, so an
      empty result can state its own cause. Counts only, no place names. */
-  rejectionSummary: Array<{ reasonCode: string; count: number }>;
+  rejectionSummary: Array<{ reasonCode: RejectionReasonCode; count: number }>;
   counterfactual?: CounterfactualProof;
   dataContributions: DataContribution[];
   sourceLedger: KtoAudit[];

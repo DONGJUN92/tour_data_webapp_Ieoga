@@ -1,0 +1,8 @@
+{
+  "origin":{"latitude":36.6667,"longitude":129.1124,"label":"영양군청 앞","areaCode":"47","sigunguCode":"47760"},
+  "incident":"less_walk","availableMinutes":180,"maxDistanceMeters":15000,"audience":"wheelchair",
+  "indoorOnly":false,"travelMode":"car","radiusMeters":15000,"safetyBufferMinutes":15,
+  "minimumStayMinutes":60,"analyticsConsent":false,
+  "disabledSources":["KorWithService2"],
+  "openWindow":{"availableUntil":"2026-08-05T01:30:00Z","plannedStayMinutes":90}
+}

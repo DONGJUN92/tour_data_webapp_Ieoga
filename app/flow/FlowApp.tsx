@@ -483,10 +483,29 @@ export default function FlowApp() {
     };
   }, [language]);
 
+  /* 단계가 바뀌면 포커스를 그 단계의 제목으로 옮긴다. 예전에는 화면이 통째로
+     바뀌어도 포커스가 body에 남아, 스크린리더 사용자는 무엇이 바뀌었는지 듣지
+     못하고 키보드 사용자는 Tab을 처음부터 다시 눌러야 했다(WCAG 2.4.3·4.1.3).
+     `/accessibility`가 "상태·오류 실시간 안내"를 명시 목표로 걸어 두었으므로
+     자기 선언 위반이기도 했다.
+
+     제목은 렌더될 때 `tabIndex={-1}`을 갖는다 — 프로그램으로만 포커스를 받고
+     Tab 순서에는 끼지 않는다. */
+  const stepHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const go = useCallback((next: Step, back = false) => {
     setGoingBack(back);
     setStep(next);
   }, []);
+
+  useEffect(() => {
+    const heading = stepHeadingRef.current;
+    if (!heading) return;
+    /* 렌더가 끝난 뒤에 옮긴다. 같은 프레임에서 부르면 아직 이전 단계의 노드다. */
+    const frame = window.requestAnimationFrame(() => {
+      heading.focus({ preventScroll: false });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [step]);
 
   const stepIndex =
     step === "active"
@@ -1380,7 +1399,7 @@ export default function FlowApp() {
             <span className={styles.eyebrow}>
               {tr("1단계 · 약 10초", "Step 1 · about 10 seconds")}
             </span>
-            <h1 className={styles.title}>
+            <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
               {tr("지금 무슨 일이", "What changed")}
               <br />
               {tr("생겼나요?", "right now?")}
@@ -1422,7 +1441,7 @@ export default function FlowApp() {
         {step === "origin" && (
           <>
             <span className={styles.eyebrow}>{tr("2단계", "Step 2")}</span>
-            <h1 className={styles.title}>
+            <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
               {tr("지금 어디 계세요?", "Where are you now?")}
             </h1>
             <p className={styles.sub}>
@@ -1548,7 +1567,7 @@ export default function FlowApp() {
             <span className={styles.eyebrow}>
               {tr("3단계 · 마지막", "Step 3 · final input")}
             </span>
-            <h1 className={styles.title}>
+            <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
               {tr("몇 시까지", "Where do you")}
               <br />
               {tr("어디로 가야 하나요?", "need to be, and when?")}
@@ -1753,7 +1772,7 @@ export default function FlowApp() {
           <div className={styles.searching}>
             <div className={styles.spinner} />
             <div>
-              <h1 className={styles.title} style={{ fontSize: 22 }}>
+              <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1} style={{ fontSize: 22 }}>
                 {tr("지킬 것을 먼저 잠그고", "Protecting what must stay")}
                 <br />
                 {tr("대안을 검증하고 있어요", "and verifying alternatives")}
@@ -1781,7 +1800,7 @@ export default function FlowApp() {
             <span className={styles.eyebrow}>
               {tr("검증 결과", "Verification result")}
             </span>
-            <h1 className={styles.title}>
+            <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
               {tr(
                 `${apptTime} 약속까지 갈 수 있는`,
                 `${verifiedOptionCount} place${
@@ -2039,7 +2058,7 @@ export default function FlowApp() {
                   <span className={styles.eyebrow}>
                     {tr("복구 계약 완료", "Recovery contract met")}
                   </span>
-                  <h1 className={styles.title}>
+                  <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
                     {tr(
                       "다음 약속을 지키고\n원래 일정으로 돌아왔어요",
                       "Appointment protected.\nYour original trip resumes.",
@@ -2091,7 +2110,7 @@ export default function FlowApp() {
                 <span className={styles.eyebrow}>
                   {tr("복구 여행 진행 중", "Recovery in progress")}
                 </span>
-                <h1 className={styles.title}>
+                <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
                   {executionRole(currentExecutionStep, language)}
                   <br />
                   {currentExecutionStep.title}
@@ -2184,7 +2203,7 @@ export default function FlowApp() {
             ) : (
               <div className={styles.state}>
                 <div className={`${styles.stateMark} ${styles.stateBad}`}>!</div>
-                <h1 className={styles.title}>
+                <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1}>
                   {tr(
                     "진행할 다음 단계를 확인하지 못했습니다.",
                     "The next executable step could not be found.",
@@ -2202,7 +2221,7 @@ export default function FlowApp() {
           <div className={styles.state}>
             <div className={`${styles.stateMark} ${styles.stateWarn}`}>🔍</div>
             <div>
-              <h1 className={styles.title} style={{ fontSize: 22 }}>
+              <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1} style={{ fontSize: 22 }}>
                 {tr("조건을 지키는 대안이", "No option meets")}
                 <br />
                 {tr("지금은 없습니다", "every condition right now")}
@@ -2253,7 +2272,7 @@ export default function FlowApp() {
           <div className={styles.state}>
             <div className={`${styles.stateMark} ${styles.stateBad}`}>!</div>
             <div>
-              <h1 className={styles.title} style={{ fontSize: 22 }}>
+              <h1 className={styles.title} ref={stepHeadingRef} tabIndex={-1} style={{ fontSize: 22 }}>
                 {tr(
                   "복구안을 만들지 못했어요",
                   "Recovery could not be created",

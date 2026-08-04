@@ -1039,3 +1039,16 @@
   font-size: 0.82rem;
   line-height: 1.55;
 }
+
+/* 프로그램으로 포커스를 받는 단계 제목. 포커스 링이 아예 안 보이면 이동했다는
+   사실을 눈으로 확인할 수 없고, 기본 링이 그대로 남으면 마우스 사용자에게
+   느닷없는 테두리로 보인다. 키보드 조작에서만 드러나게 한다. */
+.title:focus {
+  outline: none;
+}
+
+.title:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 6px;
+}

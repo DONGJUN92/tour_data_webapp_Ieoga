@@ -1,0 +1,7 @@
+{
+  "origin":{"latitude":38.0695,"longitude":128.1707,"label":"인제군 원대리 숙소","areaCode":"51","sigunguCode":"51810"},
+  "incident":"rain","availableMinutes":180,"maxDistanceMeters":15000,"audience":"general",
+  "travelMode":"car","radiusMeters":15000,"safetyBufferMinutes":15,
+  "minimumStayMinutes":60,"analyticsConsent":false,
+  "openWindow":{"availableUntil":"2026-08-05T01:30:00Z","plannedStayMinutes":60}
+}

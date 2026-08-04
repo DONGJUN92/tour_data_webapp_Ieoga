@@ -7,7 +7,6 @@ async function src(rel) {
 }
 
 test("경로 지도가 응답의 좌표열을 실제로 소비한다", async () => {
-  const map = await src("../app/RouteMap.tsx");
   const product = await src("../app/ProductApp.tsx");
   const discover = await src("../app/DiscoverWindowPanel.tsx");
 
@@ -116,4 +115,24 @@ test("임베드 데모가 가상의 파트너임을 명시한다", async () => {
   assert.match(demo, /삽입 코드/);
   /* 파트너 화면은 검색에 잡히지 않게 한다. */
   assert.match(demo, /robots: \{ index: false/);
+});
+
+test("단계가 바뀌면 포커스가 그 단계 제목으로 이동한다", async () => {
+  const flow = await src("../app/flow/FlowApp.tsx");
+  /* 예전에는 화면이 통째로 바뀌어도 포커스가 body에 남아, 스크린리더 사용자는
+     무엇이 바뀌었는지 듣지 못하고 키보드 사용자는 Tab을 처음부터 다시 눌러야
+     했다. `/accessibility`가 "상태·오류 실시간 안내"를 명시 목표로 걸었으므로
+     자기 선언 위반이기도 했다. */
+  assert.match(flow, /stepHeadingRef/);
+  assert.match(flow, /heading\.focus\(/);
+  /* 제목은 프로그램으로만 포커스를 받고 Tab 순서에는 끼지 않는다. */
+  assert.match(flow, /ref=\{stepHeadingRef\} tabIndex=\{-1\}/);
+  /* 단계 변경에 반응해야 한다. */
+  const effect = flow.slice(flow.indexOf("const stepHeadingRef"));
+  assert.match(effect.slice(0, 800), /\}, \[step\]\)/);
+
+  const css = await src("../app/flow/flow.module.css");
+  /* 포커스 링이 없으면 이동을 눈으로 확인할 수 없고, 기본 링이 남으면 마우스
+     사용자에게 느닷없는 테두리로 보인다. */
+  assert.match(css, /\.title:focus-visible/);
 });

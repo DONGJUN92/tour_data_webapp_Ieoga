@@ -1,0 +1,7 @@
+{
+  "origin":{"latitude":37.5568,"longitude":126.9236,"label":"홍대입구역 3번 출구","areaCode":"11","sigunguCode":"11440"},
+  "incident":"crowd","availableMinutes":90,"maxDistanceMeters":8000,"audience":"senior",
+  "indoorOnly":false,"travelMode":"transit","radiusMeters":8000,"safetyBufferMinutes":15,
+  "minimumStayMinutes":60,"analyticsConsent":false,
+  "openWindow":{"availableUntil":"2026-08-05T00:00:00Z","plannedStayMinutes":180}
+}

@@ -56,7 +56,7 @@ const REGIONS = [
   { class: "광역시", area: "12", changeable: "국립광주박물관", fixed: "국립아시아문화전당" },
   { class: "일반시군", area: "51", changeable: "속초시립박물관", fixed: "정동진" },
   { class: "산간", area: "43", changeable: "청주고인쇄박물관", fixed: "청주예술의전당" },
-  { class: "도서", area: "50", changeable: "제주민속자연사박물관", fixed: "제주아트센터" },
+  { class: "도서", area: "50", changeable: "제주돌문화공원", fixed: "제주아트센터" },
 ];
 
 const INCIDENTS = ["rain", "crowd", "delay", "less_walk"];

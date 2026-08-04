@@ -1477,7 +1477,14 @@ function toOption(
        not confirmed. An option with gaps is a suggestion to check, never a
        verified result. */
     evidenceGaps: candidate.evidenceGaps,
-    confirmationRequired: candidate.evidenceGaps.length > 0,
+    /* 활동 유형이 바뀐 후보도 확인 대상이다. 관광·체험을 하려던 사람에게
+       식사나 쇼핑을 제안하는 것은 정당한 선택지이지만, 바뀐 것을 알리지
+       않고 그대로 적용 가능으로 내보내면 화면은 "관광 → 식사"라고 쓰면서
+       확인 없이 적용을 권하는 셈이 된다. 배포본 8건 측정에서 실제로 그런
+       후보가 나왔다. 근거 공백과 같은 등급으로 확인을 요구한다. */
+    confirmationRequired:
+      candidate.evidenceGaps.length > 0 ||
+      candidate.purposePreservation.status === "changed_visit_category",
     contentId: candidate.contentId,
     title: candidate.title,
     address: candidate.address,

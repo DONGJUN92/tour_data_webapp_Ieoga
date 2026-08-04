@@ -53,8 +53,8 @@ const REGIONS = [
   { class: "수도권", area: "11", changeable: "서울역사박물관", fixed: "세종문화회관" },
   { class: "부산", area: "26", changeable: "부산근현대역사관", fixed: "부산시민회관" },
   { class: "광역시", area: "27", changeable: "대구근대역사관", fixed: "대구콘서트하우스" },
-  { class: "광역시", area: "29", changeable: "국립광주박물관", fixed: "광주문화예술회관" },
-  { class: "일반시군", area: "42", changeable: "강릉오죽헌", fixed: "강릉아트센터" },
+  { class: "광역시", area: "12", changeable: "국립광주박물관", fixed: "국립아시아문화전당" },
+  { class: "일반시군", area: "51", changeable: "속초시립박물관", fixed: "정동진" },
   { class: "산간", area: "43", changeable: "청주고인쇄박물관", fixed: "청주예술의전당" },
   { class: "도서", area: "50", changeable: "제주민속자연사박물관", fixed: "제주아트센터" },
 ];
@@ -212,6 +212,9 @@ async function runScenario(scenario) {
     deployment_url: baseUrl,
     region_class: scenario.region.class,
     area_code: scenario.region.area,
+    /* 권역 집계는 표에 적어 둔 코드가 아니라 공사 응답이 돌려준 시도 코드를
+       쓴다. 표가 사실과 다르면 6개 권역 요건 판정이 그대로 틀어진다. */
+    resolved_area_code: changeable?.regionCode ?? null,
     incident: scenario.incident,
     audience: scenario.audience,
     has_fixed_appointment: true,
@@ -410,7 +413,14 @@ const summary = {
   measuredAt: new Date().toISOString(),
   sampleSize: rows.length,
   completedCount: completed.length,
-  regionsCovered: [...new Set(rows.map((row) => row.area_code))],
+  regionsCovered: [
+    ...new Set(
+      rows
+        .map((row) => row.resolved_area_code)
+        .filter((value) => typeof value === "string" && value.length >= 2)
+        .map((value) => value.slice(0, 2)),
+    ),
+  ],
   scenarioSuccessRate: completed.length
     ? Number(((succeeded.length / completed.length) * 100).toFixed(2))
     : 0,

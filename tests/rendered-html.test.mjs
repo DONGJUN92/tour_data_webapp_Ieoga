@@ -1048,3 +1048,24 @@ test("failing to load the check never renders the eight KTO services as errored"
   assert.notEqual(statusTone("unknown"), "bad");
   assert.equal(statusLabel("unknown"), "확인 필요");
 });
+
+test("the official region codes match the list the agency actually serves", async () => {
+  const { KTO_OFFICIAL_REGION_CODES, isOfficialRegionCode } = await import(
+    "../lib/kto/registry.ts"
+  );
+  const codes = new Set(KTO_OFFICIAL_REGION_CODES);
+
+  /* 2026년 개편으로 광주광역시(29)와 전라남도(46)는 전남광주통합특별시(12)로
+     합쳐졌다. 이 상수가 옛 코드를 들고 있으면 두 가지가 함께 깨진다.
+     장소 검색이 돌려준 12 좌표를 일정 스키마가 거절해 해당 지역 이용자가
+     일정을 저장할 수 없고, 전국 집계 검사는 존재하지 않는 코드를 기다린다. */
+  assert.ok(codes.has("12"), "전남광주통합특별시 코드가 있어야 한다");
+  assert.ok(!codes.has("29"), "폐지된 광주광역시 코드가 남아 있으면 안 된다");
+  assert.ok(!codes.has("46"), "폐지된 전라남도 코드가 남아 있으면 안 된다");
+  assert.equal(codes.size, KTO_OFFICIAL_REGION_CODES.length, "중복이 없어야 한다");
+
+  /* 장소 검색이 실제로 돌려주는 형태가 그대로 통과해야 한다. */
+  assert.ok(isOfficialRegionCode("12"));
+  assert.ok(isOfficialRegionCode("12300"));
+  assert.ok(!isOfficialRegionCode("29"));
+});

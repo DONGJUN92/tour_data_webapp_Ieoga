@@ -15,19 +15,27 @@ export const KTO_BURST_CACHE_TTL_SECONDS = 300;
    contract. Bootstrap completeness is checked against the exact set, not a
    single arbitrary row, so a worker that failed midway resumes on its next
    scheduled execution. */
+/* 공사 `ldongCode2`가 돌려주는 실제 시도 목록과 일치해야 한다. 이 값은
+   행정구역 개편을 그대로 반영하므로 고정 상수로 두면 반드시 어긋난다.
+   2026년 목록에는 `12 전남광주통합특별시`가 있고 옛 `29 광주광역시`와
+   `46 전라남도`는 없다. 그런데 이 상수에는 12가 없고 29·46이 남아 있어,
+   장소 검색이 돌려준 광주·전남 좌표를 일정 스키마가 거절했다. 해당 지역
+   이용자는 일정을 저장할 수 없었고, 전국 집계 검사는 존재하지 않는 29·46을
+   기다리느라 영원히 통과할 수 없었다. 배포본 실측에서 광주 시나리오가
+   400 INVALID_ITINERARY로 떨어져 드러났다.
+   개편이 다시 있으면 `GET /api/v1/regions` 응답과 대조해 갱신한다. */
 export const KTO_OFFICIAL_REGION_CODES = [
   "11",
+  "12",
   "26",
   "27",
   "28",
-  "29",
   "30",
   "31",
   "36",
   "41",
   "43",
   "44",
-  "46",
   "47",
   "48",
   "50",

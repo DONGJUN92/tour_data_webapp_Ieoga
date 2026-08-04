@@ -782,3 +782,30 @@ test("a waypointed TMAP route reports one leg per segment", async () => {
     else process.env.TMAP_APP_KEY = previousKey;
   }
 });
+
+/* 활동 유형이 바뀐 후보는 마지막 수단이어야 한다. 목적 점수는 총점의 18%뿐이라
+   가까운 식당이 먼 박물관을 제치고 첫 카드가 되는 일이 배포본 측정에서 실제로
+   나왔고, `minimum_change` 정렬은 목적을 아예 보지 않는다. 그래서 순위가 아니라
+   후보 풀에서 가른다. */
+test("category-changed candidates are only offered when nothing preserves the purpose", async () => {
+  const source = await readFile(`${ROOT}/lib/recovery/engine.ts`, "utf8");
+  const pickOptions =
+    source.match(/function pickOptions\([\s\S]*?\n\}/)?.[0] ?? "";
+
+  assert.ok(pickOptions, "pickOptions source must be present");
+  assert.match(
+    pickOptions,
+    /purposePreservation\.status !== "changed_visit_category"/,
+  );
+  assert.match(
+    pickOptions,
+    /const pool = purposePreserving\.length \? purposePreserving : candidates/,
+  );
+  /* 모든 정렬이 걸러진 풀을 써야 한다. 하나라도 원본을 보면 그 축으로 뽑힌
+     카드에 바뀐 후보가 다시 올라온다. */
+  assert.doesNotMatch(pickOptions, /\[\.\.\.candidates\]/);
+  const poolSorts = pickOptions.match(/\[\.\.\.pool\]/g) ?? [];
+  assert.ok(poolSorts.length >= 5, "모든 선택 축이 풀을 써야 한다");
+  /* 목적을 지키는 후보가 없을 때 결과가 0개가 되면 안 된다. */
+  assert.match(pickOptions, /: candidates;/);
+});

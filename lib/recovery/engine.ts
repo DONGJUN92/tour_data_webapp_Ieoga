@@ -1555,6 +1555,22 @@ function pickOptions(
 ): RecoveryOption[] {
   if (!candidates.length) return [];
 
+  /* 활동 유형이 바뀐 후보는 마지막 수단이다. 점수에서 관광 콘텐츠를 앞세우고
+     있지만 목적 점수는 총점의 18%뿐이라, 가까운 식당이 먼 박물관을 제치고
+     첫 카드가 되는 일이 실제로 있었다. `minimum_change` 정렬은 이동시간과
+     변경 일정 수만 보므로 목적을 아예 고려하지 않는다.
+
+     그래서 순위가 아니라 후보 풀에서 가른다. 목적을 지키는 후보가 하나라도
+     있으면 그 안에서만 고르고, 하나도 없을 때에만 바뀐 후보를 제시한다.
+     "박물관이 있는데 간장게장이 올라오는 일"이 점수 배분과 무관하게
+     사라지고, 대안이 0개가 되는 일도 없다. 두 시간 공백을 식사로 채우는
+     것은 여전히 유효한 선택지이며, 그때는 바뀐 사실을 확인받는다. */
+  const purposePreserving = candidates.filter(
+    (candidate) =>
+      candidate.purposePreservation.status !== "changed_visit_category",
+  );
+  const pool = purposePreserving.length ? purposePreserving : candidates;
+
   const selected: Array<{
     candidate: WorkingCandidate;
     strategy: RecoveryOption["strategy"];
@@ -1584,7 +1600,7 @@ function pickOptions(
       : candidate.estimatedTravelMinutes;
 
   addFirstUnused(
-    [...candidates].sort((a, b) => {
+    [...pool].sort((a, b) => {
       const changed =
         a.scheduleDiff.changedNodeCount - b.scheduleDiff.changedNodeCount;
       if (changed) return changed;
@@ -1599,7 +1615,7 @@ function pickOptions(
   /* 두 번째 카드는 상황별로 사용자가 실제로 궁금해하는 축을 쓴다. */
   if (input.incident === "crowd") {
     addFirstUnused(
-      [...candidates].sort((a, b) => {
+      [...pool].sort((a, b) => {
         const aRate = a.crowdRate ?? 101;
         const bRate = b.crowdRate ?? 101;
         return aRate - bRate || b.baseScore - a.baseScore;
@@ -1609,7 +1625,7 @@ function pickOptions(
     );
   } else {
     addFirstUnused(
-      [...candidates].sort(
+      [...pool].sort(
         (a, b) => b.comfortScore - a.comfortScore || b.baseScore - a.baseScore,
       ),
       "comfortable",
@@ -1622,7 +1638,7 @@ function pickOptions(
   /* 세 번째 카드는 기획의 `지역 발견`이다. 연계 방문 데이터가 있으면
      그 근거로, 없으면 여유 시간이 가장 넉넉한 후보로 채운다. 어느 쪽이든
      라벨이 이유를 말한다. */
-  const relatedFirst = [...candidates]
+  const relatedFirst = [...pool]
     .filter((entry) => entry.relatedRank !== undefined)
     .sort(
       (a, b) => (a.relatedRank ?? 999) - (b.relatedRank ?? 999) ||
@@ -1636,7 +1652,7 @@ function pickOptions(
     );
   } else {
     addFirstUnused(
-      [...candidates].sort((a, b) => {
+      [...pool].sort((a, b) => {
         const aBuffer =
           a.scheduleDiff.nextFixedAppointment?.arrivalBufferMinutes ?? -1;
         const bBuffer =
@@ -1651,7 +1667,7 @@ function pickOptions(
   /* 위 세 축이 같은 후보로 겹쳐 자리가 남는 경우에만 총점 순으로 채운다.
      이때도 "추가 검증 대안" 같은 무의미한 이름을 쓰지 않고, 그 후보가
      상대적으로 나은 점을 라벨에 적는다. */
-  for (const candidate of [...candidates].sort(
+  for (const candidate of [...pool].sort(
     (a, b) => b.baseScore - a.baseScore,
   )) {
     if (selected.length >= 3) break;

@@ -203,6 +203,11 @@ function buildScenarios(total) {
 }
 
 async function runScenario(scenario) {
+  /* 시나리오마다 새 익명 세션을 쓴다. 한 세션으로 연달아 일정을 저장하면
+     11번째부터 503이 났다. 실제 이용자는 각자 다른 세션이므로 이 한도는
+     제품의 문제가 아니라 측정 도구가 한 사람인 척한 결과다. 세션을 나누지
+     않으면 도구의 한계가 제품의 실패로 원장에 기록된다. */
+  cookieJar.clear();
   const schedule = koreaSchedule();
   const changeable = await findPlace(scenario.region.changeable);
   const fixed = await findPlace(scenario.region.fixed);

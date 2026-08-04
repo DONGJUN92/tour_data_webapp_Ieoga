@@ -108,8 +108,24 @@ export function forwardGeocodeProviderConfig() {
 export const TMAP_PEDESTRIAN_URL =
   "https://apis.openapi.sk.com/tmap/routes/pedestrian";
 
+/* 자동차 경로는 같은 `TMAP_APP_KEY`로 동작한다. 별도 발급·별도 승인이 필요하지
+   않음을 2026-08-04 실호출로 확인했다. */
+export const TMAP_CAR_URL = "https://apis.openapi.sk.com/tmap/routes";
+
 export function tmapPedestrianConfigured(): boolean {
   return Boolean(getRuntimeSecret("TMAP_APP_KEY"));
+}
+
+export function tmapCarConfigured(): boolean {
+  return Boolean(getRuntimeSecret("TMAP_APP_KEY"));
+}
+
+/* 자동차 경로에는 OSRM 공개 폴백을 붙이지 않는다. 공개 OSRM 기본 프로파일은
+   보행이고, 자동차 프로파일을 쓰는 공개 서버를 임의로 가정하면 "차로 12분"이
+   실제로는 걸어서 12분인 값이 될 수 있다. 도착 시각이 판정 근거이므로 잘못된
+   단위로 통과시키는 것보다 확인하지 못한 채 탈락시키는 쪽이 안전하다. */
+export function carRouteChain(): string[] {
+  return tmapCarConfigured() ? [TMAP_CAR_URL] : [];
 }
 
 /* The complete chain a walking-route request can actually reach, in call

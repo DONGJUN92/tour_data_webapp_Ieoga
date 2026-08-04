@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { JourneyExecution } from "@/lib/recovery/execution";
+import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
 import { LaunchEvidencePanel } from "./LaunchEvidencePanel";
 import { PolicyMissionPanel } from "./PolicyMissionPanel";
@@ -41,6 +42,8 @@ import {
   Region,
   ScheduleDiff,
   TabId,
+  TRAVEL_MODES,
+  type TravelMode,
   asRecord,
   compactValue,
   emptyJourneyDraft,
@@ -121,6 +124,7 @@ export function ProductApp() {
   );
   const [incident, setIncident] = useState<Incident>("rain");
   const [availableMinutes, setAvailableMinutes] = useState(90);
+  const [travelMode, setTravelMode] = useState<TravelMode>("walk");
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
   const [minimumStayMinutes, setMinimumStayMinutes] = useState(30);
   const [maxDistanceMeters, setMaxDistanceMeters] = useState(2500);
@@ -183,7 +187,14 @@ export function ProductApp() {
   useEffect(() => {
     const url = new URL(window.location.href);
     const view = url.searchParams.get("view");
-    if (view === "insights" || view === "transparency" || view === "recover") {
+    /* 탭을 추가할 때 이 목록을 같이 늘리지 않으면 공유된 링크가 조용히 첫 탭으로
+       떨어진다. 화면은 있는데 링크로는 닿지 않는 상태가 된다. */
+    if (
+      view === "recover" ||
+      view === "discover" ||
+      view === "insights" ||
+      view === "transparency"
+    ) {
       setActiveTab(view);
     }
   }, []);
@@ -737,7 +748,7 @@ export function ProductApp() {
   function handleTabKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tabs: TabId[] = ["recover", "insights", "transparency"];
+    const tabs: TabId[] = ["recover", "discover", "insights", "transparency"];
     const currentIndex = tabs.indexOf(activeTab);
     const nextIndex =
       event.key === "Home"
@@ -978,6 +989,7 @@ export function ProductApp() {
           maxDistanceMeters,
           audience,
           indoorOnly,
+          travelMode,
           radiusMeters,
           safetyBufferMinutes,
           minimumStayMinutes,
@@ -1388,6 +1400,18 @@ export function ProductApp() {
             data-testid="nav-recover"
           >
             {language === "en" ? "Trip recovery" : "여행 복구"}
+          </button>
+          <button
+            id="tab-discover"
+            role="tab"
+            aria-selected={activeTab === "discover"}
+            aria-controls="panel-discover"
+            tabIndex={activeTab === "discover" ? 0 : -1}
+            className={activeTab === "discover" ? "is-active" : ""}
+            onClick={() => changeTab("discover")}
+            data-testid="nav-discover"
+          >
+            {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
           </button>
           <button
             id="tab-insights"
@@ -2283,6 +2307,38 @@ export function ProductApp() {
                       자동 계산했어요.
                     </small>
                   </div>
+                  <div
+                    className="travel-mode-row"
+                    role="radiogroup"
+                    aria-label={
+                      language === "en" ? "Travel mode" : "이동수단"
+                    }
+                  >
+                    <span className="travel-mode-label">
+                      {language === "en" ? "How you move" : "어떻게 이동하나요"}
+                    </span>
+                    {TRAVEL_MODES.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={travelMode === item.value}
+                        className={
+                          travelMode === item.value
+                            ? "travel-mode-chip is-active"
+                            : "travel-mode-chip"
+                        }
+                        onClick={() => setTravelMode(item.value)}
+                      >
+                        {language === "en" ? item.en : item.ko}
+                      </button>
+                    ))}
+                    <small>
+                      {travelMode === "car"
+                        ? "TMAP 자동차 경로로 도착 시각을 검증합니다. 주차 시간은 포함하지 않습니다."
+                        : "TMAP 보행자 경로로 도착 시각을 검증합니다."}
+                    </small>
+                  </div>
                   <details className="recovery-preferences">
                     <summary>이동 배려·실내 조건이 필요해요</summary>
                     <div className="recovery-preferences-body">
@@ -2935,9 +2991,17 @@ export function ProductApp() {
                                     ? language === "en"
                                       ? "Activity changes"
                                       : "활동이 바뀝니다"
-                                    : language === "en"
-                                      ? "Purpose kept"
-                                      : "여행 목적 유지"}
+                                    : /* 보존할 원래 목적이 없는 결과에까지
+                                         "목적 유지"라고 적으면 사용자가 말한
+                                         적 없는 계획을 지켰다고 주장하게 된다. */
+                                      option.purposePreservation.status ===
+                                        "open_window_unconstrained"
+                                      ? language === "en"
+                                        ? "No original plan given"
+                                        : "원래 계획 미입력"
+                                      : language === "en"
+                                        ? "Purpose kept"
+                                        : "여행 목적 유지"}
                                 </span>
                                 <strong>
                                   {option.purposePreservation.originalPurpose ||
@@ -3253,6 +3317,34 @@ export function ProductApp() {
                 )}
               </div>
             </div>
+          </section>
+        )}
+
+        {activeTab === "discover" && (
+          <section
+            id="panel-discover"
+            role="tabpanel"
+            aria-labelledby="tab-discover"
+            className="page-section"
+          >
+            <DiscoverWindowPanel
+              language={language}
+              origin={{
+                latitude,
+                longitude,
+                areaCode,
+                sigunguCode,
+                label: originLabel,
+              }}
+              geoState={geoState}
+              geoMessage={geoMessage}
+              geoAttribution={geoAttribution}
+              analyticsConsent={analyticsConsent}
+              onRequestLocation={requestGeolocation}
+              /* 위치 직접 입력은 복구 탭의 검색 흐름을 그대로 쓴다. 개인정보
+                 처리(좌표 절삭·POST 전송·보관 정책)가 한 곳에만 있어야 한다. */
+              onManualLocation={() => changeTab("recover")}
+            />
           </section>
         )}
 

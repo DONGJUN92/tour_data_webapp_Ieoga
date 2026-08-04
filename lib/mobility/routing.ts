@@ -1,8 +1,10 @@
 import {
   routingEndpoints,
   routingProviderConfig,
+  tmapCarConfigured,
   tmapPedestrianConfigured,
 } from "@/lib/external-providers";
+import { getTmapCarRoute } from "@/lib/mobility/tmap-car";
 import { getTmapPedestrianRoute } from "@/lib/mobility/tmap-pedestrian";
 
 export type RoutePoint = {
@@ -15,7 +17,14 @@ export type RouteLeg = {
   durationMinutes: number;
 };
 
-export type WalkingRouteProvider = "tmap_pedestrian" | "openstreetmap_osrm";
+/* 여행자가 고르는 이동수단. 도착 시각이 "다음 약속을 지킬 수 있는가"의 판정
+   근거이므로, 어느 수단으로 계산했는지는 결과와 함께 반드시 드러나야 한다. */
+export type TravelMode = "walk" | "car";
+
+export type WalkingRouteProvider =
+  | "tmap_pedestrian"
+  | "tmap_car"
+  | "openstreetmap_osrm";
 
 export type WalkingRouteEvidence =
   | {
@@ -27,6 +36,9 @@ export type WalkingRouteEvidence =
       geometry: Array<{ latitude: number; longitude: number }>;
       calculatedAt: string;
       attribution: string;
+      /* 자동차 경로에서 제공자가 준 예상 요금. 계산해 만들지 않는다. */
+      taxiFareKrw?: number;
+      tollFareKrw?: number;
     }
   | {
       status: "unavailable";
@@ -38,6 +50,7 @@ export type WalkingRouteEvidence =
 
 const ATTRIBUTION: Record<WalkingRouteProvider, string> = {
   tmap_pedestrian: "보행 경로 · TMAP 보행자 경로안내 (SK텔레콤)",
+  tmap_car: "자동차 경로 · TMAP 자동차 경로안내 (SK텔레콤)",
   openstreetmap_osrm: "© OpenStreetMap contributors",
 };
 
@@ -52,6 +65,12 @@ function routeKey(points: RoutePoint[]) {
   return points
     .map((point) => `${point.longitude.toFixed(5)},${point.latitude.toFixed(5)}`)
     .join(";");
+}
+
+/* 캐시 키에 이동수단을 포함한다. 빠뜨리면 같은 좌표쌍에서 도보로 52분인 결과가
+   자차 조회에 그대로 반환되고, 그 값으로 도착 가능 판정이 내려진다. */
+function cacheKey(points: RoutePoint[], mode: TravelMode) {
+  return `${mode}:${routeKey(points)}`;
 }
 
 /* Paces calls to the shared public router, which asks for no more than one
@@ -93,21 +112,83 @@ export async function getWalkingRoute(
   points: RoutePoint[],
   options: { signal?: AbortSignal } = {},
 ): Promise<WalkingRouteEvidence> {
+  return getRoute(points, { ...options, mode: "walk" });
+}
+
+export async function getRoute(
+  points: RoutePoint[],
+  options: { signal?: AbortSignal; mode?: TravelMode } = {},
+): Promise<WalkingRouteEvidence> {
+  const mode: TravelMode = options.mode ?? "walk";
   const calculatedAt = new Date().toISOString();
-  const attribution = ATTRIBUTION.openstreetmap_osrm;
+  const attribution =
+    mode === "car"
+      ? ATTRIBUTION.tmap_car
+      : ATTRIBUTION.openstreetmap_osrm;
+  const unavailableProvider: WalkingRouteProvider =
+    mode === "car" ? "tmap_car" : "openstreetmap_osrm";
   if (points.length < 2 || points.length > 32) {
     return {
       status: "unavailable",
-      provider: "openstreetmap_osrm",
+      provider: unavailableProvider,
       reason: "경로 계산에는 2~32개 지점이 필요합니다.",
       calculatedAt,
       attribution,
     };
   }
 
-  const key = routeKey(points);
+  const key = cacheKey(points, mode);
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  /* 자동차는 TMAP만 쓴다. 공개 OSRM에는 자동차 프로파일이 없으므로 실패하면
+     확인하지 못한 채 탈락시킨다. 잘못된 단위로 통과시키지 않는 것이 우선이다. */
+  if (mode === "car") {
+    if (!tmapCarConfigured()) {
+      return {
+        status: "unavailable",
+        provider: "tmap_car",
+        reason:
+          "자동차 경로 제공자가 설정되지 않아 이동시간을 확인하지 못했습니다.",
+        calculatedAt,
+        attribution,
+      };
+    }
+    try {
+      const car = await getTmapCarRoute(points, { signal: options.signal });
+      if (car) {
+        const routed: WalkingRouteEvidence = {
+          status: "routed",
+          provider: "tmap_car",
+          distanceMeters: car.distanceMeters,
+          durationMinutes: car.durationMinutes,
+          legs: car.legs,
+          geometry: car.geometry,
+          calculatedAt,
+          attribution: ATTRIBUTION.tmap_car,
+          taxiFareKrw: car.taxiFareKrw,
+          tollFareKrw: car.tollFareKrw,
+        };
+        cache.set(key, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          value: routed,
+        });
+        return routed;
+      }
+    } catch (error) {
+      if (options.signal?.aborted) {
+        throw new DOMException("Routing request cancelled", "AbortError");
+      }
+      void error;
+    }
+    return {
+      status: "unavailable",
+      provider: "tmap_car",
+      reason: "자동차 경로 공급자가 현재 응답하지 않습니다.",
+      calculatedAt,
+      attribution,
+    };
+  }
 
   /* 국내 보행 경로는 TMAP이 지하상가·횡단보도를 더 정확히 반영한다. 도착
      시각이 "다음 예약을 지킬 수 있는가"의 판정 근거이므로 품질이 좋은 쪽을

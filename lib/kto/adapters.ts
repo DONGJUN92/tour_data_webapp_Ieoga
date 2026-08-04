@@ -16,6 +16,67 @@ import type { KtoAudit, KtoCallResult, KtoItem } from "./types";
 
 const listDefaults = { pageNo: 1, numOfRows: 100 };
 
+/* 월 단위 API의 기준월 해석.
+
+   `baseYm`을 받는 공사 API는 직전 달이 아직 발행되지 않은 기간이 있다. 2026-08-04
+   실측: `TarRlteTarService1` 해운대구는 202607이 0건, 202606이 601건, 202605가
+   632건이었고 `LocgoHubTarService1`도 202607이 0건, 202606이 100건이었다. 응답은
+   HTTP 200 + `resultMsg: OK`로 오므로 오류로 잡히지 않고 데이터 공백처럼 보인다.
+
+   그래서 매월 1일부터 발행 시점까지 연관 관광지는 모든 복구에서 기여가 0이 되고
+   중심 관광지는 정책 화면에서 사라졌다. 더 나쁜 것은 그 공백이 "공사 데이터가
+   없다"는 개선 미션으로 되돌아간다는 점이다. 실제로는 있는 데이터다.
+
+   정책 지표 경로에는 이미 3개월 하강 루프가 있었고 복구·중심관광지 경로에만
+   없었다. 같은 규칙을 여기 한곳에 모아 함께 쓰게 한다. */
+const MONTH_DESCENT_ATTEMPTS = 3;
+
+/* 한 번 확인한 발행 기준월을 이소레이트 안에서 재사용한다. 발행 지연은 서비스
+   단위 월 현상이므로, 첫 요청이 202607이 비었음을 확인하면 이후 요청은 202606에서
+   시작해 하강 비용을 내지 않는다. TTL이 지나면 다시 직전 달부터 시도해, 새 달이
+   발행된 뒤에도 옛 달에 머무는 일을 막는다. */
+const RESOLVED_BASE_MONTH_TTL_MS = 6 * 60 * 60 * 1000;
+const resolvedBaseMonth = new Map<
+  string,
+  { baseYm: string; learnedAt: number }
+>();
+
+export function resetResolvedBaseMonths(): void {
+  resolvedBaseMonth.clear();
+}
+
+async function callMonthlyWithDescent(
+  memoKey: string,
+  pinnedBaseYm: string | undefined,
+  call: (baseYm: string) => Promise<KtoCallResult>,
+): Promise<KtoCallResult> {
+  /* 호출자가 기준월을 지정했으면 그 달만 조회한다. 지정한 달을 조용히 바꾸면
+     화면이 표시한 기준월과 실제 조회한 달이 달라진다. */
+  if (pinnedBaseYm) return call(pinnedBaseYm);
+
+  const memo = resolvedBaseMonth.get(memoKey);
+  let baseYm =
+    memo && Date.now() - memo.learnedAt < RESOLVED_BASE_MONTH_TTL_MS
+      ? memo.baseYm
+      : previousCompleteMonth();
+  let firstAttempt: KtoCallResult | undefined;
+
+  for (let attempt = 0; attempt < MONTH_DESCENT_ATTEMPTS; attempt += 1) {
+    const result = await call(baseYm);
+    firstAttempt ??= result;
+    if (result.items.length) {
+      resolvedBaseMonth.set(memoKey, { baseYm, learnedAt: Date.now() });
+      return result;
+    }
+    baseYm = priorMonth(baseYm);
+  }
+
+  /* 세 달 모두 비었으면 학습하지 않고 첫 시도 결과를 그대로 돌려준다. 원장에는
+     현재 기준월로 본 달을 요청했고 비어 있었다는 사실이 남는다. */
+  resolvedBaseMonth.delete(memoKey);
+  return firstAttempt as KtoCallResult;
+}
+
 /* Region and district codes are official reference data that changes on the
    order of once a year, yet ldongCode2 is hit on every page load and its
    latency is spiky enough to occasionally exceed the request timeout. The
@@ -152,19 +213,28 @@ export function getTourismIntro(
       timeoutMs: requestOptions.timeoutMs ?? 2_500,
       retry: requestOptions.retry ?? false,
       signal: requestOptions.signal,
+      /* 원장에 적히는 필드 목록은 실제로 읽는 필드와 같아야 한다. 유형별
+         이름(`usetimeculture` 등)을 빼놓으면 심사 증거로 제출하는 기여 원장이
+         읽지 않은 필드를 읽었다고 적게 된다. 행사의 `usetimefestival`은 실제로는
+         이용요금이므로 운영시간 근거 목록에 두지 않는다. */
       fieldsUsed: [
         "usetime",
-        "restdate",
+        "usetimeculture",
+        "usetimeleports",
         "opentime",
-        "restdateshopping",
         "opentimefood",
+        "playtime",
+        "restdate",
+        "restdateculture",
+        "restdateleports",
+        "restdateshopping",
         "restdatefood",
-        "usetimefestival",
         "eventstartdate",
         "eventenddate",
         "checkintime",
         "checkouttime",
         "infocenter",
+        "infocenterculture",
       ],
     },
   );
@@ -275,32 +345,37 @@ export function getRelatedTourism(params: {
   baseYm?: string;
   numOfRows?: number;
 }, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
-  return callKto(
-    "TarRlteTarService1",
-    "areaBasedList1",
-    {
-      pageNo: 1,
-      numOfRows: params.numOfRows ?? 1_000,
-      baseYm: params.baseYm ?? previousCompleteMonth(),
-      areaCd: analysisRegionCode(params.regionCode),
-      signguCd: analysisDistrictCode(
-        params.regionCode,
-        params.districtCode,
+  return callMonthlyWithDescent(
+    "TarRlteTarService1:areaBasedList1",
+    params.baseYm,
+    (baseYm) =>
+      callKto(
+        "TarRlteTarService1",
+        "areaBasedList1",
+        {
+          pageNo: 1,
+          numOfRows: params.numOfRows ?? 1_000,
+          baseYm,
+          areaCd: analysisRegionCode(params.regionCode),
+          signguCd: analysisDistrictCode(
+            params.regionCode,
+            params.districtCode,
+          ),
+        },
+        {
+          ...requestOptions,
+          cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
+          fieldsUsed: [
+            "baseYm",
+            "tAtsNm",
+            "rlteTatsNm",
+            "rlteCtgryLclsNm",
+            "rlteCtgryMclsNm",
+            "rlteCtgrySclsNm",
+            "rlteRank",
+          ],
+        },
       ),
-    },
-    {
-      ...requestOptions,
-      cacheTtlSeconds: KTO_BURST_CACHE_TTL_SECONDS,
-      fieldsUsed: [
-        "baseYm",
-        "tAtsNm",
-        "rlteTatsNm",
-        "rlteCtgryLclsNm",
-        "rlteCtgryMclsNm",
-        "rlteCtgrySclsNm",
-        "rlteRank",
-      ],
-    },
   );
 }
 
@@ -335,30 +410,35 @@ export function getHubTourism(params: {
   districtCode: string;
   baseYm?: string;
 }): Promise<KtoCallResult> {
-  return callKto(
-    "LocgoHubTarService1",
-    "areaBasedList1",
-    {
-      pageNo: 1,
-      numOfRows: 100,
-      baseYm: params.baseYm ?? previousCompleteMonth(),
-      areaCd: analysisRegionCode(params.regionCode),
-      signguCd: analysisDistrictCode(
-        params.regionCode,
-        params.districtCode,
+  return callMonthlyWithDescent(
+    "LocgoHubTarService1:areaBasedList1",
+    params.baseYm,
+    (baseYm) =>
+      callKto(
+        "LocgoHubTarService1",
+        "areaBasedList1",
+        {
+          pageNo: 1,
+          numOfRows: 100,
+          baseYm,
+          areaCd: analysisRegionCode(params.regionCode),
+          signguCd: analysisDistrictCode(
+            params.regionCode,
+            params.districtCode,
+          ),
+        },
+        {
+          fieldsUsed: [
+            "baseYm",
+            "mapX",
+            "mapY",
+            "hubTatsNm",
+            "hubCtgryLclsNm",
+            "hubCtgryMclsNm",
+            "hubRank",
+          ],
+        },
       ),
-    },
-    {
-      fieldsUsed: [
-        "baseYm",
-        "mapX",
-        "mapY",
-        "hubTatsNm",
-        "hubCtgryLclsNm",
-        "hubCtgryMclsNm",
-        "hubRank",
-      ],
-    },
   );
 }
 

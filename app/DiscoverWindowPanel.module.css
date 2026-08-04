@@ -1,0 +1,517 @@
+/* 빈 시간 추천 화면. 복구 탭과 같은 토큰을 쓰되, 결정 순서가 다르므로
+   "지금 위치 → 언제까지 → 얼마나 머물기 → 결과"의 한 방향 흐름으로만 쌓는다. */
+
+.panel {
+  display: grid;
+  gap: 20px;
+}
+
+.form,
+.results2 {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--paper);
+  box-shadow: var(--shadow-card);
+}
+
+.step {
+  color: var(--brand-deep);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.heading {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(1.4rem, 5vw, 1.85rem);
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+}
+
+.lead {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.block {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.block h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip,
+.chipActive {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--r-pill);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--dur-screen) var(--ease-spring);
+}
+
+.chip {
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink-soft);
+}
+
+.chip:hover {
+  background: var(--canvas);
+}
+
+.chipActive {
+  border: 1px solid var(--brand);
+  background: var(--brand-tint-strong);
+  color: var(--brand-deep);
+}
+
+.derived {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.originActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.originActions button,
+.searchRow button,
+.originReady button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryGhost {
+  border-color: var(--brand) !important;
+  background: var(--brand-tint) !important;
+  color: var(--brand-deep) !important;
+}
+
+.originReady {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--r-control);
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+.originReady strong {
+  font-size: 0.98rem;
+}
+
+.message,
+.messageError {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.message {
+  color: var(--muted);
+}
+
+.messageError {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.attribution {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.optional {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--cream);
+}
+
+.optional > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.optional > *:not(summary) {
+  margin-top: 12px;
+}
+
+.searchRow {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+
+.searchRow label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.searchRow input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.results {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.results button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  text-align: left;
+  cursor: pointer;
+}
+
+.results strong {
+  color: var(--ink);
+}
+
+.results small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.selectField,
+.checkField {
+  display: grid;
+  gap: 6px;
+}
+
+.selectField > span {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.selectField select {
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.checkField {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px 0 0;
+}
+
+.checkField input {
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+}
+
+.checkField strong {
+  display: block;
+  color: var(--ink);
+}
+
+.checkField small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.submit {
+  min-height: 54px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--accent);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background var(--dur-screen) var(--ease-spring);
+}
+
+.submit:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.submit:disabled {
+  background: var(--line-strong);
+  cursor: not-allowed;
+}
+
+.footnote {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.empty {
+  margin: 0;
+  padding: 28px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.cards {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card,
+.cardUnverified {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: var(--r-card);
+  background: var(--paper);
+}
+
+.card {
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-card);
+}
+
+/* 확인하지 못한 조건이 있는 후보는 테두리부터 다르게 보여야 한다. 검증된 것과
+   같은 모양이면 카드 안의 경고문을 읽지 않은 사용자가 같은 것으로 받아들인다. */
+.cardUnverified {
+  border: 1px solid var(--disrupt);
+  box-shadow: none;
+}
+
+.cardHead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.cardHead p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.cardHead h3 {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+
+.score {
+  min-width: 62px;
+  padding: 8px 10px;
+  border-radius: var(--r-chip);
+  background: var(--canvas);
+  text-align: center;
+}
+
+.score b {
+  display: block;
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
+.score small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.timeline {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  overflow: hidden;
+}
+
+.timeline li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--paper);
+}
+
+.timeline li + li {
+  border-top: 1px solid var(--line);
+}
+
+.timeline span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.timeline strong {
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+.fitGood,
+.fitTight {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--r-control);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.fitGood {
+  background: var(--restored-tint);
+  color: var(--success);
+}
+
+.fitTight {
+  background: var(--disrupt-tint);
+  color: var(--warning);
+}
+
+.gaps {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--r-control);
+  background: var(--disrupt-tint);
+}
+
+.gaps strong {
+  color: var(--warning);
+  font-size: 0.9rem;
+}
+
+.gaps ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.gaps p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.purpose {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.why {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+
+.noResult {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--cream);
+}
+
+.noResult strong {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.noResult p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.rejected,
+.warning {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (min-width: 900px) {
+  .panel {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    align-items: start;
+  }
+}

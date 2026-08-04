@@ -335,26 +335,96 @@ export const recoveryItinerarySchema = itineraryCoreSchema
     }
   });
 
-export const recoveryRequestSchema = z.object({
-  origin: z
-    .object({
-      ...coordinateFields,
-      label: z.string().trim().min(1).max(80).default("현재 위치"),
-    })
-    .superRefine(validateCoordinateAdministrativeScope),
-  incident: z.enum(["rain", "delay", "crowd", "less_walk"]),
-  availableMinutes: z.number().int().min(15).max(240),
-  maxDistanceMeters: z.number().int().min(300).max(20_000),
-  audience: z
-    .enum(["general", "stroller", "wheelchair", "senior"])
-    .default("general"),
-  indoorOnly: z.boolean().default(false),
-  radiusMeters: z.number().int().min(500).max(20_000).default(5_000),
-  safetyBufferMinutes: z.number().int().min(5).max(90).default(15),
-  minimumStayMinutes: z.number().int().min(10).max(180).default(30),
-  itinerary: recoveryItinerarySchema,
-  analyticsConsent: z.boolean().optional().default(false),
-});
+/* 빈 시간 추천 입력. 여행자는 분 단위로 계획하지 않으므로 시각은 30분 격자로만
+   받고, 체류 시간도 30분 배수로 제한한다. 그래야 "10분 뒤까지 12분 머문다"처럼
+   실제로는 아무도 세우지 않는 계획이 검증 대상으로 들어오지 않는다. */
+const OPEN_WINDOW_STEP_MINUTES = 30;
+
+const openWindowNextPlaceSchema = z
+  .object({
+    ...coordinateFields,
+    arriveBy: z.string().datetime({ offset: true }),
+  })
+  .superRefine(validateCoordinateAdministrativeScope);
+
+export const openWindowSchema = z
+  .object({
+    /* 이 시각까지가 자유 시간이다. 다음 장소가 있으면 그 도착 시각과 같거나
+       그보다 뒤일 수 없다. */
+    availableUntil: z.string().datetime({ offset: true }),
+    plannedStayMinutes: z
+      .number()
+      .int()
+      .min(OPEN_WINDOW_STEP_MINUTES)
+      .max(300)
+      .refine(
+        (value) => value % OPEN_WINDOW_STEP_MINUTES === 0,
+        "예상 체류 시간은 30분 단위로 선택해 주세요.",
+      ),
+    nextPlace: openWindowNextPlaceSchema.optional(),
+  })
+  .superRefine((window, context) => {
+    if (!window.nextPlace) return;
+    const arriveBy = Date.parse(window.nextPlace.arriveBy);
+    const until = Date.parse(window.availableUntil);
+    if (Number.isFinite(arriveBy) && Number.isFinite(until) && arriveBy < until) {
+      context.addIssue({
+        code: "custom",
+        path: ["availableUntil"],
+        message:
+          "자유 시간의 끝은 다음 장소 도착 시각보다 늦을 수 없습니다.",
+      });
+    }
+  });
+
+export const recoveryRequestSchema = z
+  .object({
+    origin: z
+      .object({
+        ...coordinateFields,
+        label: z.string().trim().min(1).max(80).default("현재 위치"),
+      })
+      .superRefine(validateCoordinateAdministrativeScope),
+    incident: z.enum(["rain", "delay", "crowd", "less_walk"]),
+    availableMinutes: z.number().int().min(15).max(240),
+    maxDistanceMeters: z.number().int().min(300).max(20_000),
+    audience: z
+      .enum(["general", "stroller", "wheelchair", "senior"])
+      .default("general"),
+    indoorOnly: z.boolean().default(false),
+    /* 여행자가 고른 이동수단. 도보는 TMAP 보행자, 자차는 TMAP 자동차로 계산한다.
+       자전거·대중교통은 호출 가능한 국내 제공자를 확인하지 못해 넣지 않는다.
+       고를 수 없는 수단을 목록에 두면 선택은 되고 검증은 안 되는 상태가 된다. */
+    travelMode: z.enum(["walk", "car"]).default("walk"),
+    radiusMeters: z.number().int().min(500).max(20_000).default(5_000),
+    safetyBufferMinutes: z.number().int().min(5).max(90).default(15),
+    minimumStayMinutes: z.number().int().min(10).max(180).default(30),
+    /* 두 진입 경로 중 정확히 하나. 등록된 일정을 고치는 복구와, 지금 빈 시간을
+       채우는 추천은 보존해야 하는 대상이 다르므로 같은 요청에 섞이면 어느 쪽
+       기준으로 검증했는지 증명서가 설명할 수 없다. */
+    itinerary: recoveryItinerarySchema.optional(),
+    openWindow: openWindowSchema.optional(),
+    analyticsConsent: z.boolean().optional().default(false),
+  })
+  .superRefine((input, context) => {
+    if (!input.itinerary && !input.openWindow) {
+      context.addIssue({
+        code: "custom",
+        path: ["itinerary"],
+        message:
+          "원래 일정을 등록하거나, 지금 비어 있는 시간 조건을 알려 주세요.",
+      });
+      return;
+    }
+    if (input.itinerary && input.openWindow) {
+      context.addIssue({
+        code: "custom",
+        path: ["openWindow"],
+        message:
+          "일정 복구와 빈 시간 추천은 한 번에 함께 요청할 수 없습니다.",
+      });
+    }
+  });
 
 export const recoveryOutcomeSchema = z
   .object({
@@ -398,9 +468,10 @@ export function recoveryAdministrativeScopes(
 ): Array<{ regionCode: string; districtCode: string }> {
   const locations = [
     input.origin,
-    ...input.itinerary.nodes.flatMap((node) =>
+    ...(input.itinerary?.nodes ?? []).flatMap((node) =>
       node.location ? [node.location] : [],
     ),
+    ...(input.openWindow?.nextPlace ? [input.openWindow.nextPlace] : []),
   ];
   return [
     ...new Map(

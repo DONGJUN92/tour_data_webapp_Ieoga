@@ -10,7 +10,6 @@ import {
   getAvailabilityEvidence,
   type AvailabilityEvidence,
 } from "@/lib/kto/availability";
-import { previousCompleteMonth } from "@/lib/kto/registry";
 import {
   KtoError,
   type KtoAudit,
@@ -19,12 +18,14 @@ import {
   type KtoServiceName,
 } from "@/lib/kto/types";
 import {
+  conservativeDrivingMinutes,
   conservativeWalkingMinutes,
   haversineMeters,
 } from "@/lib/geo";
 import {
-  getWalkingRoute,
+  getRoute,
   type WalkingRouteEvidence,
+  type WalkingRouteProvider,
 } from "@/lib/mobility/routing";
 import { getWeatherEvidence } from "@/lib/weather/service";
 import { withParticle } from "@/lib/text/korean";
@@ -35,6 +36,7 @@ import type {
   AccessibilityEvidence,
   ContinuityProof,
   DataContribution,
+  OpenWindowProof,
   PublicAvailabilityEvidence,
   RecoveryMode,
   RecoveryOption,
@@ -53,15 +55,25 @@ type ItineraryNode = NonNullable<
 
 type ItineraryContext = {
   mode: Exclude<RecoveryMode, "proximity_fallback">;
+  /* 원래 일정 한 곳을 교체하는지, 빈 시간에 한 곳을 끼워 넣는지. `insert`인
+     경우 `disrupted`는 없고 보존 대상은 창의 끝 또는 다음 장소뿐이다. */
+  changeKind: "replace" | "insert";
   id?: string;
   title: string;
   occurredAt: Date;
-  disrupted: ItineraryNode;
+  disrupted?: ItineraryNode;
   nextFixed?: ItineraryNode;
   continuityNodes: ItineraryNode[];
   sortedNodes: ItineraryNode[];
   lockedNodeIds: string[];
   originalDurationMinutes: number;
+  /* `insert`에서만 채워진다. 창 안에 들어가는지 판정할 때 쓴다. */
+  openWindow?: {
+    endAt: Date;
+    plannedStayMinutes: number;
+    nextPlaceLabel?: string;
+    nextPlaceArriveBy?: Date;
+  };
 };
 
 type WorkingCandidate = {
@@ -492,6 +504,48 @@ function buildTravelPurposeProof(params: {
   const replacement = candidatePurpose(params.contentTypeId);
   const originalStopTitle = node?.title ?? params.input.origin.label;
 
+  /* 빈 시간 추천에는 보존할 원래 목적이 없다. 여기서 기존 분기를 그대로 타면
+     "원래 하려던 관광·체험 대신…"처럼 사용자가 말한 적 없는 계획을 근거로
+     제시하게 된다. 다음 장소를 알려 준 경우에만 그 장소와의 연결을 주장하고,
+     아니면 아무 목적도 주장하지 않는다. */
+  const openWindow = params.input.openWindow;
+  if (openWindow) {
+    const nextPlaceLabel = openWindow.nextPlace?.label;
+    if (nextPlaceLabel) {
+      return {
+        status: "open_window_flow",
+        originalPurpose: "지금 비어 있는 시간",
+        replacementPurpose: replacement.label,
+        originalStopTitle: nextPlaceLabel,
+        replacementTitle: params.replacementTitle,
+        evidenceSource:
+          params.relatedRank !== undefined
+            ? "TarRlteTarService1"
+            : "KorService2",
+        relatedRank: params.relatedRank,
+        statement:
+          params.relatedRank !== undefined
+            ? `${withParticle(nextPlaceLabel, "와/과")} 함께 방문한 기록이 실제로 있는 곳입니다.`
+            : `${withParticle(nextPlaceLabel, "으로/로")} 가는 길에 들를 수 있는 공식 관광 콘텐츠입니다.`,
+        statementEn:
+          params.relatedRank !== undefined
+            ? `Official data records real visits to this place together with ${nextPlaceLabel}.`
+            : `Official tourism content you can stop at on the way to ${nextPlaceLabel}.`,
+      };
+    }
+    return {
+      status: "open_window_unconstrained",
+      originalPurpose: "지금 비어 있는 시간",
+      replacementPurpose: replacement.label,
+      originalStopTitle: params.input.origin.label,
+      replacementTitle: params.replacementTitle,
+      /* 보존할 목적이 없으므로 목적 근거로 쓴 공사 API도 없다. */
+      evidenceSource: "none",
+      statement: `남은 시간 안에 다녀올 수 있는 ${replacement.label} 공식 관광 콘텐츠입니다. 원래 계획을 알려 주지 않으셨으므로 목적 유지 여부는 판단하지 않았습니다.`,
+      statementEn: `Official ${replacement.label} content you can visit and return from within your remaining time. You did not tell us an original plan, so no intent match is claimed.`,
+    };
+  }
+
   if (params.relatedRank !== undefined) {
     return {
       status: "verified_related_place",
@@ -621,6 +675,7 @@ function itineraryContext(
     : -1;
   return {
     mode: itinerary.id ? "registered_itinerary" : "inline_itinerary",
+    changeKind: "replace",
     id: itinerary.id,
     title: itinerary.title,
     occurredAt:
@@ -639,6 +694,105 @@ function itineraryContext(
       disrupted,
       input.minimumStayMinutes ?? 30,
     ),
+  };
+}
+
+/* 빈 시간 추천의 컨텍스트. 사용자가 알려 준 것은 "지금 어디에 있고, 언제까지
+   비어 있고, 한 곳에 얼마나 머물 생각인지"이고 다음 장소는 선택이다. 다음
+   장소를 알려 준 경우에는 그 장소를 잠금 노드로 취급해 기존 연속성 검증을 그대로
+   재사용한다. 알려 주지 않은 경우에는 보존 대상이 창의 끝 시각뿐이다. */
+function openWindowContext(
+  input: RecoveryRequest,
+): ItineraryContext | undefined {
+  const window = input.openWindow;
+  if (!window) return undefined;
+  const endAt = new Date(window.availableUntil);
+  if (Number.isNaN(endAt.getTime())) return undefined;
+
+  const nextPlace = window.nextPlace;
+  const nextPlaceArriveBy = nextPlace
+    ? new Date(nextPlace.arriveBy)
+    : undefined;
+  const nextFixed: ItineraryNode | undefined =
+    nextPlace && nextPlaceArriveBy && !Number.isNaN(nextPlaceArriveBy.getTime())
+      ? {
+          id: "open-window-next-place",
+          sequence: 1,
+          type: "other",
+          title: nextPlace.label,
+          startAt: nextPlaceArriveBy.toISOString(),
+          locked: true,
+          reservation: false,
+          location: {
+            latitude: nextPlace.latitude,
+            longitude: nextPlace.longitude,
+            label: nextPlace.label,
+            areaCode: nextPlace.areaCode,
+            sigunguCode: nextPlace.sigunguCode,
+          },
+        }
+      : undefined;
+
+  return {
+    mode: "open_window",
+    changeKind: "insert",
+    title: "지금 비어 있는 시간",
+    occurredAt: new Date(),
+    disrupted: undefined,
+    nextFixed,
+    continuityNodes: nextFixed ? [nextFixed] : [],
+    sortedNodes: nextFixed ? [nextFixed] : [],
+    lockedNodeIds: nextFixed ? [nextFixed.id] : [],
+    originalDurationMinutes: window.plannedStayMinutes,
+    openWindow: {
+      endAt,
+      plannedStayMinutes: window.plannedStayMinutes,
+      nextPlaceLabel: nextPlace?.label,
+      nextPlaceArriveBy:
+        nextPlaceArriveBy && !Number.isNaN(nextPlaceArriveBy.getTime())
+          ? nextPlaceArriveBy
+          : undefined,
+    },
+  };
+}
+
+function recoveryContext(
+  input: RecoveryRequest,
+): ItineraryContext | undefined {
+  return input.openWindow
+    ? openWindowContext(input)
+    : itineraryContext(input);
+}
+
+function summariseItinerary(
+  context: ItineraryContext | undefined,
+): RecoveryResult["itinerarySummary"] {
+  if (!context) return undefined;
+  return {
+    itineraryId: context.id,
+    title: context.title,
+    disruptedNodeId: context.disrupted?.id,
+    nextFixedNodeId: context.nextFixed?.id,
+    lockedNodeCount: context.lockedNodeIds.length,
+  };
+}
+
+function summariseOpenWindow(
+  context: ItineraryContext | undefined,
+): RecoveryResult["openWindowSummary"] {
+  const window = context?.openWindow;
+  if (!context || !window) return undefined;
+  return {
+    windowEndAt: window.endAt.toISOString(),
+    windowMinutes: Math.max(
+      0,
+      Math.floor(
+        (window.endAt.getTime() - context.occurredAt.getTime()) / 60_000,
+      ),
+    ),
+    plannedStayMinutes: window.plannedStayMinutes,
+    nextPlaceLabel: window.nextPlaceLabel,
+    nextPlaceArriveBy: window.nextPlaceArriveBy?.toISOString(),
   };
 }
 
@@ -694,9 +848,18 @@ function scoreCandidate(
                 .arrivalBufferMinutes ?? 0,
             ),
         )
-      : candidate.scheduleDiff.mode === "proximity_fallback"
-        ? 50
-        : 0;
+      : /* 빈 시간 추천에서 다음 장소를 알려 주지 않은 경우에는 지킬 약속이
+           없으므로 연속성을 0으로 깎지 않는다. 대신 창 안에 남는 여유를
+           같은 척도로 환산한다. 여유가 클수록 서두르지 않아도 된다. */
+        candidate.scheduleDiff.openWindow
+        ? Math.min(
+            100,
+            70 +
+              Math.max(0, candidate.scheduleDiff.openWindow.leftoverMinutes),
+          )
+        : candidate.scheduleDiff.mode === "proximity_fallback"
+          ? 50
+          : 0;
 
   let baseScore: number;
   if (input.incident === "rain") {
@@ -803,6 +966,7 @@ function fallbackScheduleDiff(
   const durationMinutes = 30;
   return {
     mode: "proximity_fallback",
+    changeKind: "insert",
     replacementContentId: candidate.contentId,
     changedNodeIds: [],
     unchangedNodeIds: [],
@@ -922,18 +1086,74 @@ function itineraryScheduleDiff(params: {
       plannedDurationMinutes(node, 30) * 60_000;
   }
 
-  const changedNodeIds = [context.disrupted.id];
+  const disrupted = context.disrupted;
+  const changedNodeIds = disrupted ? [disrupted.id] : [];
   const unchangedNodeIds = context.sortedNodes
     .filter((node) => !changedNodeIds.includes(node.id))
     .map((node) => node.id);
   const preservedLockedNodeIds = context.lockedNodeIds.filter(
     (id) => !changedNodeIds.includes(id),
   );
-  const disruptedIndex = context.sortedNodes.indexOf(context.disrupted);
+
+  const openWindow = context.openWindow
+    ? openWindowProof({
+        context,
+        windowStartAt: context.occurredAt,
+        travelToMinutes: toCandidateMinutes,
+        appliedStayMinutes: stayMinutes,
+        arriveAt: startAt,
+        leaveAt: endAt,
+        route,
+        nextFixedAppointment,
+      })
+    : undefined;
+
+  const replacementNode = {
+    id: `replacement-${candidate.contentId}`,
+    title: candidate.title,
+    startAt: startAt.toISOString(),
+    endAt: endAt.toISOString(),
+    durationMinutes: stayMinutes,
+  };
+
+  if (context.changeKind === "insert") {
+    return {
+      mode: context.mode,
+      changeKind: "insert",
+      replacementContentId: candidate.contentId,
+      changedNodeIds: [],
+      unchangedNodeIds,
+      lockedNodeIds: context.lockedNodeIds,
+      preservedLockedNodeIds,
+      /* 끼워 넣기이므로 바뀐 일정은 0곳이다. 이 값을 1로 두면 증명서가
+         있지도 않은 원래 일정을 바꿨다고 말하게 된다. */
+      changedNodeCount: 0,
+      nextFixedAppointmentPreserved:
+        nextFixedAppointment?.status === "preserved"
+          ? true
+          : nextFixedAppointment
+            ? false
+            : undefined,
+      arrivalTime: nextFixedAppointment?.estimatedArrivalAt,
+      safetyBufferMinutes,
+      note: nextFixedAppointment
+        ? `비어 있는 시간에 한 곳을 더 넣고, 알려 주신 다음 장소 도착까지 실제 ${routeModeLabel(route.provider)} 경로로 검증했습니다.`
+        : `비어 있는 시간에 한 곳을 더 넣고, 같은 ${routeModeLabel(route.provider)} 경로로 되돌아오는 시간까지 남은 시간 안에 들어가는지 검증했습니다.`,
+      replacementNode,
+      preservedWaypoints,
+      nextFixedAppointment,
+      openWindow,
+    };
+  }
+
+  const disruptedIndex = disrupted
+    ? context.sortedNodes.indexOf(disrupted)
+    : -1;
 
   return {
     mode: context.mode,
-    replacedNodeId: context.disrupted.id,
+    changeKind: "replace",
+    replacedNodeId: disrupted?.id,
     replacementContentId: candidate.contentId,
     changedNodeIds,
     unchangedNodeIds,
@@ -951,16 +1171,62 @@ function itineraryScheduleDiff(params: {
     note: nextFixedAppointment
       ? "중단 일정 한 곳만 교체하고, 그 사이 원래 일정과 다음 고정 일정까지 순서대로 이동·도착 가능성을 검증했습니다."
       : "중단 일정 한 곳만 교체하고 나머지 잠금 일정을 유지했습니다.",
-    originalNode: nodeSummary(context.disrupted, disruptedIndex),
-    replacementNode: {
-      id: `replacement-${candidate.contentId}`,
-      title: candidate.title,
-      startAt: startAt.toISOString(),
-      endAt: endAt.toISOString(),
-      durationMinutes: stayMinutes,
-    },
+    originalNode: disrupted
+      ? nodeSummary(disrupted, disruptedIndex)
+      : undefined,
+    replacementNode,
     preservedWaypoints,
     nextFixedAppointment,
+  };
+}
+
+/* 창 안에 들어가는지의 계산을 한곳에 모은다. 다음 장소를 알려 준 경우에는 그
+   도착 검증이 이미 끝났으므로 남는 여유를 그대로 쓰고, 알려 주지 않은 경우에는
+   같은 보행 경로를 되짚어 오는 시간을 복귀로 잡는다. 왕복을 직선거리로
+   추정하지 않고 실제 경로 구간을 재사용하는 것이 요점이다. */
+function routeModeLabel(provider: WalkingRouteProvider): string {
+  return provider === "tmap_car" ? "자동차" : "보행";
+}
+
+function openWindowProof(params: {
+  context: ItineraryContext;
+  windowStartAt: Date;
+  travelToMinutes: number;
+  appliedStayMinutes: number;
+  arriveAt: Date;
+  leaveAt: Date;
+  route: Extract<WalkingRouteEvidence, { status: "routed" }>;
+  nextFixedAppointment?: ScheduleDiff["nextFixedAppointment"];
+}): OpenWindowProof | undefined {
+  const window = params.context.openWindow;
+  if (!window) return undefined;
+  const windowMinutes = Math.max(
+    0,
+    Math.floor(
+      (window.endAt.getTime() - params.windowStartAt.getTime()) / 60_000,
+    ),
+  );
+  const returnMinutes = params.nextFixedAppointment
+    ? (params.route.legs[1]?.durationMinutes ?? 0)
+    : params.travelToMinutes;
+  const returnBasis = params.nextFixedAppointment
+    ? ("next_place_route" as const)
+    : ("same_route_reversed" as const);
+  const backAtMs = params.leaveAt.getTime() + returnMinutes * 60_000;
+  const leftoverMinutes = Math.floor(
+    (window.endAt.getTime() - backAtMs) / 60_000,
+  );
+  return {
+    windowStartAt: params.windowStartAt.toISOString(),
+    windowEndAt: window.endAt.toISOString(),
+    windowMinutes,
+    travelToMinutes: params.travelToMinutes,
+    plannedStayMinutes: window.plannedStayMinutes,
+    appliedStayMinutes: params.appliedStayMinutes,
+    returnMinutes,
+    returnBasis,
+    leftoverMinutes,
+    status: leftoverMinutes >= 0 ? "fits" : "at_risk",
   };
 }
 
@@ -998,7 +1264,10 @@ async function enrichForContinuity(params: {
         longitude: node.location!.longitude,
       })),
     ];
-    const route = await getWalkingRoute(routePoints, { signal });
+    const route = await getRoute(routePoints, {
+      signal,
+      mode: input.travelMode,
+    });
     if (
       route.status !== "routed" ||
       route.legs.length < routePoints.length - 1
@@ -1008,7 +1277,7 @@ async function enrichForContinuity(params: {
         title: candidate.title,
         reasonCode: "ROUTE_UNAVAILABLE",
         reason:
-          "대체 일정부터 원래 일정의 복귀 지점까지 이어지는 전체 보행 경로를 검증하지 못해 복구안에서 제외했습니다.",
+          `대체 일정부터 복귀 지점까지 이어지는 전체 ${input.travelMode === "car" ? "자동차" : "보행"} 경로를 검증하지 못해 결과에서 제외했습니다.`,
         distanceMeters: candidate.distanceMeters,
         changedNodeCount: 1,
       });
@@ -1187,6 +1456,39 @@ async function enrichForContinuity(params: {
         requiredRelaxation,
       });
     }
+    /* 빈 시간 추천에서 이동+체류+복귀가 창을 넘기는 후보. 체류를 줄이면
+       들어가는 경우에는 그 최소 조정량을 반사실 근거로 남긴다. 30분 격자로만
+       입력받으므로 조정 제안도 30분 단위로 내린다. */
+    const windowProof = scheduleDiff.openWindow;
+    if (windowProof && windowProof.status === "at_risk") {
+      const shortfall = Math.abs(windowProof.leftoverMinutes);
+      const reducedStay =
+        Math.floor((windowProof.appliedStayMinutes - shortfall) / 30) * 30;
+      violations.push({
+        contentId: candidate.contentId,
+        title: candidate.title,
+        reasonCode: "OPEN_WINDOW_OVERFLOW",
+        reason:
+          windowProof.returnBasis === "next_place_route"
+            ? `다녀오면 다음 장소 도착이 ${shortfall}분 늦습니다.`
+            : `다녀오면 남은 시간을 ${shortfall}분 넘깁니다.`,
+        distanceMeters: routedDistance,
+        changedNodeCount: 0,
+        requiredRelaxation:
+          reducedStay >= 30
+            ? {
+                constraint: "minimum_stay",
+                amount: windowProof.appliedStayMinutes - reducedStay,
+                unit: "minutes",
+                currentLimit: windowProof.appliedStayMinutes,
+                requiredLimit: reducedStay,
+                description: `머무는 시간 ${windowProof.appliedStayMinutes}분 → ${reducedStay}분`,
+                preservesLockedNodes: true,
+                preservesNextFixedAppointment: true,
+              }
+            : undefined,
+      });
+    }
     if (availability.status === "confirmed_closed") {
       violations.push({
         contentId: candidate.contentId,
@@ -1233,9 +1535,11 @@ async function enrichForContinuity(params: {
 
   const continuityProof: ContinuityProof = {
     schemaVersion: "2026-07-v2",
-    objective: context
-      ? "minimize_changed_nodes_then_travel_minutes"
-      : "minimize_travel_minutes_without_registered_itinerary",
+    objective: !context
+      ? "minimize_travel_minutes_without_registered_itinerary"
+      : context.changeKind === "insert"
+        ? "maximize_fit_within_open_window"
+        : "minimize_changed_nodes_then_travel_minutes",
     recoveryMode: context?.mode ?? "proximity_fallback",
     changedNodeCount: scheduleDiff.changedNodeCount,
     lockedNodesTotal: scheduleDiff.lockedNodeIds.length,
@@ -1287,11 +1591,22 @@ function buildWhy(
     const routeSource =
       candidate.routeEvidence.provider === "tmap_pedestrian"
         ? { ko: "TMAP 보행자 경로", en: "TMAP pedestrian routing" }
-        : { ko: "OpenStreetMap 보행 경로", en: "OpenStreetMap walking route" };
+        : candidate.routeEvidence.provider === "tmap_car"
+          ? { ko: "TMAP 자동차 경로", en: "TMAP car routing" }
+          : { ko: "OpenStreetMap 보행 경로", en: "OpenStreetMap walking route" };
+    /* 수단도 문장에 드러나야 한다. 자차로 계산한 20분을 "보행 경로로 20분"이라고
+       적으면 여행자가 걸어서 갈 수 있다고 읽는다. */
+    const byCar = candidate.routeEvidence.provider === "tmap_car";
     push(
-      `실제 보행 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
-      `${meters.toLocaleString("en-US")} m on a real walking route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
+      `실제 ${byCar ? "자동차" : "보행"} 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
+      `${meters.toLocaleString("en-US")} m on a real ${byCar ? "driving" : "walking"} route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
     );
+    if (byCar && typeof candidate.routeEvidence.taxiFareKrw === "number") {
+      push(
+        `TMAP 예상 택시요금 ${candidate.routeEvidence.taxiFareKrw.toLocaleString("ko-KR")}원입니다. 자차 유류비·주차비는 포함하지 않습니다.`,
+        `TMAP estimates a ${candidate.routeEvidence.taxiFareKrw.toLocaleString("en-US")} KRW taxi fare. Fuel and parking for your own car are not included.`,
+      );
+    }
   } else {
     push(
       `한국관광공사 좌표 기준 직선거리 ${meters.toLocaleString("ko-KR")}m입니다.`,
@@ -1399,11 +1714,18 @@ function dataContributionsFor(
   ];
 
   if (candidate.routeEvidence.status === "routed") {
+    /* 응답이 말한 제공자를 그대로 적는다. 고정 문자열이었을 때 TMAP으로 계산한
+       결과에도 OpenStreetMap이라고 적혔다. */
+    const routeProvider = candidate.routeEvidence.provider;
     contributions.push({
-      source: "OpenStreetMap Routing",
+      source:
+        routeProvider === "tmap_pedestrian"
+          ? "TMAP 보행자 경로안내"
+          : routeProvider === "tmap_car"
+            ? "TMAP 자동차 경로안내"
+            : "OpenStreetMap Routing",
       fields: ["distance", "duration", "legs", "geometry"],
-      decision:
-        "현재 위치→대체 일정→다음 고정 일정의 실제 보행 경로와 도착 버퍼를 계산했습니다.",
+      decision: `현재 위치→대체 일정→다음 고정 일정의 실제 ${routeModeLabel(routeProvider)} 경로와 도착 버퍼를 계산했습니다.`,
       effect: "verified",
       status: "applied",
     });
@@ -1440,7 +1762,12 @@ function dataContributionsFor(
   const weather = candidate.continuityProof.weatherEvidence;
   if (weather) {
     contributions.push({
-      source: "Open-Meteo",
+      /* 기상청으로 조회한 결과에 Open-Meteo라고 적으면, 국내 공식 기상자료를
+         썼다는 주장과 원장이 서로 반대되는 말을 한다. */
+      source:
+        weather.provider === "kma_short_term"
+          ? "기상청 단기예보"
+          : "Open-Meteo",
       fields:
         weather.status === "available"
           ? [
@@ -1760,12 +2087,19 @@ export async function recoverTrip(
   requestId = crypto.randomUUID(),
   execution: { deadlineAt?: number; signal?: AbortSignal } = {},
 ): Promise<RecoveryResult> {
-  const context = itineraryContext(input);
+  const context = recoveryContext(input);
   const recoveryMode: RecoveryMode =
     context?.mode ?? "proximity_fallback";
   const warnings = context
     ? [
         "운영정보와 경로는 호출 시점의 공식·공개 데이터를 기준으로 검증합니다. 예약 자체와 현장 안전을 보증하지 않으므로 출발 직전 운영기관 안내를 확인하세요.",
+        ...(context.changeKind === "insert"
+          ? [
+              context.openWindow?.nextPlaceLabel
+                ? `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${input.travelMode === "car" ? "자동차" : "보행"} 경로로 검증했습니다.`
+                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 같은 ${input.travelMode === "car" ? "자동차" : "보행"} 경로로 되돌아오는 시간을 복귀로 계산했으며, 목적 유지 여부는 판단하지 않았습니다.`,
+            ]
+          : []),
       ]
     : [
         "등록된 원래 일정이 없어 주변 조건충족 대안으로 계산했습니다. 최소변경과 다음 예약 보존을 검증하려면 최초 일정과 잠금 일정을 등록하세요.",
@@ -1803,15 +2137,8 @@ export async function recoverTrip(
       requestId,
       status: "upstream_unavailable",
       recoveryMode,
-      itinerarySummary: context
-        ? {
-            itineraryId: context.id,
-            title: context.title,
-            disruptedNodeId: context.disrupted.id,
-            nextFixedNodeId: context.nextFixed?.id,
-            lockedNodeCount: context.lockedNodeIds.length,
-          }
-        : undefined,
+      itinerarySummary: summariseItinerary(context),
+      openWindowSummary: summariseOpenWindow(context),
       scope: {
         coverage: "nationwide",
         regionCode: input.origin.areaCode,
@@ -1840,11 +2167,13 @@ export async function recoverTrip(
 
   const relatedPromise =
     regionCode && districtCode
-      ? getRelatedTourism({
-          regionCode,
-          districtCode,
-          baseYm: previousCompleteMonth(),
-        }, { signal: execution.signal, timeoutMs: 4_000, retry: false })
+      ? /* 기준월은 어댑터가 정한다. 여기서 직전 달을 못박으면 아직 발행되지
+           않은 달로 고정되어, 어댑터의 하강 폴백이 "호출자가 지정한 달"로
+           읽고 그 달만 조회한다. 실제로 그래서 연관 관광지가 계속 0건이었다. */
+        getRelatedTourism(
+          { regionCode, districtCode },
+          { signal: execution.signal, timeoutMs: 4_000, retry: false },
+        )
       : Promise.resolve(undefined);
   const crowdPromise =
     regionCode && districtCode
@@ -1965,10 +2294,16 @@ export async function recoverTrip(
     );
   }
 
-  const relatedRanks = relatedRankByTitle(
-    relatedItems,
-    context?.disrupted.title ?? input.origin.label,
-  );
+  /* 연관 관광지의 기준점. 일정 복구는 문제가 생긴 장소를 기준으로 삼고, 빈 시간
+     추천은 알려 준 다음 장소를 기준으로 삼는다. 다음 장소도 없으면 기준점이
+     없으므로 연관 순위를 계산하지 않는다. */
+  const relatedAnchorTitle =
+    context?.disrupted?.title ??
+    context?.openWindow?.nextPlaceLabel ??
+    (context?.changeKind === "insert" ? undefined : input.origin.label);
+  const relatedRanks = relatedAnchorTitle
+    ? relatedRankByTitle(relatedItems, relatedAnchorTitle)
+    : new Map<string, number>();
   const forecasts = currentForecastByTitle(crowdItems);
   const accessibleIds = new Set(
     accessibleItems.map((item) => stringValue(item.contentid)).filter(Boolean),
@@ -1992,16 +2327,22 @@ export async function recoverTrip(
       continue;
     }
 
+    /* 일정 복구에서는 문제가 생긴 장소를, 빈 시간 추천에서는 알려 준 다음
+       장소를 후보에서 뺀다. 지금 가려는 곳을 "지금 대신 갈 곳"으로 다시
+       제시하면 안 된다. */
+    const excludedTitle =
+      context?.disrupted?.title ?? context?.openWindow?.nextPlaceLabel;
     if (
-      context &&
-      normalizeName(title) === normalizeName(context.disrupted.title)
+      excludedTitle &&
+      normalizeName(title) === normalizeName(excludedTitle)
     ) {
       rejected.push({
         contentId,
         title,
         reasonCode: "SAME_AS_DISRUPTED_PLACE",
-        reason:
-          "문제가 생긴 원래 장소와 같은 장소이므로 대체 일정에서 제외했습니다.",
+        reason: context?.disrupted
+          ? "문제가 생긴 원래 장소와 같은 장소이므로 대체 일정에서 제외했습니다."
+          : "이미 가려고 하는 다음 장소와 같은 곳이므로 제외했습니다.",
       });
       continue;
     }
@@ -2048,8 +2389,14 @@ export async function recoverTrip(
       continue;
     }
 
+    /* 사전 걸러내기의 보수 추정. 자차는 직선거리를 도보 속도로 환산하면
+       실제로 10분이면 닿는 후보가 "가용시간 초과"로 떨어진다. 수단별 속도로
+       나눈다. 이 값은 걸러내기 전용이고, 살아남은 후보의 이동시간은 아래에서
+       실제 경로로 다시 계산해 덮어쓴다. */
     const estimatedTravelMinutes =
-      conservativeWalkingMinutes(distanceMeters);
+      input.travelMode === "car"
+        ? conservativeDrivingMinutes(distanceMeters)
+        : conservativeWalkingMinutes(distanceMeters);
     if (
       estimatedTravelMinutes > input.availableMinutes &&
       (!context ||
@@ -2059,7 +2406,7 @@ export async function recoverTrip(
         contentId,
         title,
         reasonCode: "TIME_LIMIT",
-        reason: `보수 추정 이동시간이 가용시간 ${input.availableMinutes}분을 초과합니다.`,
+        reason: `${input.travelMode === "car" ? "자동차" : "보행"} 보수 추정 이동시간이 가용시간 ${input.availableMinutes}분을 초과합니다.`,
         distanceMeters,
       });
       continue;
@@ -2297,15 +2644,8 @@ export async function recoverTrip(
     requestId,
     status,
     recoveryMode,
-    itinerarySummary: context
-      ? {
-          itineraryId: context.id,
-          title: context.title,
-          disruptedNodeId: context.disrupted.id,
-          nextFixedNodeId: context.nextFixed?.id,
-          lockedNodeCount: context.lockedNodeIds.length,
-        }
-      : undefined,
+    itinerarySummary: summariseItinerary(context),
+    openWindowSummary: summariseOpenWindow(context),
     scope: {
       coverage: "nationwide",
       regionCode,

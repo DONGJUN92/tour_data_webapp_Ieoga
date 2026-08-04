@@ -79,6 +79,41 @@ function parseTimeRanges(value: string): Array<[number, number]> {
   });
 }
 
+/* `detailIntro2`는 콘텐츠 유형마다 필드 이름이 다르다. 공통 `usetime`/`restdate`만
+   읽으면 문화시설·레포츠는 값이 있는데도 "운영시간 항목이 비어 있음"으로 판정되고,
+   그 상태로 `confirmationRequired: false` 후보가 되어 휴관일에도 확인 요구 없이
+   제시된다. 2026-08-04 실표본으로 확인한 이름을 모두 넣는다.
+
+   함정 하나: 행사(15)의 `usetimefestival`은 이름과 달리 **이용요금**이다(실표본
+   값 `"무료"`). 운영시간으로 읽으면 요금 문자열이 운영시간 자리에 들어가므로 목록에
+   두지 않고, 행사의 실제 운영시간인 `playtime`을 읽는다. */
+const OPERATING_HOURS_FIELDS = [
+  "usetime",
+  "usetimeculture",
+  "usetimeleports",
+  "opentime",
+  "opentimefood",
+  "playtime",
+  "checkintime",
+] as const;
+
+const REST_DATE_FIELDS = [
+  "restdate",
+  "restdateculture",
+  "restdateleports",
+  "restdateshopping",
+  "restdatefood",
+] as const;
+
+const CONTACT_FIELDS = [
+  "infocenter",
+  "infocenterculture",
+  "infocenterleports",
+  "infocentershopping",
+  "infocenterfood",
+  "infocenterlodging",
+] as const;
+
 function isRestDay(restDate: string, now = new Date()): boolean {
   if (!restDate) return false;
   const currentDay = DAY_NAMES[koreaDate(now).getDay()];
@@ -95,19 +130,9 @@ export function evaluateAvailabilityItem(
   visitEnd = visitStart,
 ): AvailabilityEvidence {
   const checkedAt = new Date().toISOString();
-  const operatingHours = text(item, [
-    "usetime",
-    "opentime",
-    "opentimefood",
-    "usetimefestival",
-    "checkintime",
-  ]);
-  const restDate = text(item, [
-    "restdate",
-    "restdateshopping",
-    "restdatefood",
-  ]);
-  const contact = text(item, ["infocenter"]);
+  const operatingHours = text(item, [...OPERATING_HOURS_FIELDS]);
+  const restDate = text(item, [...REST_DATE_FIELDS]);
+  const contact = text(item, [...CONTACT_FIELDS]);
   const eventStart = compactDate(text(item, ["eventstartdate"]));
   const eventEnd = compactDate(text(item, ["eventenddate"]));
   const today = currentDateNumber(visitStart);

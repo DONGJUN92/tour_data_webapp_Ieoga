@@ -21,6 +21,7 @@ import { recoverTrip } from "@/lib/recovery/engine";
 import {
   recoveryAdministrativeScopes,
   recoveryRequestSchema,
+  type RecoveryRequest,
 } from "@/lib/recovery/schema";
 
 export const dynamic = "force-dynamic";
@@ -169,6 +170,106 @@ export async function POST(request: NextRequest) {
   const session = getOrCreateSession(request);
   const submittedItinerary = parsed.data.itinerary;
   const serverIncidentAt = new Date().toISOString();
+
+  /* 빈 시간 추천은 저장된 일정을 쓰지 않는다. 사용자가 지금 알려 준 창 조건만이
+     입력이므로 소유권 조회와 일정 계약 재검증을 건너뛴다. 창의 끝 시각은 서버
+     시각을 기준으로 다시 확인해, 기기 시각이 틀어진 채로 "아직 3시간 남았다"는
+     계산이 통과하는 일을 막는다. */
+  const openWindow = parsed.data.openWindow;
+  if (openWindow && !submittedItinerary) {
+    const windowEndAt = Date.parse(openWindow.availableUntil);
+    const remainingMinutes = Math.floor(
+      (windowEndAt - Date.parse(serverIncidentAt)) / 60_000,
+    );
+    if (!Number.isFinite(windowEndAt) || remainingMinutes < 30) {
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "OPEN_WINDOW_TOO_SHORT",
+            message:
+              "서버 시각 기준으로 남은 자유 시간이 30분 미만입니다. 종료 시각을 다시 확인해 주세요.",
+            serverTime: serverIncidentAt,
+          },
+        },
+        { status: 400 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
+
+    const openWindowScopes = recoveryAdministrativeScopes(parsed.data);
+    if (openWindowScopes.length > 0) {
+      let knownScope: boolean;
+      try {
+        knownScope = await beforeDeadline(
+          areKnownAdministrativeScopes(openWindowScopes),
+          deadlineAt,
+        );
+      } catch (error) {
+        if (error instanceof DeadlineExceededError) {
+          return deadlineResponse(session);
+        }
+        const response = jsonResponse(
+          {
+            requestId,
+            error: {
+              code: "REGION_REFERENCE_UNAVAILABLE",
+              message:
+                "공식 행정구역 기준표를 확인할 수 없어 추천을 시작하지 않았습니다.",
+            },
+          },
+          { status: 503 },
+        );
+        if (session.isNew) setSessionCookie(response, session.id);
+        return response;
+      }
+      if (!knownScope) {
+        const response = jsonResponse(
+          {
+            requestId,
+            error: {
+              code: "UNKNOWN_REGION_SCOPE",
+              message:
+                "현재 위치 또는 다음 장소의 시군구를 최신 공식 행정구역 기준표에서 확인하지 못했습니다.",
+            },
+          },
+          { status: 400 },
+        );
+        if (session.isNew) setSessionCookie(response, session.id);
+        return response;
+      }
+    }
+
+    return await runRecovery({
+      input: parsed.data,
+      session,
+      requestId,
+      deadlineAt,
+      commitDeadlineAt,
+      deadlineResponse,
+      deadlineController,
+      markPersistenceStarted: () => {
+        persistenceStarted = true;
+      },
+      rateRemaining,
+    });
+  }
+
+  if (!submittedItinerary) {
+    return jsonResponse(
+      {
+        requestId,
+        error: {
+          code: "ITINERARY_REGISTRATION_REQUIRED",
+          message:
+            "복구 전에 이 브라우저에서 원래 일정과 다음 고정 일정을 저장해 주세요.",
+        },
+      },
+      { status: 400 },
+    );
+  }
+
   if (submittedItinerary.occurredAt) {
     const clockSkew = Math.abs(
       Date.parse(submittedItinerary.occurredAt) -
@@ -312,10 +413,53 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  return await runRecovery({
+    input: authoritative.data,
+    session,
+    requestId,
+    deadlineAt,
+    commitDeadlineAt,
+    deadlineResponse,
+    deadlineController,
+    markPersistenceStarted: () => {
+      persistenceStarted = true;
+    },
+    rateRemaining,
+  });
+}
+
+/* 검증을 통과한 입력을 실행하고 저장하는 공통 구간. 일정 복구와 빈 시간 추천이
+   서로 다른 입구를 갖지만, 20초 기한·원자 저장·미저장 시 결과 미제공이라는
+   동일한 보장을 받아야 하므로 이 부분을 복제하지 않고 공유한다. */
+async function runRecovery(params: {
+  input: RecoveryRequest;
+  session: ReturnType<typeof getOrCreateSession>;
+  requestId: string;
+  deadlineAt: number;
+  commitDeadlineAt: number;
+  deadlineResponse: (
+    currentSession?: ReturnType<typeof getOrCreateSession>,
+  ) => Response;
+  deadlineController: AbortController;
+  markPersistenceStarted: () => void;
+  rateRemaining: number;
+}): Promise<Response> {
+  const {
+    input,
+    session,
+    requestId,
+    deadlineAt,
+    commitDeadlineAt,
+    deadlineResponse,
+    deadlineController,
+    markPersistenceStarted,
+    rateRemaining,
+  } = params;
+
   let result: Awaited<ReturnType<typeof recoverTrip>>;
   try {
     result = await beforeDeadline(
-      recoverTrip(authoritative.data, requestId, {
+      recoverTrip(input, requestId, {
         deadlineAt,
         signal: deadlineController.signal,
       }),
@@ -333,12 +477,12 @@ export async function POST(request: NextRequest) {
   if (Date.now() >= commitDeadlineAt) {
     return deadlineResponse(session);
   }
-  persistenceStarted = true;
+  markPersistenceStarted();
   try {
     persistence = await beforeDeadline(
       persistRecovery({
         sessionId: session.id,
-        input: authoritative.data,
+        input,
         result,
         commitDeadlineAt,
       }),
@@ -363,7 +507,7 @@ export async function POST(request: NextRequest) {
         error: {
           code: "RECOVERY_PERSISTENCE_FAILED",
           message:
-            "복구 실행 전체를 안전하게 저장하지 못해 결과를 제공하지 않습니다. 잠시 후 다시 실행해 주세요.",
+            "실행 전체를 안전하게 저장하지 못해 결과를 제공하지 않습니다. 잠시 후 다시 실행해 주세요.",
           retryable: true,
         },
       },

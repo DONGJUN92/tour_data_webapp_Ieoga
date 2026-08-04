@@ -6,7 +6,7 @@
 import type { JourneyExecution } from "@/lib/recovery/execution";
 import { statusLabel, statusTone } from "@/lib/text/status-labels";
 
-export type TabId = "recover" | "insights" | "transparency";
+export type TabId = "recover" | "discover" | "insights" | "transparency";
 export type Incident = "rain" | "delay" | "crowd" | "less_walk";
 export type Audience = "general" | "stroller" | "wheelchair" | "senior";
 export type LoadState = "idle" | "loading" | "success" | "error";
@@ -39,8 +39,30 @@ export type JourneyPlan = {
   savedAt: string;
 };
 
+export type OpenWindowProof = {
+  windowStartAt?: string;
+  windowEndAt?: string;
+  windowMinutes?: number;
+  travelToMinutes: number;
+  plannedStayMinutes?: number;
+  appliedStayMinutes: number;
+  returnMinutes: number;
+  returnBasis: "next_place_route" | "same_route_reversed";
+  leftoverMinutes: number;
+  status?: "fits" | "at_risk";
+};
+
 export type ScheduleDiff = {
   mode?: string;
+  changeKind?: "replace" | "insert";
+  openWindow?: OpenWindowProof;
+  replacementNode?: {
+    id?: string;
+    title?: string;
+    startAt?: string;
+    endAt?: string;
+    durationMinutes?: number;
+  };
   replacedNodeId?: string;
   changedNodeIds?: string[];
   unchangedNodeIds?: string[];
@@ -243,6 +265,33 @@ export const INCIDENTS_EN: Record<Incident, { title: string; description: string
     description: "Check walking and accessibility constraints before showing an option.",
   },
 };
+
+/* 이동수단은 두 화면이 같은 목록을 써야 한다. 화면마다 따로 두면 한쪽에만 수단이
+   추가되어 같은 엔진이 다른 선택지를 받게 된다.
+
+   확인된 국내 제공자가 있는 수단만 둔다. 2026-08-04 실호출 결과: TMAP 보행자와
+   TMAP 자동차는 같은 `TMAP_APP_KEY`로 동작하고, Kakao Navi는 자동차 전용이며
+   (유효 priority는 RECOMMEND·TIME·DISTANCE뿐) 대중교통·자전거 엔드포인트는
+   404였다. 고를 수는 있는데 검증은 못 하는 수단을 목록에 두면 여행자에게 잘못된
+   도착 시각을 주는 것과 같으므로 넣지 않는다. */
+export const TRAVEL_MODES = [
+  {
+    value: "walk",
+    ko: "걸어서",
+    en: "Walking",
+    radius: 8_000,
+    distance: 5_000,
+  },
+  {
+    value: "car",
+    ko: "자차·택시",
+    en: "By car",
+    radius: 20_000,
+    distance: 20_000,
+  },
+] as const;
+
+export type TravelMode = (typeof TRAVEL_MODES)[number]["value"];
 
 export const AUDIENCES: { value: Audience; label: string }[] = [
   { value: "general", label: "일반 여행" },

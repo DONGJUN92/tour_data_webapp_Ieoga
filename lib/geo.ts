@@ -30,6 +30,13 @@ export function conservativeWalkingMinutes(distanceMeters: number): number {
   return Math.max(1, Math.ceil(distanceMeters / 60) + 4);
 }
 
+/* 자차의 보수 추정. 도심 평균 20km/h(=333m/분)로 직선거리를 환산하고 주차·도보
+   접근에 6분을 더한다. 후보를 미리 걸러내는 용도이므로 실제보다 넉넉해야 하며,
+   살아남은 후보의 이동시간은 실제 경로로 다시 계산해 덮어쓴다. */
+export function conservativeDrivingMinutes(distanceMeters: number): number {
+  return Math.max(1, Math.ceil(distanceMeters / 333) + 6);
+}
+
 export function distanceBucket(distanceMeters: number): string {
   if (distanceMeters < 500) return "0-499m";
   if (distanceMeters < 1_000) return "500-999m";

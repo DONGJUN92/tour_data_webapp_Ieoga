@@ -63,10 +63,14 @@ export async function buildPolicyInsight(params: {
   const baseYm = previousCompleteMonth();
   const [hubSettled, policySettled] = await Promise.allSettled([
     params.districtCode
-      ? getHubTourism({
+      ? /* 중심 관광지의 기준월은 어댑터가 정한다. 직전 달을 못박으면 아직
+           발행되지 않은 달로 고정되어, 정책팩을 매월 1일 이후에 만들 때마다
+           중심 관광지가 0개인 팩이 저장됐다. 정책 지표는 자체 하강 루프가
+           있어 살아남았기 때문에 같은 화면에서 지표만 채워지고 중심 관광지만
+           비는 상태로 보였다. */
+        getHubTourism({
           regionCode: params.areaCode,
           districtCode: params.districtCode,
-          baseYm,
         })
       : Promise.resolve(undefined),
     getPolicyBundle({

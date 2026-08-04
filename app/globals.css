@@ -5933,3 +5933,54 @@ body .hero-promise {
     color: var(--ink);
   }
 }
+
+/* 이동수단 선택. 복구 폼과 빈 시간 화면이 같은 결정을 요구하므로 시각 언어도
+   같게 둔다. 44px 최소 높이는 장갑 낀 손·흔들리는 버스에서도 눌리게 하기 위한 값. */
+.travel-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--cream);
+}
+
+.travel-mode-label {
+  flex: 1 1 100%;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.travel-mode-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--dur-screen) var(--ease-spring);
+}
+
+.travel-mode-chip:hover {
+  background: var(--canvas);
+}
+
+.travel-mode-chip.is-active {
+  border-color: var(--brand);
+  background: var(--brand-tint-strong);
+  color: var(--brand-deep);
+}
+
+.travel-mode-row > small {
+  flex: 1 1 100%;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}

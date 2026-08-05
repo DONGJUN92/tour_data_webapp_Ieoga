@@ -230,10 +230,51 @@
 }
 
 .cockpit-contract-met,
-.cockpit-time-alert {
+.cockpit-time-alert,
+.cockpit-drift {
   margin-bottom: 16px;
   padding: 18px 20px;
   border-radius: 16px;
+}
+
+/* 동선이 꼬였을 때의 알림. 색 대비는 자체 선언한 기준(본문 4.5:1)을 넘겨야
+   한다 — 예전에 이 기준을 위반한 하드코딩이 있었고 테스트로 고정해 두었다.
+   #8a4b08 on #fff4e5 = 6.29:1, #8f1d1d on #fdecec = 7.31:1. */
+.cockpit-drift {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  background: #fff4e5;
+  color: #8a4b08;
+}
+
+.cockpit-drift.is-at-risk {
+  background: #fdecec;
+  color: #8f1d1d;
+}
+
+.cockpit-drift strong {
+  font-weight: 900;
+}
+
+/* 새 색을 만들지 않고 이미 있는 주요 행동 토큰을 쓴다. 이음 틸(#0e9594)은
+   흰 텍스트와 3.66:1로 본문 기준(4.5:1)에 미달한다 — 브랜드색이라도 버튼
+   라벨에 쓰면 자체 선언한 기준을 위반한다. `--accent`는 5.4:1이다. */
+.cockpit-drift button {
+  margin-top: 4px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.cockpit-drift button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .cockpit-contract-met {

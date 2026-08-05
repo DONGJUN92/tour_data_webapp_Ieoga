@@ -1512,6 +1512,18 @@ export function ProductApp() {
                 execution={activeExecution}
                 language={language}
                 onChange={setActiveExecution}
+                /* 동선이 꼬여 다음 고정 일정을 지킬 수 없을 때, 사용자를
+                   지금 상황으로 다시 찾는 자리로 데려간다. 우리가 대신
+                   다시 복구하지는 않는다 — 무엇을 포기할지는 사용자가
+                   정할 일이다. */
+                onRecoverAgain={() => {
+                  changeTab("discover");
+                  window.requestAnimationFrame(() => {
+                    document
+                      .getElementById("main-content")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  });
+                }}
                 onCloseCompleted={() => {
                   setActiveExecution(null);
                   setAppliedOptionId("");

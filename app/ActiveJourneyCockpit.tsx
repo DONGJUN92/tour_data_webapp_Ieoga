@@ -14,6 +14,10 @@ type Props = {
      영어 대응이 하나도 없어서, 영어로 쓰던 사용자가 적용 버튼을 누르는
      순간부터 화면이 통째로 한국어로 바뀌었다. */
   language?: "ko" | "en";
+  /* 동선이 꼬여 다음 고정 일정을 지킬 수 없을 때 누를 수 있는 경로. 넘기지
+     않으면 사실만 알리고 버튼을 만들지 않는다 — 누를 곳 없는 버튼을 보여
+     주는 것보다 낫다. */
+  onRecoverAgain?: () => void;
 };
 
 function formatTime(value: string | undefined, language: "ko" | "en"): string {
@@ -49,6 +53,7 @@ export function ActiveJourneyCockpit({
   onChange,
   onCloseCompleted,
   language = "ko",
+  onRecoverAgain,
 }: Props) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
@@ -230,6 +235,41 @@ export function ActiveJourneyCockpit({
           </button>
         </div>
       </div>
+
+      {/* 동선이 꼬였을 때. 예전에는 도착이 늦어도 아무 일이 일어나지 않아서,
+          사용자가 스스로 "이러다 다음 약속을 놓치겠다"고 깨닫고 복구를 다시
+          요청해야 했다. 위기 순간에 그 판단을 하기 어려워서 이 앱을 쓴다.
+          우리가 대신 다시 복구하지는 않는다 — 사실과 남은 여유를 알리고
+          고르는 것은 사용자다. */}
+      {execution.drift?.status === "behind" && (
+        <div
+          className={
+            execution.drift.nextFixedAtRisk
+              ? "cockpit-drift is-at-risk"
+              : "cockpit-drift"
+          }
+          role="status"
+        >
+          <strong>
+            {execution.drift.nextFixedAtRisk
+              ? tr(
+                  "이대로면 다음 고정 일정을 지키기 어렵습니다.",
+                  "Your next fixed stop no longer fits.",
+                )
+              : tr("예정보다 늦어졌습니다.", "You are running late.")}
+          </strong>
+          <span>
+            {language === "en"
+              ? execution.drift.noteEn
+              : execution.drift.note}
+          </span>
+          {execution.drift.nextFixedAtRisk && onRecoverAgain && (
+            <button type="button" onClick={onRecoverAgain}>
+              {tr("지금 상황으로 다시 찾기", "Search again from here")}
+            </button>
+          )}
+        </div>
+      )}
 
       {execution.status === "contract_met" && (
         <div className="cockpit-contract-met" role="status">

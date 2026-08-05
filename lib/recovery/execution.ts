@@ -1,3 +1,5 @@
+import type { JourneyDrift } from "./drift";
+
 export type JourneyExecutionStatus =
   | "active"
   | "contract_met"
@@ -53,4 +55,8 @@ export type JourneyExecution = {
   updatedAt: string;
   expiresAt: string;
   steps: JourneyExecutionStep[];
+  /* 동선이 꼬였는지에 대한 판정. 예전에는 도착이 늦어도 아무 일이 일어나지
+     않아서, 사용자가 스스로 "이러다 다음 약속을 놓치겠다"고 깨닫고 복구를 다시
+     요청해야 했다. 위기 순간에 그 판단을 하기 어려워서 이 앱을 쓰는 것이다. */
+  drift: JourneyDrift;
 };

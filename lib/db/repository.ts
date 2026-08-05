@@ -9,6 +9,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { assessJourneyDrift } from "@/lib/recovery/drift";
 import type { BatchItem } from "drizzle-orm/batch";
 import {
   apiAuditLogs,
@@ -874,7 +875,7 @@ async function loadJourneyExecution(params: {
     .where(eq(journeyExecutionSteps.executionId, header.id))
     .orderBy(journeyExecutionSteps.sequence);
 
-  return {
+  const mapped = {
     id: header.id,
     baseItineraryId: header.baseItineraryId,
     sourceRunId: header.sourceRunId,
@@ -920,6 +921,10 @@ async function loadJourneyExecution(params: {
       ];
     }),
   };
+
+  /* 동선 꼬임 판정은 저장된 값만으로 계산한다 — 새 호출도, 스키마 변경도 없다.
+     조회 경로와 갱신 경로가 같은 이 함수를 지나므로 두 곳이 갈릴 수 없다. */
+  return { ...mapped, drift: assessJourneyDrift(mapped) };
 }
 
 export async function getActiveJourneyExecution(

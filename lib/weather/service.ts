@@ -1,5 +1,9 @@
 import { openMeteoEndpoint } from "@/lib/external-providers";
-import { getKmaObservation, kmaConfigured } from "./kma";
+import {
+  getKmaObservation,
+  kmaConfigured,
+  type KmaForecastSlot,
+} from "./kma";
 
 export type WeatherProvider = "kma_short_term" | "open_meteo";
 
@@ -16,6 +20,11 @@ export type WeatherEvidence =
       raining: boolean;
       provider: WeatherProvider;
       attribution: string;
+      /* 지금 이후의 시간별 예보. 앱은 이 시계열을 이미 받고 있었는데 첫 슬롯만
+         읽고 버렸다. 여행자가 **거기 있을 시간대**의 날씨는 여기에 있다.
+         비어 있으면 예보를 확인하지 못했다는 뜻이고, 그때는 체류 시간대
+         판정을 하지 않는다. */
+      forecast: KmaForecastSlot[];
     }
   | {
       status: "unavailable";
@@ -43,6 +52,9 @@ type OpenMeteoResponse = {
   hourly?: {
     time?: string[];
     precipitation_probability?: number[];
+    precipitation?: number[];
+    temperature_2m?: number[];
+    wind_speed_10m?: number[];
   };
 };
 
@@ -85,6 +97,7 @@ export async function getWeatherEvidence(
         raining: observation.raining,
         provider: "kma_short_term",
         attribution: KMA_ATTRIBUTION,
+        forecast: observation.forecast,
       };
       cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value: evidence });
       return evidence;
@@ -131,8 +144,15 @@ export async function getWeatherEvidence(
       "wind_speed_10m",
     ].join(","),
   );
-  url.searchParams.set("hourly", "precipitation_probability");
-  url.searchParams.set("forecast_hours", "6");
+  /* 대체 공급자도 같은 형태의 시계열을 준다. 기상청이 응답하지 않을 때
+     체류 시간대 판정을 통째로 잃지 않도록 함께 받는다. */
+  url.searchParams.set(
+    "hourly",
+    ["precipitation_probability", "precipitation", "temperature_2m", "wind_speed_10m"].join(
+      ",",
+    ),
+  );
+  url.searchParams.set("forecast_hours", "24");
   url.searchParams.set("timezone", "auto");
 
   const controller = new AbortController();
@@ -156,6 +176,36 @@ export async function getWeatherEvidence(
       throw new Error("WEATHER_EMPTY");
     }
     const probability = payload.hourly?.precipitation_probability?.[0];
+    /* `timezone=auto`로 요청했으므로 시각이 현지 표기다. 오프셋이 없으면
+       Date가 UTC로 읽어 버려 슬롯이 9시간 어긋난다. 국내 좌표만 다루므로
+       KST 오프셋을 붙인다. */
+    const hourlyForecast: KmaForecastSlot[] = (payload.hourly?.time ?? [])
+      .map((time, index) => {
+        /* Open-Meteo는 `2026-08-05T15:00` 형태로 준다 — 초와 오프셋이 없다. */
+        const at = /[+Z]/.test(time) ? time : `${time}:00+09:00`;
+        const millimeters = payload.hourly?.precipitation?.[index];
+        return {
+          at,
+          precipitationProbabilityPercent:
+            payload.hourly?.precipitation_probability?.[index],
+          /* Open-Meteo는 강수 형태 코드를 주지 않는다. 강수량으로 유무만
+             옮기고, 형태를 아는 것처럼 적지 않는다. */
+          precipitationType:
+            millimeters === undefined
+              ? undefined
+              : millimeters > 0
+                ? 1
+                : 0,
+          temperatureCelsius: payload.hourly?.temperature_2m?.[index],
+          windSpeedKph:
+            payload.hourly?.wind_speed_10m?.[index] === undefined
+              ? undefined
+              : Math.round(
+                  Number(payload.hourly.wind_speed_10m[index]) * 10,
+                ) / 10,
+        };
+      })
+      .filter((slot) => !Number.isNaN(Date.parse(slot.at)));
     const precipitation = Number.isFinite(current.precipitation)
       ? Number(current.precipitation)
       : Number(current.rain ?? 0) +
@@ -179,6 +229,7 @@ export async function getWeatherEvidence(
         (Number.isFinite(probability) && Number(probability) >= 50),
       provider: "open_meteo",
       attribution,
+      forecast: hourlyForecast,
     };
   } catch (error) {
     if (options.signal?.aborted) {

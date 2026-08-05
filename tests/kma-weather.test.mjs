@@ -130,6 +130,8 @@ test("KMA observation is normalised to the shared weather contract", async () =>
           { status: 200 },
         );
       }
+      /* 시각이 없는 예보 응답. 실제 기상청은 항상 `fcstDate`·`fcstTime`을
+         주지만, 없더라도 예전에 얻던 강수확률·하늘상태를 잃지 않아야 한다. */
       return new Response(
         JSON.stringify(
           kmaNowcast([
@@ -153,6 +155,8 @@ test("KMA observation is normalised to the shared weather contract", async () =>
       assert.equal(evidence.windSpeedKph, 10.8, "3.0 m/s → 10.8 km/h");
       assert.equal(evidence.raining, true);
       assert.match(evidence.attribution, /기상청/);
+      /* 시각이 없으면 시계열은 비고, 그때 체류 시간대 판정은 하지 않는다. */
+      assert.deepEqual(evidence.forecast, []);
       assert.ok(
         calls.some((url) => url.includes("nx=60") && url.includes("ny=127")),
         "requests the Seoul grid cell",

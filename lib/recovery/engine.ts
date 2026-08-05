@@ -30,7 +30,13 @@ import {
   type WalkingRouteEvidence,
   type WalkingRouteProvider,
 } from "@/lib/mobility/routing";
+import { toKmaGrid } from "@/lib/weather/kma";
 import { getWeatherEvidence } from "@/lib/weather/service";
+import {
+  outdoorTemperatureStrain,
+  summariseStayWeather,
+  type StayWeather,
+} from "@/lib/weather/window";
 import { withParticle } from "@/lib/text/korean";
 import { strictFiniteNumber } from "@/lib/validation/numbers";
 import type { RecoveryRequest } from "./schema";
@@ -104,6 +110,8 @@ type WorkingCandidate = {
      비교와 달리 단위 정의에 의존하지 않는다. */
   crowdPercentile?: number;
   crowdSeriesDays?: number;
+  /* 이 후보에 **머무는 시간대**의 날씨. 출발지의 지금 하늘이 아니다. */
+  stayWeather?: StayWeather;
   accessibility: AccessibilityEvidence;
   availability: PublicAvailabilityEvidence;
   routeEvidence:
@@ -1127,6 +1135,31 @@ function scoreCandidate(
       continuityScore * 0.4;
   }
 
+  /* 체류 시간대 강수·기온을 **모든 상황에 같은 크기로** 감점한다.
+   *
+   * `indoorScore`에 얹지 않은 이유가 있다. `delay`와 `crowd` 분기에는 그 항이
+   * 아예 없어서(위 가중치를 보라) 가장 흔한 두 상황에서 날씨가 순위에 들어오지
+   * 못한다. 그 항을 새로 넣으려면 다른 가중치를 깎아야 하고, 유일한 큰 항은
+   * 연속성 — 이 제품이 지키겠다고 한 것 — 이다. 그것을 깎는 대신 날씨를 독립
+   * 감점으로 둔다. 상황을 무엇으로 골랐든 그 시간에 비가 오면 실외 후보는
+   * 불리해야 하고, `rain` 분기에서 `indoorScore`와 이중으로 계산되지도 않는다.
+   *
+   * 후보를 제거하지는 않는다. 강수확률 60%는 40%의 경우 비가 오지 않는다는
+   * 뜻이다. 순위를 가르고 카드 문장으로 밝힌다.
+   *
+   * 기온 부담은 유아차·휠체어·고령자를 **이미 밝힌** 요청에서만 감점한다. 그
+   * 선언이 취약 조건에 대한 동의다. 아무 조건도 밝히지 않은 요청에서 우리가
+   * 대신 실내를 선호하면 사용자가 준 조건을 알리지 않고 조이는 것이 된다.
+   * 밝히지 않은 요청에도 문장은 그대로 보여 준다 — 판단은 사용자가 한다. */
+  const stayWeatherPenalty = (() => {
+    const stay = candidate.stayWeather;
+    if (!stay || stay.status === "unknown" || candidate.indoor) return 0;
+    if (stay.status === "rain_likely") return 9;
+    if (stay.status === "rain_possible") return 4;
+    if (input.audience !== "general" && outdoorTemperatureStrain(stay)) return 5;
+    return 0;
+  })();
+
   const comfortScore =
     accessScore * 0.27 +
     indoorScore * 0.2 +
@@ -1136,8 +1169,10 @@ function scoreCandidate(
     continuityScore * 0.17;
 
   return {
-    baseScore: Math.round(baseScore * 10) / 10,
-    comfortScore: Math.round(comfortScore * 10) / 10,
+    baseScore:
+      Math.round(Math.max(0, baseScore - stayWeatherPenalty) * 10) / 10,
+    comfortScore:
+      Math.round(Math.max(0, comfortScore - stayWeatherPenalty) * 10) / 10,
   };
 }
 
@@ -1829,12 +1864,21 @@ async function enrichForContinuity(params: {
     generatedAt: new Date().toISOString(),
   };
 
+  /* 체류 시간대의 날씨. 예보 시계열은 이미 받아 둔 것이므로 추가 호출이 없다.
+     지금 하늘이 아니라 "내가 거기 있을 동안"을 판정한다. */
+  const stayWeather = summariseStayWeather(
+    weatherEvidence,
+    new Date(scheduleDiff.replacementNode.startAt),
+    new Date(scheduleDiff.replacementNode.endAt),
+  );
+
   const withoutScores = {
     ...candidate,
     availability,
     routeEvidence,
     scheduleDiff,
     continuityProof,
+    stayWeather,
   };
   return {
     ...withoutScores,
@@ -1966,6 +2010,57 @@ function buildWhy(
         ? `Official data does not confirm ${missing.join(", ")}. Please check before you set out.`
         : "Official barrier-free data does not confirm the conditions you asked for. Please check before you set out.",
     );
+  }
+  /* 체류 시간대의 날씨. 지금 하늘이 아니라 "내가 거기 있을 동안"을 말한다.
+     실외 후보에만 붙인다 — 실내에 들어가 있는 동안의 강수는 결정을 바꾸지
+     않으므로 카드 한 줄을 쓸 값어치가 없다. */
+  const stay = candidate.stayWeather;
+  if (stay && stay.status !== "unknown" && !candidate.indoor) {
+    const startsAt = stay.precipitationStartsAt
+      ? new Intl.DateTimeFormat("ko-KR", {
+          timeZone: "Asia/Seoul",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).format(new Date(stay.precipitationStartsAt))
+      : undefined;
+    if (stay.status !== "dry") {
+      push(
+        [
+          "머무는 시간대에",
+          startsAt
+            ? `${startsAt}부터 ${stay.precipitationKind ?? "강수"}가 예보돼 있습니다`
+            : `강수확률이 최고 ${stay.maxPrecipitationProbabilityPercent}%입니다`,
+          "(실외 장소입니다).",
+          stay.status === "rain_likely"
+            ? "우산이 필요할 가능성이 높습니다."
+            : "예보가 확정은 아니니 출발 전에 다시 확인해 주세요.",
+        ].join(" "),
+        [
+          "During your stay",
+          startsAt
+            ? `precipitation is forecast from ${startsAt}`
+            : `the peak chance of precipitation is ${stay.maxPrecipitationProbabilityPercent}%`,
+          "(this is an outdoor place).",
+          stay.status === "rain_likely"
+            ? "You will likely need an umbrella."
+            : "A forecast is not a certainty — check again before you set out.",
+        ].join(" "),
+      );
+    }
+    const strain = outdoorTemperatureStrain(stay);
+    if (strain) {
+      /* 조건을 밝히지 않은 요청에도 문장은 보여 준다. 순위는 바꾸지 않되
+         판단할 근거는 준다. */
+      push(
+        strain.kind === "heat"
+          ? `머무는 시간대 기온이 최고 ${strain.celsius}℃로 예보됐습니다. 실외 장소이므로 그늘과 물을 확인해 주세요.`
+          : `머무는 시간대 기온이 최저 ${strain.celsius}℃로 예보됐습니다. 실외 장소이므로 방한을 확인해 주세요.`,
+        strain.kind === "heat"
+          ? `The forecast high during your stay is ${strain.celsius}°C at this outdoor place — check for shade and water.`
+          : `The forecast low during your stay is ${strain.celsius}°C at this outdoor place — dress for the cold.`,
+      );
+    }
   }
   if (candidate.crowdRate !== undefined) {
     push(
@@ -3188,6 +3283,57 @@ export async function recoverTrip(
       "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",
     );
   } else {
+    /* 후보 지점의 예보를 따로 가져온다.
+       출발지 한 점의 예보로 모든 후보를 판단하고 있었는데, 기상청 격자는 약
+       5km이고 이 앱의 기본 반경은 도보 8km·대중교통 20km다. 실측(2026-08-05
+       17시 발표)에서 같은 체류 구간 18:30~20:00에 대해 서울시청 격자는 강수
+       확률 0%로 `dry`, 남쪽 20km 격자는 60%·소나기로 `rain_likely`였다. 한 점만
+       보면 두 곳이 같아 보인다.
+
+       검증 대상은 세 건이고 격자가 같은 후보는 한 번만 부르므로 추가 호출은
+       최대 3회다. 실패하면 출발지 예보로 물러서고, 그 사실을 밝힌다 — 다른
+       지점의 예보를 이 곳의 예보인 것처럼 쓰면 안 된다. */
+    const gridWeather = new Map<
+      string,
+      Awaited<ReturnType<typeof getWeatherEvidence>>
+    >();
+    let candidateForecastFallbacks = 0;
+    const gridKey = (candidate: WorkingCandidate) => {
+      const { nx, ny } = toKmaGrid(candidate.latitude, candidate.longitude);
+      return `${nx},${ny}`;
+    };
+    const originGrid = toKmaGrid(input.origin.latitude, input.origin.longitude);
+    const distinctGrids = new Map<string, WorkingCandidate>();
+    for (const candidate of shortlist) {
+      const key = gridKey(candidate);
+      if (key === `${originGrid.nx},${originGrid.ny}`) continue;
+      if (!distinctGrids.has(key)) distinctGrids.set(key, candidate);
+    }
+    if (distinctGrids.size) {
+      const fetched = await Promise.allSettled(
+        [...distinctGrids.entries()].map(async ([key, candidate]) => {
+          const evidence = await getWeatherEvidence(
+            candidate.latitude,
+            candidate.longitude,
+            { signal: execution.signal },
+          );
+          return [key, evidence] as const;
+        }),
+      );
+      for (const entry of fetched) {
+        if (entry.status === "fulfilled") {
+          gridWeather.set(entry.value[0], entry.value[1]);
+        } else {
+          candidateForecastFallbacks += 1;
+        }
+      }
+    }
+    if (candidateForecastFallbacks) {
+      warnings.push(
+        `후보 ${candidateForecastFallbacks}곳의 기상 예보를 따로 확인하지 못해 출발지 예보로 판단했습니다. 거리가 멀면 실제 날씨가 다를 수 있습니다.`,
+      );
+    }
+
     const settled = await Promise.allSettled(
       shortlist.map((candidate) =>
         enrichForContinuity({
@@ -3196,7 +3342,8 @@ export async function recoverTrip(
           context,
           sourceLedger,
           rejected,
-          weatherEvidence,
+          weatherEvidence:
+            gridWeather.get(gridKey(candidate)) ?? weatherEvidence,
           signal: execution.signal,
         }),
       ),

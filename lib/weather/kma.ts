@@ -147,6 +147,23 @@ export function villageForecastBase(at = new Date()): {
   };
 }
 
+/* `20260805` + `1500` → `2026-08-05T15:00:00+09:00`.
+   KST 오프셋을 문자열에 박아 둔다. 서버가 어느 시간대에서 돌든 같은 순간을
+   가리켜야 하고, Date로 한 번 파싱하면 그 정보가 사라진다. */
+function kstIsoFromForecastStamp(
+  fcstDate: string,
+  fcstTime: string,
+): string | undefined {
+  if (!/^\d{8}$/.test(fcstDate) || !/^\d{4}$/.test(fcstTime)) return undefined;
+  const year = fcstDate.slice(0, 4);
+  const month = fcstDate.slice(4, 6);
+  const day = fcstDate.slice(6, 8);
+  const hour = fcstTime.slice(0, 2);
+  const minute = fcstTime.slice(2, 4);
+  if (Number(hour) > 23 || Number(minute) > 59) return undefined;
+  return `${year}-${month}-${day}T${hour}:${minute}:00+09:00`;
+}
+
 type KmaItem = {
   category?: string;
   obsrValue?: string;
@@ -159,6 +176,9 @@ async function callKma(
   operation: string,
   params: Record<string, string | number>,
   signal?: AbortSignal,
+  /* 단기예보는 카테고리 12종 x 시간슬롯 66개 = 약 800항목을 준다. 300으로
+     받으면 뒷부분 슬롯이 잘린다. 실황은 8항목이라 기본값으로 충분하다. */
+  numOfRows = 300,
 ): Promise<KmaItem[]> {
   const key = kmaServiceKey();
   if (!key) throw new Error("KMA_KEY_MISSING");
@@ -168,7 +188,7 @@ async function callKma(
     serviceKey: key,
     dataType: "JSON",
     pageNo: "1",
-    numOfRows: "300",
+    numOfRows: String(numOfRows),
   });
   for (const [name, value] of Object.entries(params)) {
     search.set(name, String(value));
@@ -259,6 +279,23 @@ function precipitationMillimeters(value: string | undefined): number {
   return match ? Number(match[0]) : 0;
 }
 
+/* 단기예보의 시간슬롯 하나. 이 앱은 이미 `getVilageFcst`를 호출하고 있었지만
+   첫 슬롯의 강수확률과 하늘상태만 읽고 나머지 약 790개 값을 버렸다. 여행자가
+   **거기 있을 시간대**의 날씨는 그 버린 값들 안에 있었다. */
+export type KmaForecastSlot = {
+  /* KST 기준 예보 시각(ISO 8601, +09:00). */
+  at: string;
+  precipitationProbabilityPercent?: number;
+  /* PTY: 0 없음 1 비 2 비/눈 3 눈 4 소나기. */
+  precipitationType?: number;
+  /* PCP·SNO 원문. `강수없음`처럼 문자열로 오는 경우가 있어 그대로 보관한다. */
+  precipitationText?: string;
+  temperatureCelsius?: number;
+  skyCode?: number;
+  windSpeedKph?: number;
+  humidityPercent?: number;
+};
+
 export type KmaObservation = {
   observedAt: string;
   temperatureCelsius: number;
@@ -271,6 +308,9 @@ export type KmaObservation = {
   baseTime: string;
   nx: number;
   ny: number;
+  /* 지금부터 앞으로의 시간별 예보. 비어 있으면 단기예보 호출이 실패했다는
+     뜻이고, 그때는 체류 시간대 판정을 하지 않는다. */
+  forecast: KmaForecastSlot[];
 };
 
 export async function getKmaObservation(
@@ -294,6 +334,8 @@ export async function getKmaObservation(
       "getVilageFcst",
       { base_date: village.baseDate, base_time: village.baseTime, nx, ny },
       options.signal,
+      /* 카테고리 12종 x 슬롯 66개. 실측 798항목이므로 여유를 둔다. */
+      1_000,
     ),
   ]);
 
@@ -307,21 +349,74 @@ export async function getKmaObservation(
   const temperature = numeric(observed.get("T1H"));
   if (temperature === undefined) throw new Error("KMA_EMPTY_OBSERVATION");
 
-  let probability: number | undefined;
-  let sky: number | undefined;
+  /* 예보를 시간슬롯으로 모은다. 예전에는 첫 슬롯의 POP·SKY만 읽고 나머지를
+     버렸는데, 여행자가 **거기 있을 시간대**의 날씨가 그 버린 값들 안에 있었다.
+     같은 응답이므로 추가 호출은 없다. */
+  const slotMap = new Map<string, KmaForecastSlot>();
   if (villageResult.status === "fulfilled") {
-    /* Take the earliest forecast slot at or after now, which is the first
-       entry the service returns for each category. */
     for (const item of villageResult.value) {
-      if (item.category === "POP" && probability === undefined) {
-        probability = numeric(item.fcstValue);
+      if (!item.fcstDate || !item.fcstTime || !item.category) continue;
+      const at = kstIsoFromForecastStamp(item.fcstDate, item.fcstTime);
+      if (!at) continue;
+      const slot = slotMap.get(at) ?? { at };
+      const raw = item.fcstValue;
+      switch (item.category) {
+        case "POP":
+          slot.precipitationProbabilityPercent = numeric(raw);
+          break;
+        case "PTY":
+          slot.precipitationType = numeric(raw);
+          break;
+        case "PCP":
+          if (raw) slot.precipitationText = raw;
+          break;
+        case "TMP":
+          slot.temperatureCelsius = numeric(raw);
+          break;
+        case "SKY":
+          slot.skyCode = numeric(raw);
+          break;
+        case "WSD": {
+          const metersPerSecond = numeric(raw);
+          if (metersPerSecond !== undefined) {
+            slot.windSpeedKph =
+              Math.round(metersPerSecond * 3.6 * 10) / 10;
+          }
+          break;
+        }
+        case "REH":
+          slot.humidityPercent = numeric(raw);
+          break;
+        default:
+          break;
       }
-      if (item.category === "SKY" && sky === undefined) {
-        sky = numeric(item.fcstValue);
-      }
-      if (probability !== undefined && sky !== undefined) break;
+      slotMap.set(at, slot);
     }
   }
+  const forecast = [...slotMap.values()].sort((a, b) =>
+    a.at.localeCompare(b.at),
+  );
+  /* 실황에 없는 두 값은 가장 이른 슬롯에서 가져온다 — 예전 동작과 같다.
+     슬롯을 만들지 못한 경우(예보 항목에 시각이 없는 응답)에는 원본 항목을
+     순서대로 훑어 첫 값을 쓴다. 시계열을 못 만들었다는 이유로 예전에 얻던
+     값까지 잃으면 안 된다. */
+  const firstCategoryValue = (category: string): number | undefined => {
+    if (villageResult.status !== "fulfilled") return undefined;
+    for (const item of villageResult.value) {
+      if (item.category === category) {
+        const value = numeric(item.fcstValue);
+        if (value !== undefined) return value;
+      }
+    }
+    return undefined;
+  };
+  const probability =
+    forecast.find(
+      (slot) => slot.precipitationProbabilityPercent !== undefined,
+    )?.precipitationProbabilityPercent ?? firstCategoryValue("POP");
+  const sky =
+    forecast.find((slot) => slot.skyCode !== undefined)?.skyCode ??
+    firstCategoryValue("SKY");
 
   const pty = numeric(observed.get("PTY"));
   const rain = precipitationMillimeters(observed.get("RN1"));
@@ -342,5 +437,6 @@ export async function getKmaObservation(
     baseTime: nowcast.baseTime,
     nx,
     ny,
+    forecast,
   };
 }

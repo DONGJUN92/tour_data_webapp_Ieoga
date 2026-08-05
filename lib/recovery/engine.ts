@@ -1,4 +1,5 @@
 import {
+  CONCENTRATION_PAGE_SIZE,
   getAccessibilityDetail,
   getConcentrationForecast,
   getNearbyAccessibleTourism,
@@ -99,6 +100,10 @@ type WorkingCandidate = {
   purposePreservation: TravelPurposeProof;
   crowdRate?: number;
   crowdBaseDate?: string;
+  /* 오늘 값이 그 장소 자신의 30일 분포에서 몇 번째 백분위인가. 장소 간 절대값
+     비교와 달리 단위 정의에 의존하지 않는다. */
+  crowdPercentile?: number;
+  crowdSeriesDays?: number;
   accessibility: AccessibilityEvidence;
   availability: PublicAvailabilityEvidence;
   routeEvidence:
@@ -398,9 +403,27 @@ function unknownAvailability(
   };
 }
 
+/* 집중률 예측의 오늘 값과, 그 값이 **그 장소 자신의 최근 분포에서 어디인지.**
+ *
+ * 이 API는 시군구당 관광지 x 30일 시계열을 준다. 예전에는 오늘 하루치만 쓰고
+ * 29일치를 버렸다. 서울 종로 113곳 x 30일을 실측해 분산을 나눠 보면 장소 간
+ * 변동 13.49, 장소 내 변동 13.28로 **거의 같다.** 즉 버린 29일치에 값의 절반이
+ * 들어 있었다 — 같은 60점이 그 장소의 평소보다 유난히 붐비는 날일 수도, 유난히
+ * 한적한 날일 수도 있다.
+ *
+ * 백분위는 단위 정의에 의존하지 않으므로 절대값과 함께 쓸 수 있다. 시간 단위
+ * 값은 이 API에 없으므로 "지금 붐빔이 오르고 있다"는 판정은 하지 않는다. */
 function currentForecastByTitle(items: KtoItem[]): Map<
   string,
-  { rate: number; baseDate: string }
+  {
+    rate: number;
+    baseDate: string;
+    /* 0~100. 오늘 값이 30일 분포에서 몇 번째 백분위인가. */
+    percentileOfSeries?: number;
+    seriesDays?: number;
+    seriesMin?: number;
+    seriesMax?: number;
+  }
 > {
   const koreaDateParts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -427,16 +450,78 @@ function currentForecastByTitle(items: KtoItem[]): Map<
     grouped.set(name, values);
   }
 
-  const selected = new Map<string, { rate: number; baseDate: string }>();
+  const selected = new Map<
+    string,
+    {
+      rate: number;
+      baseDate: string;
+      percentileOfSeries?: number;
+      seriesDays?: number;
+      seriesMin?: number;
+      seriesMax?: number;
+    }
+  >();
   for (const [name, values] of grouped) {
     values.sort((a, b) => a.baseDate.localeCompare(b.baseDate));
-    selected.set(
-      name,
+    const chosen =
       values.find((value) => value.baseDate >= today) ??
-        values[values.length - 1],
-    );
+      values[values.length - 1];
+    /* 하루치만 온 장소는 분포가 없다. 그때 백분위를 0이나 100으로 적으면
+       없는 근거를 만들어 내는 것이므로 비워 둔다. */
+    if (values.length < 7) {
+      selected.set(name, chosen);
+      continue;
+    }
+    const rates = values.map((value) => value.rate);
+    const atOrBelow = rates.filter((rate) => rate <= chosen.rate).length;
+    selected.set(name, {
+      ...chosen,
+      percentileOfSeries: Math.round((atOrBelow / rates.length) * 100),
+      seriesDays: rates.length,
+      seriesMin: Math.min(...rates),
+      seriesMax: Math.max(...rates),
+    });
   }
   return selected;
+}
+
+/* 혼잡을 피하려는 사용자에게 줄 수 있는 점수. 높을수록 덜 붐빈다.
+ *
+ * 이 지표가 무엇인지 실측으로 확인한 것과 확인하지 못한 것을 나눠 둔다.
+ *
+ * 확인한 것 (서울 종로 113곳 x 30일):
+ * - 장소 간 변동(각 장소 30일 평균의 표준편차) 13.49, 장소 내 변동(각 장소
+ *   30일 표준편차의 평균) 13.28. **비율 1.02로 두 성분이 거의 같다.** 즉 값은
+ *   절반은 그 장소의 성격이고 절반은 그날의 사정이다. 어느 한쪽으로만 읽으면
+ *   절반을 버린다.
+ * - 장소 평균은 실제 유동인구를 따르지 않는다. 청와대 37.1이 경운동민병옥가옥
+ *   81.5보다 낮다. 따라서 이 값을 "사람 수"로 읽으면 안 된다. 좁은 한옥이
+ *   적은 인원으로도 포화될 수 있다는 뜻의 **포화도**에 가깝다.
+ * - 값은 일 단위다. 시간 단위가 없으므로 "지금 붐빔이 오르는 중"은 판정하지
+ *   않는다.
+ *
+ * 확인하지 못한 것: 공식 필드 정의. 그래서 어느 쪽도 단정하지 않고 두 성분을
+ * 모두 쓴다. 절대값을 주 축으로 두되(포화도로서 여행객의 체감에 가깝다),
+ * 그 장소 자신의 최근 분포에서 유난히 높거나 낮은 날은 양 끝에서만 보정한다.
+ * 보정 폭을 작게 두는 이유는 어느 해석도 확정되지 않았기 때문이다.
+ *
+ * 점수와 정렬과 라벨이 이 함수 하나를 쓴다. 따로 적어 두면 갈라진다. 실제로
+ * 갈려서 집중률 63.77 후보에 "덜 붐빌 것으로 예측된 곳" 라벨이 붙고 그 위
+ * 카드가 14.01이었다. */
+function crowdComfortScore(candidate: {
+  crowdRate?: number;
+  crowdPercentile?: number;
+}): number {
+  if (candidate.crowdRate === undefined) return 50;
+  /* 단조 감소로 바꿨다. 예전에는 60·80을 경계로 한 3단 계단이어서 61과 79가
+     같은 점수를 받았다. 이제 후보 대부분이 값을 받으므로 그 손실을 감출
+     이유가 없다. */
+  let score = 100 - candidate.crowdRate * 0.8;
+  if (candidate.crowdPercentile !== undefined) {
+    if (candidate.crowdPercentile >= 85) score -= 12;
+    else if (candidate.crowdPercentile <= 15) score += 8;
+  }
+  return Math.round(Math.min(100, Math.max(0, score)));
 }
 
 /* 연관 관광지의 대분류를 후보의 콘텐츠 유형으로 옮긴다. 실데이터의 대분류는
@@ -968,14 +1053,7 @@ function scoreCandidate(
       : candidate.purposePreservation.status === "verified_activity_type"
         ? 96
         : categoryScore;
-  const crowdScore =
-    candidate.crowdRate === undefined
-      ? 50
-      : candidate.crowdRate >= 80
-        ? 25
-        : candidate.crowdRate >= 60
-          ? 62
-          : 86;
+  const crowdScore = crowdComfortScore(candidate);
   const accessScore =
     input.audience === "general"
       ? 75
@@ -1891,8 +1969,28 @@ function buildWhy(
   }
   if (candidate.crowdRate !== undefined) {
     push(
-      `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100입니다. 현장 실시간 인원수는 아닙니다.`,
-      `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100 — a forecast, not a live headcount.`,
+      /* 절대값 하나만 적으면 63이 높은지 낮은지 알 수 없다. 그 장소 자신의
+         최근 분포에서 어디인지를 함께 적어야 여행객이 쓸 수 있다. 두 값 다
+         **인원수가 아니다** — 실측에서 청와대(평균 37.1)가 경운동민병옥가옥
+         (81.5)보다 낮았다. 좁은 곳은 적은 인원으로도 포화된다. */
+      candidate.crowdPercentile === undefined
+        ? `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100입니다. 사람 수가 아니라 그 곳이 얼마나 붐빌지에 대한 예측이고, 이 곳의 최근 분포와 비교할 값이 부족합니다.`
+        : `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100이고, 이 곳의 최근 ${candidate.crowdSeriesDays ?? 30}일 예측 중 ${candidate.crowdPercentile}번째 백분위인 날입니다. ${
+            candidate.crowdPercentile >= 85
+              ? "이 곳 평소보다 유난히 붐비는 날입니다."
+              : candidate.crowdPercentile <= 15
+                ? "이 곳 평소보다 유난히 한적한 날입니다."
+                : "이 곳 평소와 비슷한 수준입니다."
+          } 사람 수가 아니라 붐빔 정도에 대한 예측이며, 현장 실시간 인원수는 아닙니다.`,
+      candidate.crowdPercentile === undefined
+        ? `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100 — a crowding forecast rather than a headcount, and too few values to compare with this place's own range.`
+        : `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100, at the ${candidate.crowdPercentile}th percentile of this place's last ${candidate.crowdSeriesDays ?? 30} daily forecasts. ${
+            candidate.crowdPercentile >= 85
+              ? "Unusually busy for this place."
+              : candidate.crowdPercentile <= 15
+                ? "Unusually quiet for this place."
+                : "About typical for this place."
+          } A crowding forecast, not a live headcount.`,
     );
   }
   if (candidate.relatedRank !== undefined) {
@@ -2106,9 +2204,18 @@ function toOption(
             status: "available",
             relativeRate: candidate.crowdRate,
             baseDate: candidate.crowdBaseDate,
-            note: "앞으로의 집중률 예측값입니다. 현장 실시간 인원수가 아닙니다.",
+            percentileOfSeries: candidate.crowdPercentile,
+            seriesDays: candidate.crowdSeriesDays,
+            /* 실측 근거: 장소 간 변동과 장소 내 변동이 거의 같다(비율 1.02).
+               그래서 절대값과 백분위를 함께 싣는다. */
+            note:
+              candidate.crowdPercentile === undefined
+                ? "앞으로의 붐빔 정도 예측값입니다. 사람 수가 아니고, 이 곳의 최근 분포와 비교할 만큼의 값이 없습니다."
+                : `앞으로의 붐빔 정도 예측값입니다. 사람 수가 아닙니다. 이 곳의 최근 ${candidate.crowdSeriesDays ?? 30}일 예측 중 ${candidate.crowdPercentile}번째 백분위입니다.`,
             noteEn:
-              "A forward-looking concentration forecast, not a live headcount.",
+              candidate.crowdPercentile === undefined
+                ? "A forward-looking crowding forecast, not a headcount. Too few values to compare against this place's own recent range."
+                : `A forward-looking crowding forecast, not a headcount. It sits at the ${candidate.crowdPercentile}th percentile of this place's last ${candidate.crowdSeriesDays ?? 30} daily forecasts.`,
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,
@@ -2200,11 +2307,13 @@ function pickOptions(
   /* 두 번째 카드는 상황별로 사용자가 실제로 궁금해하는 축을 쓴다. */
   if (input.incident === "crowd") {
     addFirstUnused(
-      [...pool].sort((a, b) => {
-        const aRate = a.crowdRate ?? 101;
-        const bRate = b.crowdRate ?? 101;
-        return aRate - bRate || b.baseScore - a.baseScore;
-      }),
+      /* 점수와 같은 함수로 정렬한다. 따로 적어 두면 갈라지고, 실제로 갈려서
+         라벨이 자기 카드의 수치와 반대가 됐다. 높을수록 덜 붐빈다. */
+      [...pool].sort(
+        (a, b) =>
+          crowdComfortScore(b) - crowdComfortScore(a) ||
+          b.baseScore - a.baseScore,
+      ),
       "comfortable",
       /* 최저 집중률 후보가 앞 카드에 이미 쓰였으면 이 카드는 차순위를 물려받는데,
          라벨만 "덜 붐빌 것으로 예측된 곳"으로 남아 자기 카드의 수치와 정반대가
@@ -2213,17 +2322,17 @@ function pickOptions(
          "경사로 있음"이나 "운영시간 확인" 같은 정직한 문장까지 함께 의심받는다.
          그래서 실제로 더 낮을 때만 그렇게 말한다. */
       (candidate) => {
-        const rate = candidate.crowdRate;
-        if (rate === undefined) {
+        if (candidate.crowdRate === undefined) {
           return {
             ko: "집중률 예측을 확인하지 못한 곳",
             en: "No crowd forecast available",
           };
         }
+        const score = crowdComfortScore(candidate);
         const lowerAlreadyShown = selected.some(
           (entry) =>
             entry.candidate.crowdRate !== undefined &&
-            entry.candidate.crowdRate <= rate,
+            crowdComfortScore(entry.candidate) >= score,
         );
         return lowerAlreadyShown
           ? {
@@ -2486,13 +2595,59 @@ export async function recoverTrip(
           { signal: execution.signal, timeoutMs: 4_000, retry: false },
         )
       : Promise.resolve(undefined);
-  const crowdPromise =
-    regionCode && districtCode && !disabled.has("TatsCnctrRateService")
-      ? getConcentrationForecast(
-          { regionCode, districtCode },
-          { signal: execution.signal, timeoutMs: 4_000, retry: false },
-        )
-      : Promise.resolve(undefined);
+  /* 집중률은 후보가 실제로 속한 시군구들로 조회한다.
+     출발지 시군구 하나로만 조회하고 있었는데, 반경 8km 후보는 시군구 경계를
+     넘나든다 — 서울시청 기준 실측에서 후보 100건이 중구 71 / 종로 29로 갈렸다.
+     즉 어느 쪽을 출발지로 잡아도 약 30%의 후보는 조회 대상조차 아니었고,
+     그 후보들은 실제 혼잡도와 무관하게 중립값을 받았다.
+
+     후보 수가 많은 시군구부터 최대 3곳까지만 부른다. 20초 예산 안에서 병렬로
+     돌리되 무한정 늘릴 수는 없고, 자른 사실은 아래에서 밝힌다. */
+  const candidateDistricts = (() => {
+    const counts = new Map<
+      string,
+      { regionCode: string; districtCode: string; count: number }
+    >();
+    for (const item of nearby.items) {
+      const codes = normalizeAnalysisCodes(item);
+      if (!codes.regionCode || !codes.districtCode) continue;
+      const key = `${codes.regionCode}:${codes.districtCode}`;
+      const entry = counts.get(key);
+      if (entry) entry.count += 1;
+      else
+        counts.set(key, {
+          regionCode: codes.regionCode,
+          districtCode: codes.districtCode,
+          count: 1,
+        });
+    }
+    /* 출발지 시군구는 후보가 적어도 포함한다 — 사용자가 서 있는 곳이다. */
+    if (regionCode && districtCode) {
+      const key = `${regionCode}:${districtCode}`;
+      if (!counts.has(key)) {
+        counts.set(key, { regionCode, districtCode, count: 0 });
+      }
+    }
+    return [...counts.values()].sort((a, b) => b.count - a.count);
+  })();
+  const CROWD_DISTRICT_LIMIT = 3;
+  const crowdDistricts = disabled.has("TatsCnctrRateService")
+    ? []
+    : candidateDistricts.slice(0, CROWD_DISTRICT_LIMIT);
+  const crowdDistrictsSkipped = disabled.has("TatsCnctrRateService")
+    ? 0
+    : Math.max(candidateDistricts.length - crowdDistricts.length, 0);
+  const crowdPromise = crowdDistricts.length
+    ? Promise.allSettled(
+        crowdDistricts.map((scope) =>
+          getConcentrationForecast(scope, {
+            signal: execution.signal,
+            timeoutMs: 4_000,
+            retry: false,
+          }),
+        ),
+      )
+    : Promise.resolve(undefined);
   const accessiblePromise =
     input.audience === "general" || disabled.has("KorWithService2")
       ? Promise.resolve(undefined)
@@ -2556,9 +2711,55 @@ export async function recoverTrip(
   }
 
   let crowdItems: KtoItem[] = [];
-  if (crowdSettled.status === "fulfilled" && crowdSettled.value) {
-    crowdItems = crowdSettled.value.items;
-    sourceLedger.push(crowdSettled.value.audit);
+  /* 시군구별 호출 결과를 합친다. 일부 시군구만 실패해도 나머지는 살린다 —
+     하나가 실패하면 전부 버리는 편이 코드는 짧지만, 그러면 후보 대부분이
+     이유 없이 중립값을 받는다. */
+  const crowdOutcomes =
+    crowdSettled.status === "fulfilled" && crowdSettled.value
+      ? crowdSettled.value
+      : [];
+  const crowdSucceeded = crowdOutcomes.filter(
+    (outcome): outcome is PromiseFulfilledResult<KtoCallResult> =>
+      outcome.status === "fulfilled",
+  );
+  const crowdFailedCount = crowdOutcomes.length - crowdSucceeded.length;
+  if (crowdSucceeded.length) {
+    crowdItems = crowdSucceeded.flatMap((outcome) => outcome.value.items);
+    for (const outcome of crowdSucceeded) {
+      sourceLedger.push(outcome.value.audit);
+    }
+    /* 상한을 넘어 잘렸으면 밝힌다. 조용히 잘리는 것이 원래 결함이었으므로
+       같은 실패를 반복하지 않도록 사용자가 볼 수 있는 자리에 남긴다. */
+    const truncatedScopes = crowdSucceeded.filter(
+      (outcome) =>
+        outcome.value.audit.totalCount > outcome.value.audit.resultCount,
+    );
+    if (truncatedScopes.length) {
+      warnings.push(
+        `관광 집중률 예측을 시군구 ${truncatedScopes.length}곳에서 일부만 받았습니다(응답 상한 ${CONCENTRATION_PAGE_SIZE.toLocaleString("ko-KR")}행). 받지 못한 관광지는 혼잡 근거 없이 중립으로 처리했습니다.`,
+      );
+    }
+    if (crowdFailedCount) {
+      warnings.push(
+        `관광 집중률 예측을 시군구 ${crowdFailedCount}곳에서 조회하지 못했습니다. 그 지역 후보는 혼잡 근거 없이 중립으로 처리했습니다.`,
+      );
+      for (const outcome of crowdOutcomes) {
+        if (outcome.status === "rejected") {
+          sourceLedger.push(
+            auditFromFailure(
+              "TatsCnctrRateService",
+              "tatsCnctrRatedList",
+              outcome.reason,
+            ),
+          );
+        }
+      }
+    }
+    if (crowdDistrictsSkipped) {
+      warnings.push(
+        `후보가 시군구 ${candidateDistricts.length}곳에 걸쳐 있어 후보가 많은 ${crowdDistricts.length}곳만 집중률을 조회했습니다. 나머지 ${crowdDistrictsSkipped}곳 후보는 혼잡 근거 없이 중립으로 처리했습니다.`,
+      );
+    }
   } else if (disabled.has("TatsCnctrRateService")) {
     sourceLedger.push(
       notRequiredAudit(
@@ -2885,6 +3086,8 @@ export async function recoverTrip(
       }),
       crowdRate: forecast?.rate,
       crowdBaseDate: forecast?.baseDate,
+      crowdPercentile: forecast?.percentileOfSeries,
+      crowdSeriesDays: forecast?.seriesDays,
       accessibility: evaluateAccessibility(input.audience),
       availability,
       routeEvidence,

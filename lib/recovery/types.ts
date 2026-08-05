@@ -39,6 +39,11 @@ export type CrowdEvidence = {
   status: "available" | "unavailable";
   relativeRate?: number;
   baseDate?: string;
+  /* 오늘 값이 **그 장소 자신의** 최근 일별 분포에서 몇 번째 백분위인가(0~100).
+     장소 간 절대값 비교는 이 지표의 단위 정의에 의존하는데 공식 정의를 확인하지
+     못했다. 백분위는 단위가 무엇이든 잘 정의되므로 이쪽을 함께 싣는다. */
+  percentileOfSeries?: number;
+  seriesDays?: number;
   note: string;
   noteEn?: string;
 };

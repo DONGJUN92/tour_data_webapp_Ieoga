@@ -142,7 +142,21 @@ test("S1-4 집중률 라벨이 자기 카드의 수치와 모순되지 않는다
     `라벨 블록을 찾지 못했다 (${branch.length}자)`,
   );
   assert.match(branch, /const lowerAlreadyShown = selected\.some\(/);
-  assert.match(branch, /entry\.candidate\.crowdRate <= rate/);
+  /* 판정 축은 절대값에서 `crowdComfortScore`로 옮겼다 — 점수·정렬·라벨이
+     한 함수를 쓰지 않으면 다시 갈린다. 불변식은 그대로다: 더 덜 붐비는
+     후보가 이미 보였으면 "덜 붐빌" 라벨을 쓰지 않는다. */
+  assert.match(branch, /crowdComfortScore\(entry\.candidate\) >= score/);
+  const engineAll = engine;
+  for (const site of [
+    /const crowdScore = crowdComfortScore\(candidate\);/,
+    /crowdComfortScore\(b\) - crowdComfortScore\(a\)/,
+  ]) {
+    assert.match(
+      engineAll,
+      site,
+      `점수·정렬 중 하나가 공통 함수를 쓰지 않는다: ${site}`,
+    );
+  }
   /* 더 낮은 후보가 이미 보였으면 다른 문구를 쓴다. */
   assert.match(branch, /집중률 예측을 확인한 곳/);
   /* 예측값이 아예 없으면 그것도 밝힌다. */

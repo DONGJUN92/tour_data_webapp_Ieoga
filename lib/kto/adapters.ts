@@ -379,6 +379,19 @@ export function getRelatedTourism(params: {
   );
 }
 
+/* 집중률은 시군구 하나에 **관광지 수 x 30일**만큼의 행을 준다. 종로는 113곳 x
+   30일 = 3,390행이다. 그런데 이 호출이 1,000행만 받고 있었고, 응답이 가나다순
+   이어서 `가회민화박물관`부터 `보신각 터`까지 34곳에서 잘렸다. 북촌한옥마을·
+   창덕궁·종묘·세종문화회관이 통째로 빠졌다 — 집중률 데이터의 유무가 **관광지
+   이름의 자모 순서**로 결정되고 있었다는 뜻이다. 잘린 후보는 중립값 50점을
+   받으므로 `혼잡` 상황을 골라도 순위가 거의 바뀌지 않았다.
+
+   실측 최대치는 종로 3,390행이고 5,000행이면 한 번에 받는다(+0.15초, +366KB).
+   상한을 두는 이유는 응답 크기 자체를 통제해야 하기 때문이고, 그 상한을
+   넘는 지역이 나오면 조용히 잃지 않도록 호출자가 `totalCount`와 받은 건수를
+   비교해 밝힌다. 조용히 잘리는 것이 원래 결함이었다. */
+export const CONCENTRATION_PAGE_SIZE = 5_000;
+
 export function getConcentrationForecast(params: {
   regionCode: string;
   districtCode: string;
@@ -389,7 +402,7 @@ export function getConcentrationForecast(params: {
     "tatsCnctrRatedList",
     {
       pageNo: 1,
-      numOfRows: 1_000,
+      numOfRows: CONCENTRATION_PAGE_SIZE,
       areaCd: analysisRegionCode(params.regionCode),
       signguCd: analysisDistrictCode(
         params.regionCode,

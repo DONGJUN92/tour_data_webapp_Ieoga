@@ -1,0 +1,26 @@
+=== 전체 (limit 2, 서울 종로) ===
+  page 1 HTTP 200
+  missionCount: 2 | total: 5 | truncated: True
+  ids: ['seed-1', 'seed-2']
+  byStatus: {'open': 3, 'in_progress': 1, 'ready_for_recheck': 1}
+  page 2 HTTP 200
+  missionCount: 2 | total: 5 | truncated: True
+  ids: ['seed-3', 'seed-4']
+  byStatus: {'open': 3, 'in_progress': 1, 'ready_for_recheck': 1}
+  page 3 HTTP 200
+  missionCount: 1 | total: 5 | truncated: False
+  ids: ['seed-5']
+  byStatus: {'open': 3, 'in_progress': 1, 'ready_for_recheck': 1}
+
+=== 페이징 결과 검증 ===
+  수집: ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5']
+  중복: False
+=== 한 번에 받은 결과와 같은가 ===
+  HTTP 200
+  missionCount: 5 | total: 5 | truncated: False
+  ids: ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5']
+  byStatus: {'open': 3, 'in_progress': 1, 'ready_for_recheck': 1}
+  한 번에: ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5']
+  일치: True
+=== 억제된 미션(seed-7)은 어디에도 없어야 한다 ===
+0

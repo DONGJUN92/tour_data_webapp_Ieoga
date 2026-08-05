@@ -1,0 +1,288 @@
+{
+ "26350": {
+  "label": "부산광역시 해운대구",
+  "areaCd": "26",
+  "signguCd": "26350",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    601
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 601,
+  "rowsReceived": 601,
+  "distinctAnchors": 15,
+  "distinctRelated": 340,
+  "anchorProbe": "해운대해수욕장",
+  "anchorExactHit": [
+   "해운대해수욕장"
+  ],
+  "anchorPartialHit": [
+   "해운대해수욕장"
+  ],
+  "topAnchors": [
+   [
+    "SEA LIFE 부산아쿠아리움",
+    50
+   ],
+   [
+    "더베이101",
+    50
+   ],
+   [
+    "동백섬",
+    50
+   ],
+   [
+    "벡스코/제1전시장",
+    50
+   ],
+   [
+    "송정해수욕장",
+    50
+   ]
+  ]
+ },
+ "11110": {
+  "label": "서울특별시 종로구",
+  "areaCd": "11",
+  "signguCd": "11110",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    1597
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 1597,
+  "rowsReceived": 1000,
+  "distinctAnchors": 38,
+  "distinctRelated": 576,
+  "anchorProbe": "경복궁",
+  "anchorExactHit": [
+   "경복궁"
+  ],
+  "anchorPartialHit": [
+   "경복궁"
+  ],
+  "topAnchors": [
+   [
+    "경복궁",
+    50
+   ],
+   [
+    "광장시장",
+    50
+   ],
+   [
+    "광화문",
+    50
+   ],
+   [
+    "국립고궁박물관",
+    50
+   ],
+   [
+    "국립어린이과학관",
+    50
+   ]
+  ]
+ },
+ "27110": {
+  "label": "대구광역시 중구",
+  "areaCd": "27",
+  "signguCd": "27110",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    440
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 440,
+  "rowsReceived": 440,
+  "distinctAnchors": 18,
+  "distinctRelated": 310,
+  "anchorProbe": "대구근대역사관",
+  "anchorExactHit": [
+   "대구근대역사관"
+  ],
+  "anchorPartialHit": [
+   "대구근대역사관"
+  ],
+  "topAnchors": [
+   [
+    "김광석다시그리기길",
+    50
+   ],
+   [
+    "달성공원",
+    50
+   ],
+   [
+    "동성로",
+    50
+   ],
+   [
+    "서문시장",
+    50
+   ],
+   [
+    "번개시장",
+    47
+   ]
+  ]
+ },
+ "51760": {
+  "label": "강원특별자치도 평창군",
+  "areaCd": "51",
+  "signguCd": "51760",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    927
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 927,
+  "rowsReceived": 927,
+  "distinctAnchors": 32,
+  "distinctRelated": 371,
+  "anchorProbe": "월정사 성보박물관",
+  "anchorExactHit": [
+   "월정사성보박물관"
+  ],
+  "anchorPartialHit": [
+   "월정사성보박물관"
+  ],
+  "topAnchors": [
+   [
+    "국립한국자생식물원",
+    50
+   ],
+   [
+    "대관령양떼목장",
+    50
+   ],
+   [
+    "대관령하늘목장",
+    50
+   ],
+   [
+    "삼양라운드힐",
+    50
+   ],
+   [
+    "상원사",
+    50
+   ]
+  ]
+ },
+ "50130": {
+  "label": "제주특별자치도 서귀포시",
+  "areaCd": "50",
+  "signguCd": "50130",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    4618
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 4618,
+  "rowsReceived": 1000,
+  "distinctAnchors": 29,
+  "distinctRelated": 623,
+  "anchorProbe": "천지연폭포",
+  "anchorExactHit": [],
+  "anchorPartialHit": [],
+  "topAnchors": [
+   [
+    "WE호텔",
+    50
+   ],
+   [
+    "감귤박물관",
+    50
+   ],
+   [
+    "강정포구",
+    50
+   ],
+   [
+    "개오름",
+    50
+   ],
+   [
+    "건강과성박물관",
+    50
+   ]
+  ]
+ },
+ "47940": {
+  "label": "경상북도 울릉군",
+  "areaCd": "47",
+  "signguCd": "47940",
+  "descent": [
+   [
+    "202607",
+    0
+   ],
+   [
+    "202606",
+    231
+   ]
+  ],
+  "baseYmUsed": "202606",
+  "totalCount": 231,
+  "rowsReceived": 231,
+  "distinctAnchors": 13,
+  "distinctRelated": 64,
+  "anchorProbe": "독도박물관",
+  "anchorExactHit": [],
+  "anchorPartialHit": [],
+  "topAnchors": [
+   [
+    "나리분지",
+    31
+   ],
+   [
+    "태하향목관광모노레일",
+    30
+   ],
+   [
+    "관음도",
+    24
+   ],
+   [
+    "도동항",
+    24
+   ],
+   [
+    "행남해안산책로",
+    21
+   ]
+  ]
+ }
+}

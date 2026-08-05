@@ -1,0 +1,62 @@
+{
+ "26350": {
+  "name": "부산 해운대구",
+  "stage1DistrictsSeconds": 0.59,
+  "stage1DistrictCount": 16,
+  "stage2PlaceSearchSeconds": 1.97,
+  "stage2PlaceCount": 2,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 4.57,
+  "totalSeconds": 7.13
+ },
+ "11110": {
+  "name": "서울 종로구",
+  "stage1DistrictsSeconds": 0.6,
+  "stage1DistrictCount": 25,
+  "stage2PlaceSearchSeconds": 1.14,
+  "stage2PlaceCount": 8,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 2.95,
+  "totalSeconds": 4.69
+ },
+ "27110": {
+  "name": "대구 중구",
+  "stage1DistrictsSeconds": 0.58,
+  "stage1DistrictCount": 9,
+  "stage2PlaceSearchSeconds": 1.13,
+  "stage2PlaceCount": 1,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 3.35,
+  "totalSeconds": 5.06
+ },
+ "51760": {
+  "name": "강원 평창군",
+  "stage1DistrictsSeconds": 0.57,
+  "stage1DistrictCount": 18,
+  "stage2PlaceSearchSeconds": 1.17,
+  "stage2PlaceCount": 6,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 2.46,
+  "totalSeconds": 4.2
+ },
+ "50130": {
+  "name": "제주 서귀포시",
+  "stage1DistrictsSeconds": 0.57,
+  "stage1DistrictCount": 2,
+  "stage2PlaceSearchSeconds": 1.18,
+  "stage2PlaceCount": 1,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 3.65,
+  "totalSeconds": 5.4
+ },
+ "47940": {
+  "name": "경북 울릉군",
+  "stage1DistrictsSeconds": 0.58,
+  "stage1DistrictCount": 24,
+  "stage2PlaceSearchSeconds": 1.13,
+  "stage2PlaceCount": 1,
+  "stage2KtoStatus": "live",
+  "stage3RecoverSeconds": 2.26,
+  "totalSeconds": 3.96
+ }
+}

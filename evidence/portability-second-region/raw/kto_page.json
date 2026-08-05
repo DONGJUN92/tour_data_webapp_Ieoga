@@ -1,0 +1,26 @@
+{
+ "11110": {
+  "label": "서울특별시 종로구",
+  "totalCount": 1597,
+  "fetched": 1597,
+  "pages": 2,
+  "anchorsAll": 63,
+  "anchorsFirstPageOnly": 38,
+  "probe": "경복궁",
+  "probeFoundInFull": true,
+  "probeInFirstPage": true,
+  "firstPageCoveragePercent": 62.6
+ },
+ "50130": {
+  "label": "제주특별자치도 서귀포시",
+  "totalCount": 4618,
+  "fetched": 4618,
+  "pages": 5,
+  "anchorsAll": 127,
+  "anchorsFirstPageOnly": 29,
+  "probe": "천지연폭포",
+  "probeFoundInFull": true,
+  "probeInFirstPage": false,
+  "firstPageCoveragePercent": 21.7
+ }
+}

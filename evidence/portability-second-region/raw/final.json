@@ -1,0 +1,375 @@
+[
+ {
+  "tag": "26350",
+  "name": "부산 해운대구",
+  "korTotal": 132,
+  "korReceived": 60,
+  "baseOptions": 3,
+  "baseRejected": 0,
+  "baseRejectionSummary": [],
+  "baseStatus": "degraded",
+  "baseAvail": {
+   "official_hours_unstructured": 3
+  },
+  "relDirectTotal": 601,
+  "relServiceReceived": 601,
+  "relServiceTotal": 601,
+  "relPage1Pct": 100.0,
+  "relAnchorsPage1": 15,
+  "relAnchorsAll": null,
+  "anchorProbe": "해운대해수욕장",
+  "anchorExact": [
+   "해운대해수욕장"
+  ],
+  "baseRelated": "0/3",
+  "anchorRelated": "1/3",
+  "anchorOptions": 3,
+  "anchorRejectionSummary": [],
+  "kwTotal": 71,
+  "kwReceived": 71,
+  "wheelOptions": 2,
+  "wheelAcc": {
+   "verified": 2
+  },
+  "wheelRejection": [
+   {
+    "reasonCode": "OFFICIALLY_CLOSED",
+    "count": 1
+   }
+  ],
+  "accCoverage": "2/2 (100%)",
+  "insDelivered": "district",
+  "insPercent": 88,
+  "insAvail": 7,
+  "insExpected": 8,
+  "insMetrics": 7,
+  "insHubs": 0,
+  "insBaseYm": "202606",
+  "insStatus": "degraded",
+  "insGeneratedAt": "2026-08-01T16:17:41.036Z",
+  "polDirectFound": 7,
+  "polDirectHub": 100,
+  "polDirectHubYm": "202606",
+  "crdReceived": 570,
+  "crdTotal": 570,
+  "t1": 0.59,
+  "t2": 1.97,
+  "t3": 4.57,
+  "ttot": 7.13
+ },
+ {
+  "tag": "11110",
+  "name": "서울 종로구",
+  "korTotal": 336,
+  "korReceived": 60,
+  "baseOptions": 3,
+  "baseRejected": 0,
+  "baseRejectionSummary": [],
+  "baseStatus": "degraded",
+  "baseAvail": {
+   "official_hours_unstructured": 3
+  },
+  "relDirectTotal": 1597,
+  "relServiceReceived": 1000,
+  "relServiceTotal": 1597,
+  "relPage1Pct": 62.6,
+  "relAnchorsPage1": 38,
+  "relAnchorsAll": 63,
+  "anchorProbe": "경복궁",
+  "anchorExact": [
+   "경복궁"
+  ],
+  "baseRelated": "0/3",
+  "anchorRelated": "0/3",
+  "anchorOptions": 3,
+  "anchorRejectionSummary": [],
+  "kwTotal": 376,
+  "kwReceived": 100,
+  "wheelOptions": 3,
+  "wheelAcc": {
+   "partial": 1,
+   "verified": 2
+  },
+  "wheelRejection": [],
+  "accCoverage": "2/3 (67%)",
+  "insDelivered": "district",
+  "insPercent": 100,
+  "insAvail": 8,
+  "insExpected": 8,
+  "insMetrics": 7,
+  "insHubs": 20,
+  "insBaseYm": "202606",
+  "insStatus": "live",
+  "insGeneratedAt": "2026-07-31T05:18:13.077Z",
+  "polDirectFound": 7,
+  "polDirectHub": 100,
+  "polDirectHubYm": "202606",
+  "crdReceived": 1000,
+  "crdTotal": 3390,
+  "t1": 0.6,
+  "t2": 1.14,
+  "t3": 2.95,
+  "ttot": 4.69
+ },
+ {
+  "tag": "27110",
+  "name": "대구 중구",
+  "korTotal": 65,
+  "korReceived": 60,
+  "baseOptions": 3,
+  "baseRejected": 0,
+  "baseRejectionSummary": [],
+  "baseStatus": "degraded",
+  "baseAvail": {
+   "official_hours_unstructured": 3
+  },
+  "relDirectTotal": 440,
+  "relServiceReceived": 440,
+  "relServiceTotal": 440,
+  "relPage1Pct": 100.0,
+  "relAnchorsPage1": 18,
+  "relAnchorsAll": null,
+  "anchorProbe": "대구근대역사관",
+  "anchorExact": [
+   "대구근대역사관"
+  ],
+  "baseRelated": "0/3",
+  "anchorRelated": "0/3",
+  "anchorOptions": 3,
+  "anchorRejectionSummary": [],
+  "kwTotal": 101,
+  "kwReceived": 100,
+  "wheelOptions": 2,
+  "wheelAcc": {
+   "partial": 1,
+   "verified": 1
+  },
+  "wheelRejection": [
+   {
+    "reasonCode": "OFFICIALLY_CLOSED",
+    "count": 1
+   }
+  ],
+  "accCoverage": "1/2 (50%)",
+  "insDelivered": "district",
+  "insPercent": 88,
+  "insAvail": 7,
+  "insExpected": 8,
+  "insMetrics": 7,
+  "insHubs": 0,
+  "insBaseYm": "202606",
+  "insStatus": "degraded",
+  "insGeneratedAt": "2026-08-01T20:17:59.343Z",
+  "polDirectFound": 7,
+  "polDirectHub": 100,
+  "polDirectHubYm": "202606",
+  "crdReceived": 870,
+  "crdTotal": 870,
+  "t1": 0.58,
+  "t2": 1.13,
+  "t3": 3.35,
+  "ttot": 5.06
+ },
+ {
+  "tag": "51760",
+  "name": "강원 평창군",
+  "korTotal": 43,
+  "korReceived": 43,
+  "baseOptions": 2,
+  "baseRejected": 1,
+  "baseRejectionSummary": [
+   {
+    "reasonCode": "ROUTE_UNAVAILABLE",
+    "count": 1
+   }
+  ],
+  "baseStatus": "degraded",
+  "baseAvail": {
+   "official_hours_unstructured": 1,
+   "unknown": 1
+  },
+  "relDirectTotal": 927,
+  "relServiceReceived": 927,
+  "relServiceTotal": 927,
+  "relPage1Pct": 100.0,
+  "relAnchorsPage1": 32,
+  "relAnchorsAll": null,
+  "anchorProbe": "월정사 성보박물관",
+  "anchorExact": [
+   "월정사성보박물관"
+  ],
+  "baseRelated": "0/2",
+  "anchorRelated": "1/3",
+  "anchorOptions": 3,
+  "anchorRejectionSummary": [
+   {
+    "reasonCode": "SAME_AS_DISRUPTED_PLACE",
+    "count": 1
+   }
+  ],
+  "kwTotal": 20,
+  "kwReceived": 20,
+  "wheelOptions": 2,
+  "wheelAcc": {
+   "unverified": 1,
+   "verified": 1
+  },
+  "wheelRejection": [
+   {
+    "reasonCode": "ROUTE_UNAVAILABLE",
+    "count": 1
+   }
+  ],
+  "accCoverage": "1/2 (50%)",
+  "insDelivered": "region",
+  "insPercent": 100,
+  "insAvail": 7,
+  "insExpected": 7,
+  "insMetrics": 7,
+  "insHubs": 0,
+  "insBaseYm": "202606",
+  "insStatus": "live",
+  "insGeneratedAt": "2026-08-01T12:17:48.836Z",
+  "polDirectFound": 7,
+  "polDirectHub": 100,
+  "polDirectHubYm": "202606",
+  "crdReceived": 1000,
+  "crdTotal": 1650,
+  "t1": 0.57,
+  "t2": 1.17,
+  "t3": 2.46,
+  "ttot": 4.2
+ },
+ {
+  "tag": "50130",
+  "name": "제주 서귀포시",
+  "korTotal": 117,
+  "korReceived": 60,
+  "baseOptions": 1,
+  "baseRejected": 2,
+  "baseRejectionSummary": [
+   {
+    "reasonCode": "OFFICIALLY_CLOSED",
+    "count": 2
+   }
+  ],
+  "baseStatus": "degraded",
+  "baseAvail": {
+   "official_hours_unstructured": 1
+  },
+  "relDirectTotal": 4618,
+  "relServiceReceived": 1000,
+  "relServiceTotal": 4618,
+  "relPage1Pct": 21.7,
+  "relAnchorsPage1": 29,
+  "relAnchorsAll": 127,
+  "anchorProbe": "천지연폭포",
+  "anchorExact": [],
+  "baseRelated": "0/1",
+  "anchorRelated": "0/1",
+  "anchorOptions": 1,
+  "anchorRejectionSummary": [
+   {
+    "reasonCode": "OFFICIALLY_CLOSED",
+    "count": 2
+   }
+  ],
+  "kwTotal": 27,
+  "kwReceived": 27,
+  "wheelOptions": 1,
+  "wheelAcc": {
+   "unverified": 1
+  },
+  "wheelRejection": [
+   {
+    "reasonCode": "OFFICIALLY_CLOSED",
+    "count": 2
+   }
+  ],
+  "accCoverage": "0/1 (0%)",
+  "insDelivered": "region",
+  "insPercent": 100,
+  "insAvail": 7,
+  "insExpected": 7,
+  "insMetrics": 7,
+  "insHubs": 0,
+  "insBaseYm": "202606",
+  "insStatus": "live",
+  "insGeneratedAt": "2026-08-01T11:18:05.665Z",
+  "polDirectFound": 7,
+  "polDirectHub": 100,
+  "polDirectHubYm": "202606",
+  "crdReceived": 1000,
+  "crdTotal": 6120,
+  "t1": 0.57,
+  "t2": 1.18,
+  "t3": 3.65,
+  "ttot": 5.4
+ },
+ {
+  "tag": "47940",
+  "name": "경북 울릉군",
+  "korTotal": 48,
+  "korReceived": 48,
+  "baseOptions": 0,
+  "baseRejected": 3,
+  "baseRejectionSummary": [
+   {
+    "reasonCode": "ROUTE_UNAVAILABLE",
+    "count": 3
+   }
+  ],
+  "baseStatus": "no_valid_candidate",
+  "baseAvail": {},
+  "relDirectTotal": 231,
+  "relServiceReceived": 231,
+  "relServiceTotal": 231,
+  "relPage1Pct": 100.0,
+  "relAnchorsPage1": 13,
+  "relAnchorsAll": null,
+  "anchorProbe": "독도박물관",
+  "anchorExact": [],
+  "baseRelated": "0/0",
+  "anchorRelated": "0/0",
+  "anchorOptions": 0,
+  "anchorRejectionSummary": [
+   {
+    "reasonCode": "ROUTE_UNAVAILABLE",
+    "count": 3
+   },
+   {
+    "reasonCode": "SAME_AS_DISRUPTED_PLACE",
+    "count": 1
+   }
+  ],
+  "kwTotal": 5,
+  "kwReceived": 5,
+  "wheelOptions": 0,
+  "wheelAcc": {},
+  "wheelRejection": [
+   {
+    "reasonCode": "ROUTE_UNAVAILABLE",
+    "count": 3
+   }
+  ],
+  "accCoverage": "후보 0",
+  "insDelivered": "district",
+  "insPercent": 13,
+  "insAvail": 1,
+  "insExpected": 8,
+  "insMetrics": 0,
+  "insHubs": 20,
+  "insBaseYm": "202604",
+  "insStatus": "degraded",
+  "insGeneratedAt": "2026-08-04T14:17:29.417Z",
+  "polDirectFound": 7,
+  "polDirectHub": 55,
+  "polDirectHubYm": "202606",
+  "crdReceived": 720,
+  "crdTotal": 720,
+  "t1": 0.58,
+  "t2": 1.13,
+  "t3": 2.26,
+  "ttot": 3.96
+ }
+]

@@ -1,0 +1,308 @@
+{
+ "26350": {
+  "name": "부산 해운대구",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 100,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "99.8",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "92.08",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "146.66",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "92.29",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "59.88",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "89.07",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "81.31",
+    "baseYm": "202606"
+   }
+  ]
+ },
+ "11110": {
+  "name": "서울 종로구",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 100,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "110.51",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "106.64",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "194.94",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "82.29",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "91.85",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "83.19",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "81.58",
+    "baseYm": "202606"
+   }
+  ]
+ },
+ "27110": {
+  "name": "대구 중구",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 100,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "82.25",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "77.62",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "74.93",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "74.52",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "75.17",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "69.62",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "66.63",
+    "baseYm": "202606"
+   }
+  ]
+ },
+ "51760": {
+  "name": "강원 평창군",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 100,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "63.14",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "68.45",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "76.94",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "82.38",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "75.38",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "73.16",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "88.56",
+    "baseYm": "202606"
+   }
+  ]
+ },
+ "50130": {
+  "name": "제주 서귀포시",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 100,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "81.56",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "78.41",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "138.15",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "110.28",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "78.7",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "91.36",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "91.99",
+    "baseYm": "202606"
+   }
+  ]
+ },
+ "47940": {
+  "name": "경북 울릉군",
+  "indicatorsFound": 7,
+  "indicatorsExpected": 7,
+  "hubTotal": 55,
+  "hubBaseYm": "202606",
+  "detail": [
+   {
+    "label": "관광객 다양성",
+    "code": "31",
+    "value": "55.99",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광소비 다양성",
+    "code": "32",
+    "value": "63",
+    "baseYm": "202606"
+   },
+   {
+    "label": "국제적 다양성",
+    "code": "33",
+    "value": "71.86",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 체류 강도",
+    "code": "21",
+    "value": "76.37",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광 소비 강도",
+    "code": "22",
+    "value": "70.33",
+    "baseYm": "202606"
+   },
+   {
+    "label": "관광서비스 수요",
+    "code": "11",
+    "value": "62.91",
+    "baseYm": "202606"
+   },
+   {
+    "label": "문화자원 수요",
+    "code": "12",
+    "value": "64.42",
+    "baseYm": "202606"
+   }
+  ]
+ }
+}

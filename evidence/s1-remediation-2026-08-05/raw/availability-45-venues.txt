@@ -1,0 +1,44 @@
+후보 45건 조회
+
+=== 07:40~09:10 도착 (개관 전) ===
+{
+  official_hours_unstructured: 10,
+  confirmed_closed: 19,
+  confirmed_open: 1,
+  unknown: 1
+}
+=== 13:00~14:30 도착 (영업 중) ===
+{ official_hours_unstructured: 24, confirmed_open: 6, unknown: 1 }
+
+개관 전이라 걸러진 곳 (이전에는 전부 통과했다):
+  confirmed_closed  | official_hours_unstructured  | 덕수궁 대한문 — [일반관람] 09:00~21:00 (입장마감 20:00) · [전시관] · - 석조전 09:30~17:3
+  confirmed_closed  | confirmed_open               | 대한성공회 서울주교좌성당 — 11:00~16:00
+  confirmed_closed  | official_hours_unstructured  | 중명전 — 09:30~17:30 (입장 마감 17:00)
+  confirmed_closed  | official_hours_unstructured  | 위라이드 서울전차 — - 평일 08:30~17:00 · - 주말 08:30~16:30 · ※ 자세한 사항은 유선 문의
+  confirmed_closed  | official_hours_unstructured  | 경희궁 흥화문 — 09:00~18:00 (입장마감 17:30)
+  confirmed_closed  | official_hours_unstructured  | 경희궁공원 — 09:00~18:00 (입장 마감 17:30)
+  confirmed_closed  | official_hours_unstructured  | 서울도서관 — [일반자료실, 디지털자료실, 장애인자료실] · 평일 09:00 ~ 21:00, 주말 09:00 ~ 18:
+  confirmed_closed  | official_hours_unstructured  | 한국금융사박물관 — 10:00~18:00 (입장 마감 17:00)
+  confirmed_closed  | official_hours_unstructured  | 신문박물관 — 화요일~일요일 10:00~18:30 (매표 마감 18:00)
+  confirmed_closed  | confirmed_open               | 일민미술관 — 11:00~19:00
+  confirmed_closed  | confirmed_open               | 교보문고 — 09:30~22:00
+  confirmed_closed  | official_hours_unstructured  | 배재학당역사박물관 — 10:00~17:00 (입장 마감 16:30)
+  confirmed_closed  | confirmed_open               | 세종이야기 충무공이야기 — 10:00~18:30
+  confirmed_closed  | official_hours_unstructured  | 국토발전전시관 — 화요일~일요일 09:30~17:30 (입장마감 17:00)
+  confirmed_closed  | official_hours_unstructured  | 서울역사박물관 — 09:00~18:00 (입장 마감 17:30)
+  confirmed_closed  | official_hours_unstructured  | 공평도시유적전시관 — 09:00~18:00 (입장 마감 17:30)
+  confirmed_closed  | confirmed_open               | 서울 중구문화원 — 10:00~17:00
+  confirmed_closed  | official_hours_unstructured  | 대한민국역사박물관 — - 월요일~화요일 / 목요일~금요일 / 일요일 10:00~18:00 (입장마감 17:30) · - 수요일
+  confirmed_closed  | official_hours_unstructured  | 동산방화랑 — [월요일~금요일] · - 09:00~18:00 · [토요일] · - 09:00~12:30 · ※ 전시기간
+
+여전히 미확정으로 남은 곳 10건:
+  경성 부민관 폭탄 의거지 — 상시 개방
+  청계광장 — 상시 개방
+  충무공 이순신 동상 — 상시 개방
+  서울 종로 낙지볶음 골목 — 점포 별로 상이함
+  보신각터 — 상시 개방
+  나석주의사동상 — 상시 개방
+  세종대왕 동상 — 상시 개방
+  우당 이회영 선생 흉상 — 상시 개방
+  이화여고100주년기념관 — ※ 공연 및 행사 별 상이하므로 홈페이지 참고
+  세종문화회관 — 공연 및 전시 별로 상이함

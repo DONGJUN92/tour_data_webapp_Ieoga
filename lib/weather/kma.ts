@@ -304,6 +304,11 @@ export type KmaObservation = {
   weatherCode: number;
   windSpeedKph: number;
   raining: boolean;
+  /* 실황의 원시 코드. `weatherCode`(WMO)로 접으면 아이콘을 고를 때 되돌릴 수
+     없다. "지금" 칸은 예보가 아니라 이 값으로 만들어야 한다 — 23시 발표
+     예보는 00:00부터 시작하므로 현재 시각 이하의 슬롯이 없다. */
+  precipitationType?: number;
+  skyCode?: number;
   baseDate: string;
   baseTime: string;
   nx: number;
@@ -429,6 +434,8 @@ export async function getKmaObservation(
     precipitationProbabilityPercent: probability,
     weatherCode: toWmoCode(pty, sky),
     windSpeedKph: Math.round(windMetersPerSecond * 3.6 * 10) / 10,
+    precipitationType: pty,
+    skyCode: sky,
     raining:
       (pty !== undefined && pty > 0) ||
       rain > 0 ||

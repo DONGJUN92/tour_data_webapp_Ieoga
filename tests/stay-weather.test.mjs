@@ -178,58 +178,106 @@ test("기온 부담은 실측 경계로 판정한다", async () => {
   );
 });
 
-test("날씨는 후보를 제거하지 않고 순위와 문장에만 쓴다", async () => {
+test("날씨는 순위에 쓰지 않는다", async () => {
   const engine = await src("../lib/recovery/engine.ts");
-  /* 강수확률 60%는 40%의 경우 비가 오지 않는다. 제거하면 갈 수 있었던 곳을
-     잃는다. 이 제품은 하드 필터 대신 순위와 문장을 택해 왔다. */
-  assert.match(engine, /const stayWeatherPenalty = \(\(\) => \{/);
-  assert.match(engine, /if \(stay\.status === "rain_likely"\) return 9;/);
-  assert.match(engine, /if \(stay\.status === "rain_possible"\) return 4;/);
+  /* 감점으로 넣어 봤지만 임계값(강수확률 30·60%, 기온 33℃)이 실측으로 조정한
+     값이 아니었다. 검증되지 않은 숫자를 순위에 박아 넣으면 사용자는 왜 이
+     순서인지 알 수 없고 우리도 방어할 수 없다. 예보를 그대로 보여 주고 판단은
+     사용자가 한다. */
   assert.ok(
-    !/stayWeather[\s\S]{0,200}rejected\.push/.test(engine),
-    "날씨로 후보를 탈락시키고 있다",
+    !/stayWeatherPenalty/.test(engine),
+    "날씨 감점이 다시 순위에 들어갔다",
   );
-  /* 실내 후보에는 감점하지 않는다. */
-  assert.match(engine, /stay\.status === "unknown" \|\| candidate\.indoor\) return 0;/);
-});
-
-test("모든 상황에서 같은 크기로 반영된다", async () => {
-  const engine = await src("../lib/recovery/engine.ts");
-  /* `delay`와 `crowd` 분기에는 `indoorScore` 항이 아예 없다. 그 항에 얹으면
-     가장 흔한 두 상황에서 날씨가 순위에 들어오지 못하고, 항을 새로 넣으려면
-     연속성 가중치를 깎아야 한다 — 이 제품이 지키겠다고 한 것이다. */
-  assert.match(engine, /baseScore - stayWeatherPenalty/);
-  assert.match(engine, /comfortScore - stayWeatherPenalty/);
-  /* `rain` 분기의 `indoorScore`와 이중 계산되지 않아야 한다. */
+  assert.match(engine, /baseScore: Math\.round\(baseScore \* 10\) \/ 10,/);
+  /* 우천 상황을 고른 요청의 실내 선호는 그대로여야 한다 — 그것은 사용자가
+     직접 선언한 조건이고, 감점을 빼도 잃지 않는다. */
   const rainBranch = engine.slice(
     engine.indexOf('if (input.incident === "rain") {'),
     engine.indexOf('} else if (input.incident === "crowd") {'),
   );
+  assert.match(rainBranch, /indoorScore \* 0\.25/);
+  /* 후보를 날씨로 탈락시키지도 않는다. */
   assert.ok(
-    !/stayWeather/.test(rainBranch),
-    "우천 분기가 날씨를 이중으로 계산한다",
+    !/stayWeather[\s\S]{0,200}rejected\.push/.test(engine),
+    "날씨로 후보를 탈락시키고 있다",
   );
 });
 
-test("기온은 조건을 밝힌 요청에서만 순위에 반영하고, 문장은 모두에게 보여 준다", async () => {
-  const engine = await src("../lib/recovery/engine.ts");
-  /* 사용자가 더위를 조건으로 고르지 않았는데 우리가 대신 실내를 선호하면
-     사용자가 준 조건을 알리지 않고 조이는 것이다. 유아차·휠체어·고령자를
-     이미 밝힌 요청은 그 선언이 곧 동의다. */
-  assert.match(
-    engine,
-    /if \(input\.audience !== "general" && outdoorTemperatureStrain\(stay\)\) return 5;/,
+test("시점별 아이콘용 값을 30분 단위라고 말하지 않는다", async () => {
+  const { weatherGlance, GLANCE_HOURS_AHEAD } = await import(
+    "../lib/weather/window.ts"
   );
-  /* 문장 쪽에는 audience 조건이 없어야 한다 — 판단은 사용자가 한다. */
-  const whyBlock = engine.slice(
-    engine.indexOf("const strain = outdoorTemperatureStrain(stay);"),
+  /* 기상청에는 30분 단위 예보가 없다 — 단기예보와 초단기예보 모두 정시
+     슬롯이다(실측 확인). 정시 값을 "30분 후"라고 적으면 없는 정밀도를
+     주장하는 것이다. */
+  assert.deepEqual([...GLANCE_HOURS_AHEAD], [0, 1, 2]);
+  const now = new Date("2026-08-05T14:20:00+09:00");
+  const slots = weatherGlance(
+    evidence([
+      slot("2026-08-05T14:00:00+09:00", {
+        precipitationProbabilityPercent: 0,
+        skyCode: 1,
+        temperatureCelsius: 34,
+      }),
+      slot("2026-08-05T15:00:00+09:00", {
+        precipitationProbabilityPercent: 60,
+        precipitationType: 4,
+        temperatureCelsius: 33,
+      }),
+      slot("2026-08-05T16:00:00+09:00", {
+        precipitationProbabilityPercent: 30,
+        skyCode: 4,
+        temperatureCelsius: 32,
+      }),
+    ]),
+    now,
   );
-  const sentence = whyBlock.slice(0, 900);
-  assert.match(sentence, /그늘과 물을 확인해 주세요/);
-  assert.ok(
-    !/audience/.test(sentence),
-    "기온 문장이 특정 동반 조건에서만 보인다",
+  assert.equal(slots.length, 3);
+  assert.deepEqual(
+    slots.map((entry) => entry.hoursAhead),
+    [0, 1, 2],
   );
+  /* "지금"은 예보가 아니라 실황이다 — 23시 발표 예보는 00:00부터 시작하므로
+     예보 슬롯이 있어야만 지금을 그리면 밤에 이 칸이 비어 버린다. */
+  assert.equal(slots[0].at, "2026-08-05T05:00:00.000Z");
+  assert.equal(slots[1].precipitationType, 4);
+  assert.equal(slots[2].skyCode, 4);
+});
+
+test("지금 시점은 예보보다 실황을 쓴다", async () => {
+  const { weatherGlance } = await import("../lib/weather/window.ts");
+  const base = evidence([
+    slot("2026-08-05T14:00:00+09:00", {
+      precipitationProbabilityPercent: 0,
+      skyCode: 1,
+      temperatureCelsius: 30,
+    }),
+  ]);
+  base.temperatureCelsius = 36.8;
+  base.raining = true;
+  const slots = weatherGlance(base, new Date("2026-08-05T14:20:00+09:00"));
+  /* 실황이 비를 보고 있으면 예보 슬롯의 0을 따르지 않는다. 형태는 모르므로
+     비(1)로만 표시하고 소나기 같은 단정은 하지 않는다. */
+  assert.equal(slots[0].temperatureCelsius, 36.8);
+  assert.equal(slots[0].precipitationType, 1);
+});
+
+test("예보 범위를 벗어난 시점은 비워 둔다", async () => {
+  const { weatherGlance } = await import("../lib/weather/window.ts");
+  /* 가장 가까운 값을 끌어다 쓰면 없는 근거를 만드는 것이다. */
+  const slots = weatherGlance(
+    evidence([
+      slot("2026-08-05T14:00:00+09:00", { precipitationProbabilityPercent: 0 }),
+    ]),
+    new Date("2026-08-05T14:20:00+09:00"),
+  );
+  /* "지금"은 실황에서 오므로 항상 있다. 예보가 닿지 않는 시점만 빈다. */
+  assert.deepEqual(
+    slots.map((entry) => entry.hoursAhead),
+    [0, 1],
+    "2시간 후 슬롯이 없는데 값을 만들어 냈다",
+  );
+  assert.equal(weatherGlance(undefined, new Date()).length, 0);
 });
 
 test("실외 후보에만 날씨 문장을 붙인다", async () => {
@@ -268,4 +316,120 @@ test("후보 지점의 예보를 따로 가져오고, 못 가져오면 밝힌다
     engine,
     /gridWeather\.get\(gridKey\(candidate\)\) \?\? weatherEvidence,/,
   );
+});
+
+test("정렬 축은 값이 있는 후보만 줄 세우고 없는 후보는 따로 내린다", async () => {
+  const { OPTION_SORTS, sortOptionsByCrowd } = await import(
+    "../app/product-app-model.ts"
+  );
+  /* 측정하면 집중률 예측을 가진 후보는 유형별로 관광지 25~36%, 문화시설
+     0~26%, 음식점·레포츠 0%다. 즉 값이 없는 후보가 다수다. 중립값으로 한
+     목록에 섞으면 "왜 이 위치인가"를 설명할 수 없다. */
+  assert.deepEqual(
+    OPTION_SORTS.map((entry) => entry.value),
+    ["recommended", "quiet_first", "busy_first"],
+  );
+  const options = [
+    { id: "a", title: "붐빔", crowd: { relativeRate: 80 } },
+    { id: "b", title: "없음1" },
+    { id: "c", title: "한적", crowd: { relativeRate: 20 } },
+    { id: "d", title: "없음2" },
+    { id: "e", title: "중간", crowd: { relativeRate: 50 } },
+  ];
+
+  const recommended = sortOptionsByCrowd(options, "recommended");
+  assert.deepEqual(
+    recommended.ranked.map((o) => o.id),
+    ["a", "b", "c", "d", "e"],
+    "추천순은 원래 순서를 그대로 두어야 한다",
+  );
+  assert.deepEqual(recommended.unranked, []);
+
+  const quiet = sortOptionsByCrowd(options, "quiet_first");
+  assert.deepEqual(quiet.ranked.map((o) => o.id), ["c", "e", "a"]);
+  assert.deepEqual(quiet.unranked.map((o) => o.id), ["b", "d"]);
+
+  const busy = sortOptionsByCrowd(options, "busy_first");
+  assert.deepEqual(busy.ranked.map((o) => o.id), ["a", "e", "c"]);
+  assert.deepEqual(busy.unranked.map((o) => o.id), ["b", "d"]);
+
+  /* 같은 값이면 원래 순서를 유지해야 한다 — 흔들리면 같은 화면을 다시 볼
+     때마다 카드가 움직인다. */
+  const tied = sortOptionsByCrowd(
+    [
+      { id: "x", crowd: { relativeRate: 40 } },
+      { id: "y", crowd: { relativeRate: 40 } },
+      { id: "z", crowd: { relativeRate: 40 } },
+    ],
+    "quiet_first",
+  );
+  assert.deepEqual(tied.ranked.map((o) => o.id), ["x", "y", "z"]);
+});
+
+test("정렬 컨트롤은 줄 세울 값이 2개 이상일 때만 나온다", async () => {
+  const product = await src("../app/ProductApp.tsx");
+  /* 누르면 아무 일도 일어나지 않는 컨트롤을 보여 주지 않는다. */
+  assert.match(
+    product,
+    /\(option\) => option\.crowd\?\.relativeRate !== undefined,\s*\n\s*\)\.length >= 2 &&/,
+  );
+  /* 방향을 라벨에 적어 어느 쪽도 오해하지 않게 한다. */
+  const model = await src("../app/product-app-model.ts");
+  assert.match(model, /ko: "한적한 순"/);
+  assert.match(model, /ko: "붐비는 순"/);
+  assert.match(model, /집중률 예측이 낮은 곳부터 봅니다/);
+  assert.match(model, /집중률 예측이 높은 곳부터 봅니다/);
+  /* 값이 없는 묶음에 "더 나쁜 곳"이라는 뜻이 실리지 않게 한다. */
+  assert.match(product, /더 나쁜 곳이라는 뜻이 아니라 측정되지 않았다는 뜻입니다/);
+});
+
+test("기준 지점과 대안을 같은 시점으로 나란히 놓는다", async () => {
+  const product = await src("../app/ProductApp.tsx");
+  const engine = await src("../lib/recovery/engine.ts");
+  /* 비교 대상이 없으면 대안의 날씨만 보고 "여기가 나은가"를 판단할 수 없다. */
+  assert.match(engine, /originWeatherGlance:/);
+  assert.match(engine, /originWeatherLabel:/);
+  assert.match(product, /isBaseline/);
+  assert.match(product, /원래 가려던 곳 ·/);
+  assert.match(product, /이 곳 ·/);
+  /* 기준 시각은 후보의 체류 시작이 아니라 "지금"이어야 한다 — 후보마다
+     체류 시작이 달라 그것을 기준으로 하면 카드 간 시점이 어긋난다. */
+  assert.match(engine, /const glance = weatherGlance\(weatherEvidence, new Date\(\)\)/);
+
+  /* 아이콘만 있으면 스크린리더 사용자는 이 줄을 전혀 쓸 수 없다. */
+  const strip = await src("../app/WeatherGlanceStrip.tsx");
+  assert.match(strip, /aria-label=\{`\$\{label\}: \$\{spoken\}`\}/);
+  assert.match(strip, /<ul aria-hidden="true">/);
+  /* 예보를 못 받았으면 빈 칸을 그리지 않는다. */
+  assert.match(strip, /if \(!slots\.length\) return null;/);
+});
+
+test("예보가 현재 시각 이후부터 시작해도 지금 칸이 비지 않는다", async () => {
+  const { weatherGlance } = await import("../lib/weather/window.ts");
+  /* 23시 발표 단기예보는 00:00부터 시작한다. 실측에서 이 때문에 "지금" 칸이
+     통째로 비었다. 실황은 매시 발표되는 관측값이므로 그것으로 만든다. */
+  const base = evidence([
+    slot("2026-08-06T00:00:00+09:00", {
+      precipitationProbabilityPercent: 0,
+      skyCode: 1,
+      temperatureCelsius: 29,
+    }),
+    slot("2026-08-06T01:00:00+09:00", {
+      precipitationProbabilityPercent: 0,
+      skyCode: 1,
+      temperatureCelsius: 29,
+    }),
+  ]);
+  base.temperatureCelsius = 30.2;
+  base.observedSkyCode = 3;
+  base.observedPrecipitationType = 0;
+  const slots = weatherGlance(base, new Date("2026-08-05T23:15:00+09:00"));
+  assert.deepEqual(
+    slots.map((entry) => entry.hoursAhead),
+    [0, 1, 2],
+  );
+  assert.equal(slots[0].temperatureCelsius, 30.2);
+  assert.equal(slots[0].skyCode, 3, "지금 칸이 실황의 하늘상태를 쓰지 않았다");
+  /* 1시간 후(00:15)에 가장 가까운 슬롯은 00:00이다. */
+  assert.equal(slots[1].at, "2026-08-06T00:00:00+09:00");
 });

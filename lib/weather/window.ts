@@ -13,8 +13,11 @@ import type { WeatherEvidence } from "./service";
  * 보면 두 곳이 같아 보인다.
  *
  * 이 파일이 하지 않는 것:
+ * - **순위를 바꾸지 않는다.** 감점으로 넣어 봤지만 임계값(강수확률 30·60%,
+ *   기온 33℃)이 실측으로 조정한 값이 아니어서 되돌렸다. 검증되지 않은 숫자를
+ *   순위에 박아 넣으면 사용자는 왜 이 순서인지 알 수 없고 우리도 방어할 수 없다.
+ *   예보를 그대로 보여 주고 판단은 사용자가 한다.
  * - 확률을 단정으로 바꾸지 않는다. 60%는 40%의 경우 비가 오지 않는다는 뜻이다.
- *   그래서 후보를 제거하지 않고 순위와 문장에만 쓴다.
  * - 예보 슬롯이 없으면 판정하지 않는다. `unknown`을 돌려주고 그 사실을 밝힌다.
  */
 
@@ -152,10 +155,10 @@ export function summariseStayWeather(
 
 /* 기온이 야외 활동에 부담이 되는 수준인가.
  *
- * 이 판정은 **점수를 바꾸는 데 쓰지 않는다** — 사용자가 더위나 추위를 조건으로
- * 고르지 않았는데 우리가 대신 실내를 선호하면 사용자가 준 조건을 알리지 않고
- * 조이는 것이다. 다만 유아차·휠체어·고령자 동반을 **이미 밝힌** 요청에서는
- * 그 선언이 곧 취약 조건의 동의이므로 순위에도 반영한다.
+ * 이 판정은 **점수를 바꾸는 데 쓰지 않는다.** 카드 문장에만 쓴다 — 사용자가
+ * 더위나 추위를 조건으로 고르지 않았는데 우리가 대신 실내를 선호하면 사용자가
+ * 준 조건을 알리지 않고 조이는 것이다. 판단할 근거는 주고, 고르는 것은
+ * 사용자다.
  *
  * 경계는 기상청·질병관리청의 폭염·한파 주의보 기준을 참고했다. 체감온도가
  * 아니라 기온이므로 단정하지 않고 "부담이 될 수 있다"로만 말한다. */
@@ -179,4 +182,95 @@ export function outdoorTemperatureStrain(
     return { kind: "cold", celsius: stay.minTemperatureCelsius };
   }
   return undefined;
+}
+
+/* 시점별 날씨 한 줄 — 아이콘으로 보여 줄 최소 정보.
+ *
+ * 기상청에는 **30분 단위 예보가 없다.** 단기예보(`getVilageFcst`)와
+ * 초단기예보(`getUltraSrtFcst`) 모두 1시간 간격이다(실측: 단기 66~83슬롯,
+ * 초단기 6슬롯, 둘 다 정시). 그래서 "30분 후"라고 적을 수 없다 — 정시 슬롯을
+ * 30분 후라고 표기하면 없는 정밀도를 주장하는 것이다. 상대 시각으로 표기한다.
+ *
+ * 이 값은 **순위에 쓰지 않는다.** 지정 여행지와 대안을 같은 시점으로 나란히
+ * 놓아 사용자가 직접 비교하게 하는 것이 목적이다. */
+export type WeatherGlanceSlot = {
+  /* 기준 시각으로부터 몇 시간 뒤인가. 0은 지금. */
+  hoursAhead: number;
+  at: string;
+  /* 화면이 아이콘을 고르는 데 쓰는 값. 우리가 아이콘 문자를 정하지 않는다 —
+     표현은 화면의 일이고, 여기서는 판정 근거만 넘긴다. */
+  precipitationType?: number;
+  skyCode?: number;
+  precipitationProbabilityPercent?: number;
+  temperatureCelsius?: number;
+};
+
+export const GLANCE_HOURS_AHEAD = [0, 1, 2] as const;
+
+export function weatherGlance(
+  evidence: WeatherEvidence | undefined,
+  from: Date,
+): WeatherGlanceSlot[] {
+  if (!evidence || evidence.status !== "available") return [];
+  const fromMs = from.getTime();
+  if (!Number.isFinite(fromMs)) return [];
+  const HOUR_MS = 60 * 60 * 1000;
+
+  const slots: WeatherGlanceSlot[] = [];
+
+  /* "지금" 칸은 **예보가 아니라 실황**으로 만든다.
+     23시 발표 단기예보는 00:00부터 시작하므로 현재 시각 이하의 슬롯이 없는
+     때가 있다. 예보 슬롯이 있어야만 지금을 그리면 밤에는 이 칸이 비어 버린다.
+     실황은 매시 발표되고 관측값이므로 예보보다 정확하기도 하다. */
+  const nowSlot: WeatherGlanceSlot = {
+    hoursAhead: 0,
+    at: evidence.observedAt,
+    precipitationType:
+      evidence.observedPrecipitationType ??
+      /* 원시 코드가 없는 공급자(대체 경로)에서는 강수 유무만 옮긴다. 형태를
+         아는 것처럼 적지 않는다. */
+      (evidence.raining ? 1 : undefined),
+    skyCode: evidence.observedSkyCode,
+    precipitationProbabilityPercent: evidence.precipitationProbabilityPercent,
+    temperatureCelsius: evidence.temperatureCelsius,
+  };
+  slots.push(nowSlot);
+
+  for (const hoursAhead of GLANCE_HOURS_AHEAD) {
+    if (hoursAhead === 0) continue;
+    const targetMs = fromMs + hoursAhead * HOUR_MS;
+    /* 그 시각을 담는 정시 슬롯을 찾는다. 예보 값은 해당 시간대를 가리키므로
+       목표 시각 이하의 가장 늦은 슬롯이 맞다. 없으면 목표 시각 **이후**의 가장
+       이른 슬롯을 쓰되 1시간 이내일 때만 — 23시 발표 예보가 00:00부터
+       시작하는 경우가 그렇다. */
+    let chosen: (typeof evidence.forecast)[number] | undefined;
+    for (const slot of evidence.forecast) {
+      const at = Date.parse(slot.at);
+      if (!Number.isFinite(at) || at > targetMs) continue;
+      if (!chosen || at > Date.parse(chosen.at)) chosen = slot;
+    }
+    if (!chosen) {
+      for (const slot of evidence.forecast) {
+        const at = Date.parse(slot.at);
+        if (!Number.isFinite(at) || at <= targetMs) continue;
+        if (at - targetMs >= HOUR_MS) continue;
+        if (!chosen || at < Date.parse(chosen.at)) chosen = slot;
+      }
+    }
+    /* 예보 범위를 벗어나면 그 시점은 비운다. 가장 가까운 값을 끌어다 쓰면
+       없는 근거를 만드는 것이다. */
+    if (!chosen) continue;
+    const chosenMs = Date.parse(chosen.at);
+    if (Math.abs(targetMs - chosenMs) >= HOUR_MS * 2) continue;
+    slots.push({
+      hoursAhead,
+      at: chosen.at,
+      precipitationType: chosen.precipitationType,
+      skyCode: chosen.skyCode,
+      precipitationProbabilityPercent: chosen.precipitationProbabilityPercent,
+      temperatureCelsius: chosen.temperatureCelsius,
+    });
+  }
+
+  return slots;
 }

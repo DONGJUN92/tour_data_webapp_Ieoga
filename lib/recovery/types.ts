@@ -205,6 +205,18 @@ export type TravelPurposeProof = {
   statementEn?: string;
 };
 
+/* 시점별 날씨 한 줄. 지정 여행지와 대안을 **같은 시점으로 나란히** 놓아
+   사용자가 직접 비교하게 하는 용도이며, 순위에는 쓰지 않는다.
+   기상청에 30분 단위 예보가 없어 1시간 간격이다(실측 확인). */
+export type WeatherGlance = {
+  hoursAhead: number;
+  at: string;
+  precipitationType?: number;
+  skyCode?: number;
+  precipitationProbabilityPercent?: number;
+  temperatureCelsius?: number;
+};
+
 export type RecoveryOption = {
   /* Conditions official data could not confirm for this option. */
   evidenceGaps: EvidenceGap[];
@@ -214,6 +226,8 @@ export type RecoveryOption = {
   strategyLabel: string;
   /* 같은 라벨의 영어 표기. 영어 화면에서 배지만 한국어로 남는 일을 막는다. */
   strategyLabelEn?: string;
+  /* 이 후보 지점의 시점별 날씨. 격자 예보를 따로 받은 경우 그 값이다. */
+  weatherGlance?: WeatherGlance[];
   contentId: string;
   title: string;
   address: string;
@@ -329,6 +343,11 @@ export type RecoveryResult = {
     nextFixedNodeId?: string;
     lockedNodeCount: number;
   };
+  /* 사용자가 원래 가려던 곳(또는 현재 위치)의 시점별 날씨. 대안 카드의 같은
+     시점과 나란히 비교하는 기준이 된다 — 비교 대상이 없으면 대안의 날씨만
+     보고 "여기가 나은가"를 판단할 수 없다. */
+  originWeatherGlance?: WeatherGlance[];
+  originWeatherLabel?: string;
   /* 제거실험으로 무엇을 끄고 얻은 결과인지. 심사위원이 화면에서 API를 끄고
      차이를 볼 때, 그 수치가 어떤 조건에서 나온 것인지 응답 자체가 말해야 한다.
      빈 배열이면 전체 사용이다. */

@@ -18,6 +18,10 @@ export type WeatherEvidence =
       weatherCode: number;
       windSpeedKph: number;
       raining: boolean;
+      /* 실황의 원시 강수형태·하늘상태. "지금" 아이콘은 예보가 아니라 이 값으로
+         만든다 — 예보 슬롯이 현재 시각 이후부터 시작하는 경우가 있다. */
+      observedPrecipitationType?: number;
+      observedSkyCode?: number;
       provider: WeatherProvider;
       attribution: string;
       /* 지금 이후의 시간별 예보. 앱은 이 시계열을 이미 받고 있었는데 첫 슬롯만
@@ -95,6 +99,8 @@ export async function getWeatherEvidence(
         weatherCode: observation.weatherCode,
         windSpeedKph: observation.windSpeedKph,
         raining: observation.raining,
+        observedPrecipitationType: observation.precipitationType,
+        observedSkyCode: observation.skyCode,
         provider: "kma_short_term",
         attribution: KMA_ATTRIBUTION,
         forecast: observation.forecast,

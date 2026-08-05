@@ -6082,3 +6082,156 @@ body .hero-promise {
   color: var(--ink-soft);
   font-size: 0.85rem;
 }
+
+/* 시점별 날씨 한 줄. 기준 지점과 대안을 같은 시점으로 나란히 놓는다.
+   색은 기존 토큰을 쓴다 — 새 색을 만들면 자체 선언한 대비 기준을 다시
+   검증해야 한다. */
+.weather-glance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid #edf1f5;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.weather-glance.is-baseline {
+  margin-bottom: 16px;
+  border-color: #d7dee6;
+  background: #f2f5f8;
+}
+
+.weather-glance-label {
+  color: #4e5968;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.weather-glance ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weather-glance li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #edf1f5;
+  font-size: 13px;
+}
+
+.weather-glance-time {
+  color: #6b7684;
+  font-weight: 800;
+}
+
+.weather-glance-icon {
+  font-size: 15px;
+}
+
+.weather-glance-text {
+  color: #333d4b;
+  font-weight: 700;
+}
+
+.weather-glance-temp {
+  color: #333d4b;
+  font-weight: 800;
+}
+
+/* 강수확률은 보조 정보다. #6b7684 on #ffffff = 4.94:1로 본문 기준을 넘긴다. */
+.weather-glance-pop {
+  color: #6b7684;
+  font-weight: 700;
+}
+
+/* 대안 정렬 축. 누르면 순서가 눈앞에서 바뀌는 것이 이 컨트롤의 요점이다. */
+.option-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.option-sort button {
+  padding: 9px 16px;
+  border: 1px solid #d7dee6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.option-sort button.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.option-sort button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.option-sort-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: #4e5968;
+  font-size: 13px;
+}
+
+/* 이 축으로 줄을 세울 수 없는 후보. 더 나쁜 곳이 아니라 측정되지 않은
+   곳이라는 사실이 읽혀야 한다. */
+.option-unranked {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px dashed #d7dee6;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.option-unranked h4 {
+  margin: 0 0 6px;
+  color: #333d4b;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.option-unranked p {
+  margin: 0 0 10px;
+  color: #4e5968;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.option-unranked ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.option-unranked li {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #edf1f5;
+  color: #333d4b;
+  font-size: 13px;
+  font-weight: 700;
+}

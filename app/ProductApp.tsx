@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { JourneyExecution } from "@/lib/recovery/execution";
+import { WeatherGlanceStrip } from "./WeatherGlanceStrip";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
@@ -77,12 +78,18 @@ import {
   stopTypeFromTourismContent,
   todayInKorea,
   fetchJson,
+  OPTION_SORTS,
+  sortOptionsByCrowd,
+  type OptionSort,
 } from "./product-app-model";
 import { quotedWithParticle, withParticle } from "@/lib/text/korean";
 import { statusLabel } from "@/lib/text/status-labels";
 
 export function ProductApp() {
   const [activeTab, setActiveTab] = useState<TabId>("recover");
+  /* 대안 목록의 정렬 축. 집중률을 점수에 녹여 두면 왜 이 순서인지 알 수 없고
+     되돌릴 수도 없다. 축을 고른 행위가 곧 동의가 되게 한다. */
+  const [optionSort, setOptionSort] = useState<OptionSort>("recommended");
   const [language, setLanguage] = useState<Language>("ko");
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionState, setRegionState] = useState<LoadState>("loading");
@@ -2990,8 +2997,58 @@ export function ProductApp() {
                       </div>
                     )}
 
+                    {/* 기준 지점의 날씨. 대안 카드의 같은 시점과 나란히 놓여야
+                        "여기가 나은가"를 판단할 수 있다. */}
+                    {(recovery.originWeatherGlance?.length ?? 0) > 0 && (
+                      <WeatherGlanceStrip
+                        label={
+                          language === "en"
+                            ? `Where you were headed — ${recovery.originWeatherLabel ?? ""}`
+                            : `원래 가려던 곳 · ${recovery.originWeatherLabel ?? "현재 위치"}`
+                        }
+                        slots={recovery.originWeatherGlance ?? []}
+                        language={language}
+                        isBaseline
+                      />
+                    )}
+
+                    {/* 정렬 축. 집중률 예측을 가진 후보가 2곳 미만이면 이 축으로
+                        줄을 세울 수 없으므로 선택지를 만들지 않는다 — 누르면
+                        아무 일도 일어나지 않는 컨트롤을 보여 주지 않는다. */}
+                    {recovery.options.filter(
+                      (option) => option.crowd?.relativeRate !== undefined,
+                    ).length >= 2 && (
+                      <div
+                        className="option-sort"
+                        role="group"
+                        aria-label={
+                          language === "en" ? "Sort alternatives" : "대안 정렬 기준"
+                        }
+                      >
+                        {OPTION_SORTS.map((entry) => (
+                          <button
+                            key={entry.value}
+                            type="button"
+                            className={
+                              optionSort === entry.value ? "is-active" : ""
+                            }
+                            aria-pressed={optionSort === entry.value}
+                            title={language === "en" ? entry.hintEn : entry.hint}
+                            onClick={() => setOptionSort(entry.value)}
+                          >
+                            {language === "en" ? entry.en : entry.ko}
+                          </button>
+                        ))}
+                        <p className="option-sort-hint">
+                          {language === "en"
+                            ? OPTION_SORTS.find((e) => e.value === optionSort)?.hintEn
+                            : OPTION_SORTS.find((e) => e.value === optionSort)?.hint}
+                        </p>
+                      </div>
+                    )}
+
                     <div className="option-list">
-                      {recovery.options.map((option, index) => (
+                      {sortOptionsByCrowd(recovery.options, optionSort).ranked.map((option, index) => (
                         <article
                           className={[
                             "option-card",
@@ -3219,6 +3276,17 @@ export function ProductApp() {
                                 <dd>{formatCrowd(option.crowd)}</dd>
                               </dl>
                             </div>
+                            {/* 이 후보 지점의 시점별 날씨. 위 기준 지점 줄과
+                                같은 시점이라 나란히 비교할 수 있다. */}
+                            <WeatherGlanceStrip
+                              label={
+                                language === "en"
+                                  ? `Here — ${option.title ?? ""}`
+                                  : `이 곳 · ${option.title ?? ""}`
+                              }
+                              slots={option.weatherGlance ?? []}
+                              language={language}
+                            />
                             {option.indoorSuitability !== undefined && (
                               <div className="verification-tags">
                                 <span>실내 적합성 · {compactValue(option.indoorSuitability)}</span>
@@ -3387,6 +3455,36 @@ export function ProductApp() {
                         </article>
                       ))}
                     </div>
+                    {/* 집중률 예측이 없어 이 축으로 줄을 세울 수 없는 후보.
+                        측정하면 유형별로 관광지 25~36%, 음식점·레포츠 0%만 값을
+                        갖는다. 중립값으로 한 목록에 섞으면 "왜 이 위치인가"를
+                        설명할 수 없으므로 이유를 적어 따로 내린다. */}
+                    {(() => {
+                      const { unranked } = sortOptionsByCrowd(
+                        recovery.options,
+                        optionSort,
+                      );
+                      if (!unranked.length) return null;
+                      return (
+                        <div className="option-unranked">
+                          <h4>
+                            {language === "en"
+                              ? "No crowding forecast for these"
+                              : "집중률 예측이 없는 곳"}
+                          </h4>
+                          <p>
+                            {language === "en"
+                              ? "The official concentration dataset does not cover these places, so this sort cannot order them. They are not worse — only unmeasured."
+                              : "한국관광공사 집중률 데이터가 이 곳들을 다루지 않아 이 기준으로는 줄을 세울 수 없습니다. 더 나쁜 곳이라는 뜻이 아니라 측정되지 않았다는 뜻입니다."}
+                          </p>
+                          <ul>
+                            {unranked.map((option) => (
+                              <li key={option.id}>{option.title}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })()}
                     {recovery.options.length > 1 && (
                       <button
                         type="button"

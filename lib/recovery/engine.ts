@@ -35,7 +35,9 @@ import { getWeatherEvidence } from "@/lib/weather/service";
 import {
   outdoorTemperatureStrain,
   summariseStayWeather,
+  weatherGlance,
   type StayWeather,
+  type WeatherGlanceSlot,
 } from "@/lib/weather/window";
 import { withParticle } from "@/lib/text/korean";
 import { strictFiniteNumber } from "@/lib/validation/numbers";
@@ -112,6 +114,9 @@ type WorkingCandidate = {
   crowdSeriesDays?: number;
   /* 이 후보에 **머무는 시간대**의 날씨. 출발지의 지금 하늘이 아니다. */
   stayWeather?: StayWeather;
+  /* 이 후보 지점의 시점별 날씨(지금·1시간 후·2시간 후). 순위에는 쓰지 않고
+     화면에서 지정 여행지와 나란히 비교하는 용도다. */
+  weatherGlance?: WeatherGlanceSlot[];
   accessibility: AccessibilityEvidence;
   availability: PublicAvailabilityEvidence;
   routeEvidence:
@@ -1135,31 +1140,6 @@ function scoreCandidate(
       continuityScore * 0.4;
   }
 
-  /* 체류 시간대 강수·기온을 **모든 상황에 같은 크기로** 감점한다.
-   *
-   * `indoorScore`에 얹지 않은 이유가 있다. `delay`와 `crowd` 분기에는 그 항이
-   * 아예 없어서(위 가중치를 보라) 가장 흔한 두 상황에서 날씨가 순위에 들어오지
-   * 못한다. 그 항을 새로 넣으려면 다른 가중치를 깎아야 하고, 유일한 큰 항은
-   * 연속성 — 이 제품이 지키겠다고 한 것 — 이다. 그것을 깎는 대신 날씨를 독립
-   * 감점으로 둔다. 상황을 무엇으로 골랐든 그 시간에 비가 오면 실외 후보는
-   * 불리해야 하고, `rain` 분기에서 `indoorScore`와 이중으로 계산되지도 않는다.
-   *
-   * 후보를 제거하지는 않는다. 강수확률 60%는 40%의 경우 비가 오지 않는다는
-   * 뜻이다. 순위를 가르고 카드 문장으로 밝힌다.
-   *
-   * 기온 부담은 유아차·휠체어·고령자를 **이미 밝힌** 요청에서만 감점한다. 그
-   * 선언이 취약 조건에 대한 동의다. 아무 조건도 밝히지 않은 요청에서 우리가
-   * 대신 실내를 선호하면 사용자가 준 조건을 알리지 않고 조이는 것이 된다.
-   * 밝히지 않은 요청에도 문장은 그대로 보여 준다 — 판단은 사용자가 한다. */
-  const stayWeatherPenalty = (() => {
-    const stay = candidate.stayWeather;
-    if (!stay || stay.status === "unknown" || candidate.indoor) return 0;
-    if (stay.status === "rain_likely") return 9;
-    if (stay.status === "rain_possible") return 4;
-    if (input.audience !== "general" && outdoorTemperatureStrain(stay)) return 5;
-    return 0;
-  })();
-
   const comfortScore =
     accessScore * 0.27 +
     indoorScore * 0.2 +
@@ -1168,11 +1148,18 @@ function scoreCandidate(
     purposeScore * 0.1 +
     continuityScore * 0.17;
 
+  /* 날씨는 순위에 넣지 않는다.
+     체류 시간대 강수·기온을 감점으로 넣어 봤지만, 그 임계값(강수확률 30·60%,
+     기온 33℃)은 **실측으로 조정한 값이 아니다.** 검증되지 않은 숫자를 순위에
+     박아 넣으면 사용자는 왜 이 순서인지 알 수 없고 우리도 방어할 수 없다.
+     대신 예보를 시점별 아이콘으로 그대로 보여 주고 판단은 사용자가 한다.
+
+     우천 상황을 고른 요청에서 실내를 선호하는 것은 그대로 동작한다 —
+     `indoorScore`가 `rain` 분기에서 25% 가중치를 갖고, 그것은 사용자가 직접
+     선언한 조건이다. 이 감점을 빼도 그 시나리오는 잃지 않는다. */
   return {
-    baseScore:
-      Math.round(Math.max(0, baseScore - stayWeatherPenalty) * 10) / 10,
-    comfortScore:
-      Math.round(Math.max(0, comfortScore - stayWeatherPenalty) * 10) / 10,
+    baseScore: Math.round(baseScore * 10) / 10,
+    comfortScore: Math.round(comfortScore * 10) / 10,
   };
 }
 
@@ -1871,6 +1858,10 @@ async function enrichForContinuity(params: {
     new Date(scheduleDiff.replacementNode.startAt),
     new Date(scheduleDiff.replacementNode.endAt),
   );
+  /* 시점별 아이콘용. 기준 시각은 **지금**이다 — 지정 여행지와 대안을 같은
+     시점으로 놓아야 비교가 되고, 후보마다 체류 시작이 달라 그것을 기준으로
+     하면 카드 간 시점이 어긋난다. */
+  const glance = weatherGlance(weatherEvidence, new Date());
 
   const withoutScores = {
     ...candidate,
@@ -1879,6 +1870,7 @@ async function enrichForContinuity(params: {
     scheduleDiff,
     continuityProof,
     stayWeather,
+    weatherGlance: glance,
   };
   return {
     ...withoutScores,
@@ -2242,6 +2234,9 @@ function toOption(
     strategyLabel: strategyLabel.ko,
     /* 영어 화면에서 전략 배지가 한국어로 남지 않도록 두 벌을 함께 보낸다. */
     strategyLabelEn: strategyLabel.en,
+    weatherGlance: candidate.weatherGlance?.length
+      ? candidate.weatherGlance
+      : undefined,
     /* Travels with the option so the traveller is told which conditions were
        not confirmed. An option with gaps is a suggestion to check, never a
        verified result. */
@@ -3399,6 +3394,15 @@ export async function recoverTrip(
     status,
     recoveryMode,
     itinerarySummary: summariseItinerary(context),
+    /* 비교 기준 지점의 시점별 날씨. 일정 복구는 문제가 생긴 장소, 빈 시간
+       추천은 현재 위치가 기준이다. 대안 카드의 같은 시점과 나란히 놓여야
+       "여기가 나은가"를 판단할 수 있다. */
+    originWeatherGlance: (() => {
+      const glance = weatherGlance(weatherEvidence, new Date());
+      return glance.length ? glance : undefined;
+    })(),
+    originWeatherLabel:
+      context?.disrupted?.title ?? input.origin.label ?? "현재 위치",
     openWindowSummary: summariseOpenWindow(context),
     ablation: summariseAblation(input, options),
     scope: {

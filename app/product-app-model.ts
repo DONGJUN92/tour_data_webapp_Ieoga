@@ -178,7 +178,27 @@ export type RecoveryOption = {
   availability?: unknown;
   indoorSuitability?: unknown;
   accessibility?: unknown;
-  crowd?: unknown;
+  /* 정렬 축으로 쓰려면 이 필드의 모양을 알아야 한다. `unknown`으로 두면
+     제네릭 추론이 붕괴하고, 그때 나오는 오류는 원인을 찾기 어렵다.
+     나머지 필드는 화면이 문자열로만 쓰므로 열어 둔다. */
+  crowd?: {
+    status?: string;
+    relativeRate?: number;
+    baseDate?: string;
+    percentileOfSeries?: number;
+    seriesDays?: number;
+    note?: string;
+    noteEn?: string;
+  };
+  /* 시점별 날씨(지금·1시간 후·2시간 후). 순위에는 쓰지 않는다. */
+  weatherGlance?: Array<{
+    hoursAhead: number;
+    at: string;
+    precipitationType?: number;
+    skyCode?: number;
+    precipitationProbabilityPercent?: number;
+    temperatureCelsius?: number;
+  }>;
   purposePreservation?: {
     status?: string;
     originalPurpose?: string;
@@ -208,6 +228,10 @@ export type RecoveryResponse = {
   };
   scope?: unknown;
   options: RecoveryOption[];
+  /* 원래 가려던 곳(또는 현재 위치)의 시점별 날씨. 대안과 같은 시점으로 나란히
+     비교하는 기준이다. */
+  originWeatherGlance?: RecoveryOption["weatherGlance"];
+  originWeatherLabel?: string;
   rejectedCount?: number;
   sourceLedger?: unknown[];
   warnings?: string[];
@@ -1041,4 +1065,76 @@ export function sourceDecisionEffect(source: unknown): string {
   if (name.includes("AreaTarResDemService")) return "지역 관광 자원 수요 공백 확인";
   if (name.includes("AreaTarDivService")) return "지역 콘텐츠 편중과 대안 다양성 확인";
   return "이 복구안의 조건 판정에 사용";
+}
+
+/* 대안 목록의 정렬 축.
+ *
+ * 집중률을 점수 안에 24% 가중치로 녹여 두면 사용자는 왜 이 순서인지 알 수 없고
+ * 되돌릴 수도 없다. 심사에서도 확인할 방법이 없다. 정렬 축으로 빼면 그 축을 고른
+ * 행위가 곧 동의가 되고, 순서가 바뀌는 것이 눈에 보인다.
+ *
+ * 방향을 둘 다 두는 이유: 붐빔을 피하려는 여행자와 활기를 찾는 여행자가 모두
+ * 있다. 라벨에 방향을 적어 두면 어느 쪽도 오해하지 않는다. */
+export const OPTION_SORTS = [
+  {
+    value: "recommended",
+    ko: "추천순",
+    en: "Recommended",
+    hint: "검증 결과를 종합한 기본 순서입니다.",
+    hintEn: "The default order from all verified evidence.",
+  },
+  {
+    value: "quiet_first",
+    ko: "한적한 순",
+    en: "Quietest first",
+    hint: "집중률 예측이 낮은 곳부터 봅니다.",
+    hintEn: "Lowest predicted crowding first.",
+  },
+  {
+    value: "busy_first",
+    ko: "붐비는 순",
+    en: "Busiest first",
+    hint: "집중률 예측이 높은 곳부터 봅니다.",
+    hintEn: "Highest predicted crowding first.",
+  },
+] as const;
+
+export type OptionSort = (typeof OPTION_SORTS)[number]["value"];
+
+/* 정렬 결과를 두 묶음으로 나눈다.
+ *
+ * 측정하면 집중률 예측을 가진 후보는 유형별로 25~36%(관광지), 0%(음식점·레포츠)
+ * 수준이다. 즉 값이 없는 후보가 다수다. 그것을 중립값으로 한 목록에 섞으면
+ * "왜 이 위치인가"를 설명할 수 없고, 예전에 신뢰를 깎았던 라벨 모순과 같은
+ * 종류의 문제가 된다. 값이 있는 것끼리 정렬하고, 없는 것은 이유를 적어 따로
+ * 내린다. */
+export type SortedOptionGroups<T> = {
+  ranked: T[];
+  /* 집중률 예측이 없어 이 축으로 줄 세울 수 없는 후보. */
+  unranked: T[];
+};
+
+export function sortOptionsByCrowd(
+  options: RecoveryOption[],
+  sort: OptionSort,
+): SortedOptionGroups<RecoveryOption> {
+  if (sort === "recommended") return { ranked: options, unranked: [] };
+  const rate = (option: RecoveryOption) => option.crowd?.relativeRate;
+  const ranked = options.filter((option) => rate(option) !== undefined);
+  const unranked = options.filter((option) => rate(option) === undefined);
+  const direction = sort === "quiet_first" ? 1 : -1;
+  return {
+    /* 원래 순서를 타이브레이커로 쓴다 — 같은 값일 때 순서가 흔들리면 사용자가
+       같은 화면을 다시 볼 때마다 카드가 움직인다. */
+    ranked: ranked
+      .map((option, index) => ({ option, index }))
+      .sort(
+        (a, b) =>
+          ((rate(a.option) as number) - (rate(b.option) as number)) *
+            direction ||
+          a.index - b.index,
+      )
+      .map((entry) => entry.option),
+    unranked,
+  };
 }

@@ -107,7 +107,7 @@ async function withAllSources(run, offset = 0) {
     } else if (service === "KorWithService2" && operation === "detailWithTour2") {
       items = [
         {
-          stroller: "대여 가능",
+          stroller: "유아차 통행 가능 (단차 없음)",
           elevator: "있음",
           restroom: "기저귀 교환대 있음",
           exit: "주출입구 경사로",

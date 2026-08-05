@@ -1,11 +1,16 @@
 import {
   and,
+  asc,
+  count,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNull,
+  lt,
   ne,
+  or,
 } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
@@ -810,12 +815,39 @@ export function buildMissionCandidates(
   aggregate: RecoveryAggregate = EMPTY_AGGREGATE,
 ): MissionCandidate[] {
   const districtCode = scopeDistrict(payload.districtCode);
-  const missingMetrics = payload.metrics
-    .filter((metric) => metric.value === null)
-    .map((metric) => metric.officialName || metric.label);
   const incompleteSources = emptyPolicySources(payload);
   const retrievalFailures = erroredPolicySources(payload);
-  const availableMetricCount = payload.metrics.length - missingMetrics.length;
+  /* 값이 빈 지표를 원천별로 귀속시킨다.
+     `metric.source`·`metric.operation`이 실패한 원장 항목과 일치하면, 그 값이
+     비어 있는 이유는 공사에 데이터가 없는 것이 아니라 우리 호출이 실패한
+     것이다. 이 구분이 없던 동안 미션 하나에 두 사실이 섞여, 담당 제안이
+     `한국관광공사 관광데이터 담당 부서`로 찍힌 미션의 같은 지역 원장에는
+     우리 `NETWORK_ERROR`가 남아 있었다. 공사에 보완을 요구하는 문서로
+     쓰이는 산출물에서 이 혼동은 그대로 오귀속이 된다. */
+  const erroredSourceKeys = new Set(retrievalFailures);
+  const nullMetrics = payload.metrics.filter(
+    (metric) => metric.value === null,
+  );
+  const metricLabel = (metric: (typeof nullMetrics)[number]) =>
+    metric.officialName || metric.label;
+  const unverifiableMetrics = nullMetrics
+    .filter((metric) =>
+      erroredSourceKeys.has(`${metric.source}.${metric.operation}`),
+    )
+    .map(metricLabel);
+  const missingMetrics = nullMetrics
+    .filter(
+      (metric) =>
+        !erroredSourceKeys.has(`${metric.source}.${metric.operation}`),
+    )
+    .map(metricLabel);
+  const availableMetricCount = payload.metrics.length - nullMetrics.length;
+  /* 확인할 수 있었던 지표만 분모로 쓴다. 우리가 못 불러온 지표를 분모에
+     남기면 우리 실패가 지역의 데이터 완성도 점수를 깎는다. */
+  const verifiableMetricCount = Math.max(
+    payload.metrics.length - unverifiableMetrics.length,
+    0,
+  );
   /* 조회 실패만 있는 경우에는 미션을 만들지 않는다. 고쳐야 할 대상이 공사
      데이터가 아니라 우리 호출이기 때문이다. 그 사실은 아래 evidence에
      남겨 운영자가 볼 수 있게 한다. */
@@ -835,19 +867,27 @@ export function buildMissionCandidates(
     inactiveStatus: "resolved",
     priority: missingMetrics.length >= 4 ? 95 : 78,
     title: "정책 근거 데이터 완성도 점검",
-    summary: policyActive
-      ? [
-          missingMetrics.length > 0
-            ? `정책 세부지표 ${missingMetrics.length}개`
-            : "",
-          incompleteSources.length > 0
-            ? `원천 응답 ${incompleteSources.length}건`
-            : "",
-        ]
-          .filter(Boolean)
-          .join("와 ") +
-        `을 ${payload.baseYm.slice(0, 4)}년 ${payload.baseYm.slice(4)}월 기준으로 확인하지 못했습니다.`
-      : "정책 세부지표 7개가 현재 기준월에서 모두 확인됐습니다.",
+    summary:
+      (policyActive
+        ? [
+            missingMetrics.length > 0
+              ? `정책 세부지표 ${missingMetrics.length}개`
+              : "",
+            incompleteSources.length > 0
+              ? `원천 응답 ${incompleteSources.length}건`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("와 ") +
+          `이 ${payload.baseYm.slice(0, 4)}년 ${payload.baseYm.slice(4)}월 기준으로 비어 있습니다.`
+        : verifiableMetricCount === 0
+          ? `${payload.baseYm.slice(0, 4)}년 ${payload.baseYm.slice(4)}월 정책 세부지표를 한 건도 조회하지 못해 완성도를 판정하지 못했습니다.`
+          : `확인 가능한 정책 세부지표 ${verifiableMetricCount}개가 현재 기준월에서 모두 확인됐습니다.`) +
+      /* 우리 실패를 미션 본문에서 분리해 밝힌다. 이 문장이 없으면 담당 제안이
+         공사로 찍힌 미션의 근거에 우리 오류가 조용히 섞인다. */
+      (unverifiableMetrics.length
+        ? ` 별도로 지표 ${unverifiableMetrics.length}개는 이어가의 조회가 실패해 판정하지 못했습니다(공사 데이터 공백이 아니며, 이어가가 고쳐야 할 항목입니다).`
+        : ""),
     actionText:
       "누락 지표의 공식 원천·법정동 코드·기준월을 확인하고 같은 지역 범위를 다시 검증합니다.",
     evidence: {
@@ -859,10 +899,22 @@ export function buildMissionCandidates(
       /* 우리 조회가 실패한 원천. 공사에 요구할 개선 대상이 아니라 이어가가
          고쳐야 할 항목이므로 별도 필드로 분리해 둔다. */
       retrievalFailures,
+      /* 그 실패 때문에 판정 자체가 불가능했던 지표. `missingMetrics`와
+         섞이면 공사에 없는 데이터로 읽힌다. */
+      unverifiableMetrics,
+      verifiableMetricCount,
       coverageMeaning:
         "관광지 품질 점수가 아니라 공식 정책 근거의 값 확인 여부입니다.",
+      denominatorMeaning: unverifiableMetrics.length
+        ? `조회에 실패한 지표 ${unverifiableMetrics.length}개는 분모에서 제외했습니다. 값이 없다는 판정이 아니라 확인하지 못했다는 뜻입니다.`
+        : "전체 정책 세부지표를 분모로 씁니다.",
     },
-    currentValue: percent(availableMetricCount, 7),
+    /* 확인할 수 있었던 지표가 하나도 없으면 완성도는 `0%`가 아니라 미측정이다.
+       분모가 0인 비율을 0으로 발표하면 조회 실패가 최악의 데이터 품질로
+       보인다. */
+    currentValue: verifiableMetricCount
+      ? percent(availableMetricCount, verifiableMetricCount)
+      : null,
     sampleSize: 0,
     privacyState: "official_only",
     policyBaseMonth: payload.baseYm,
@@ -1713,7 +1765,7 @@ export async function refreshResilienceMissions(
   if (databaseAvailable) {
     try {
       await persistMissionCandidates(candidates);
-      const missions = await listResilienceMissions({
+      const page = await listResilienceMissions({
         areaCode: payload.areaCode,
         districtCode: payload.districtCode,
         includeResolved: true,
@@ -1726,13 +1778,13 @@ export async function refreshResilienceMissions(
           exactLocationUsed: false,
           belowThresholdPublished: false,
         },
-        activeCount: missions.filter(
-          (mission) =>
-            mission.status === "open" ||
-            mission.status === "in_progress" ||
-            mission.status === "ready_for_recheck",
-        ).length,
-        missions,
+        /* 페이지가 아니라 전체 집합의 상태 분포에서 센다. 20건에서 잘린
+           목록으로 세면 활성 미션 수가 조용히 20으로 수렴한다. */
+        activeCount:
+          (page.byStatus.open ?? 0) +
+          (page.byStatus.in_progress ?? 0) +
+          (page.byStatus.ready_for_recheck ?? 0),
+        missions: page.missions,
       };
     } catch {
       databaseAvailable = false;
@@ -1754,13 +1806,76 @@ export async function refreshResilienceMissions(
   };
 }
 
+export const MISSION_PAGE_MAX = 200;
+
+export type MissionPage = {
+  missions: PublicMission[];
+  /* 필터 조건을 만족하는 **전체** 건수. 한 페이지의 길이가 아니다. */
+  total: number;
+  /* 전체 집합에 대한 상태별 분포. 페이지에서 센 값이 아니다. */
+  byStatus: Record<string, number>;
+  pageSize: number;
+  truncated: boolean;
+  nextCursor: string | null;
+};
+
+/* 정렬 키를 그대로 담은 커서. offset을 쓰면 크론이 페이지 사이에 미션을
+   갱신할 때 같은 항목이 두 번 나오거나 건너뛰어진다. */
+function encodeMissionCursor(row: {
+  priority: number;
+  lastEvaluatedAt: string;
+  id: string;
+}): string {
+  return Buffer.from(
+    JSON.stringify([row.priority, row.lastEvaluatedAt, row.id]),
+    "utf8",
+  ).toString("base64url");
+}
+
+export function decodeMissionCursor(
+  value: string,
+): { priority: number; lastEvaluatedAt: string; id: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8"),
+    );
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 3 ||
+      typeof parsed[0] !== "number" ||
+      !Number.isInteger(parsed[0]) ||
+      typeof parsed[1] !== "string" ||
+      typeof parsed[2] !== "string"
+    ) {
+      return null;
+    }
+    return {
+      priority: parsed[0],
+      lastEvaluatedAt: parsed[1],
+      id: parsed[2],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* 회복력 미션 목록의 한 페이지.
+ *
+ * 예전 구현은 배열만 돌려주고 라우트가 `missionCount: missions.length`로
+ * 공표했다. 기본 호출이 100건에서 잘리고 상한이 200건이므로, 전국 미션이
+ * 그보다 많아지는 순간 화면과 API가 잘린 페이지 길이를 전국 총계로 발표하게
+ * 된다. 상태별 분포도 같은 페이지에서 세고 있어 함께 틀어진다. 기획 15.7이
+ * 금지한 형태의 숫자다 — 값이 틀린 것을 넘어, 틀렸다는 사실이 응답 어디에도
+ * 드러나지 않는다는 점이 문제다. 총계와 분포는 전체 집합에서 세고, 잘렸다는
+ * 사실과 이어 받을 커서를 함께 돌려준다. */
 export async function listResilienceMissions(params: {
   areaCode?: string;
   districtCode?: string;
   status?: string;
   includeResolved?: boolean;
   limit?: number;
-} = {}): Promise<PublicMission[]> {
+  cursor?: string;
+} = {}): Promise<MissionPage> {
   const db = getDb();
   const filters = [ne(resilienceMissions.status, "suppressed")];
   if (params.areaCode) {
@@ -1778,18 +1893,83 @@ export async function listResilienceMissions(params: {
     filters.push(ne(resilienceMissions.status, "dismissed"));
   }
 
-  const rows = await db
-    .select()
-    .from(resilienceMissions)
-    .where(and(...filters))
-    .orderBy(
-      desc(resilienceMissions.priority),
-      desc(resilienceMissions.lastEvaluatedAt),
-    )
-    .limit(Math.min(Math.max(params.limit ?? 100, 1), 200));
-  return rows
+  const pageSize = Math.min(
+    Math.max(
+      Number.isInteger(params.limit) ? (params.limit as number) : 100,
+      1,
+    ),
+    MISSION_PAGE_MAX,
+  );
+
+  /* 커서는 총계·분포에는 적용하지 않는다. 이어 받는 페이지에서도 전체
+     숫자는 같아야 한다. */
+  const scope = and(...filters);
+  const cursor = params.cursor
+    ? decodeMissionCursor(params.cursor)
+    : null;
+  const pageWhere = cursor
+    ? and(
+        scope,
+        or(
+          lt(resilienceMissions.priority, cursor.priority),
+          and(
+            eq(resilienceMissions.priority, cursor.priority),
+            lt(resilienceMissions.lastEvaluatedAt, cursor.lastEvaluatedAt),
+          ),
+          and(
+            eq(resilienceMissions.priority, cursor.priority),
+            eq(resilienceMissions.lastEvaluatedAt, cursor.lastEvaluatedAt),
+            gt(resilienceMissions.id, cursor.id),
+          ),
+        ),
+      )
+    : scope;
+
+  const [rows, totalRows, statusRows] = await Promise.all([
+    db
+      .select()
+      .from(resilienceMissions)
+      .where(pageWhere)
+      .orderBy(
+        desc(resilienceMissions.priority),
+        desc(resilienceMissions.lastEvaluatedAt),
+        /* 같은 우선순위·같은 평가시각에서 순서가 흔들리면 커서가 항목을
+           건너뛴다. */
+        asc(resilienceMissions.id),
+      )
+      /* 다음 페이지가 있는지 알기 위해 한 건 더 읽는다. */
+      .limit(pageSize + 1),
+    db
+      .select({ value: count() })
+      .from(resilienceMissions)
+      .where(scope),
+    db
+      .select({
+        status: resilienceMissions.status,
+        value: count(),
+      })
+      .from(resilienceMissions)
+      .where(scope)
+      .groupBy(resilienceMissions.status),
+  ]);
+
+  const hasMore = rows.length > pageSize;
+  const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+  const missions = pageRows
     .map(asPublicMission)
     .filter((mission): mission is PublicMission => Boolean(mission));
+  const lastRow = pageRows[pageRows.length - 1];
+
+  return {
+    missions,
+    total: totalRows[0]?.value ?? 0,
+    byStatus: Object.fromEntries(
+      statusRows.map((row) => [row.status, row.value]),
+    ),
+    pageSize,
+    truncated: hasMore,
+    nextCursor: hasMore && lastRow ? encodeMissionCursor(lastRow) : null,
+  };
 }
 
 export async function getResilienceMission(

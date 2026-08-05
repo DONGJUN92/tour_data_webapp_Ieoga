@@ -22,7 +22,10 @@ function ktoEnvelope(items) {
 /* 유아차 동반 여행자 시나리오. 후보는 주변 무장애 *목록*에는 없지만
    `detailWithTour2`가 유아차 필수 항목을 확인해 준다. 예전 구현은 목록 부재로
    붙인 공백을 지우지 않아, 확인된 곳조차 영구히 미확인으로 남았다. */
-async function withStrollerUpstream(run, { detailConfirms = true } = {}) {
+async function withStrollerUpstream(
+  run,
+  { detailConfirms = true, detailOverrides = {} } = {},
+) {
   const originalFetch = globalThis.fetch;
   const saved = {
     kto: process.env.KTO_SERVICE_KEY,
@@ -89,13 +92,17 @@ async function withStrollerUpstream(run, { detailConfirms = true } = {}) {
       items = detailConfirms
         ? [
             {
-              stroller: "대여 가능",
+              /* 유아차가 **안에서 다닐 수 있다**고 말하는 값이어야 한다.
+                 `대여 가능`은 유아차를 빌려준다는 뜻이고 동선을 확인해 주지
+                 않는다 — S1-2가 그 혼동이었다. */
+              stroller: "유아차 통행 가능 (전 구간 단차 없음)",
               elevator: "있음",
               restroom: "기저귀 교환대 있음",
               exit: "주출입구 경사로",
               parking: "가능",
               route: "단차 없음",
               publictransport: "지하철 3호선 안국역",
+              ...detailOverrides,
             },
           ]
         : [];
@@ -221,5 +228,43 @@ test("확인되지 않은 조건은 하드 차단이 아니라 명시적 동의�
     share.slice(0, 600),
     /confirmationRequired \|\|/,
     "공유 게이트가 함께 풀려 미확인 결과의 증명서가 공유된다",
+  );
+});
+
+test("대여 정보만 있는 값은 내부 동선 확인으로 승격되지 않는다", async () => {
+  /* S1-2 회귀 방지의 동작 검증. 조사에서 관측한 값은 `wheelchair='대여가능'`
+     하나로 등급이 A까지 올라가고 확인 요구가 풀린 상태였다. 유아차를 빌려주는
+     것과 유아차가 안에서 다닐 수 있는 것은 다른 사실이고, 후자를 확인하지 않은
+     채 전자로 대신하면 현장에서 계단을 만나는 쪽이 대가를 치른다. */
+  await withStrollerUpstream(
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const result = await recoverTrip(
+        strollerRequest(0.02),
+        "a11y-rental-only",
+      );
+      assert.ok(result.options.length >= 1, "후보 자체는 남아야 한다");
+      const option = result.options[0];
+      assert.notEqual(
+        option.accessibility.status,
+        "verified",
+        "대여 문구 하나로 필수 동선이 확인된 것으로 처리됐다",
+      );
+      assert.ok(
+        (option.evidenceGaps ?? []).some(
+          (gap) => gap.code === "ACCESSIBILITY_UNVERIFIED",
+        ),
+        "확인되지 않은 사실이 공백으로 남지 않았다",
+      );
+      assert.equal(option.confirmationRequired, true);
+    },
+    {
+      detailOverrides: {
+        stroller: "대여 가능",
+        route: "",
+        exit: "",
+        elevator: "",
+      },
+    },
   );
 });

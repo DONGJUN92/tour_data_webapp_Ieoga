@@ -206,6 +206,56 @@ export function evaluateAvailabilityItem(
     };
   }
 
+  /* 표기가 모호해도 "어느 해석으로도 열려 있지 않다"는 판정은 안전하다.
+     추출한 모든 구간 밖에 방문 시각이 있으면, 평일·주말·계절 중 무엇을 적용해도
+     닫혀 있다. 이 판정이 없던 동안 역선택이 일어났다 — `[평일] 10:00~19:00
+     (입장 마감 18:00)`처럼 **정보를 더 자세히 적은 곳**이 "읽을 수 없는 형식"으로
+     분류되어 검사를 건너뛰고, `09:00~18:00`처럼 단순하게 적은 곳만 걸러졌다.
+     가상 페르소나 조사에서 07:2x~07:3x에 호출했을 때 10:00·11:00·14:00 개관인
+     곳이 7명에게 1순위로 제시됐다. 헛걸음 비용은 유아차·휠체어·고령자에게 가장
+     크다.
+
+     반대 방향(열려 있다)은 여전히 단정하지 않는다. 어느 요일 규칙이 적용되는지
+     모르는 상태에서 "열려 있다"고 말하는 것은 근거를 넘어서는 주장이다. */
+  if (ranges.length && sameVisitDate) {
+    const visitStartMinutes = start.getHours() * 60 + start.getMinutes();
+    const visitEndMinutes = end.getHours() * 60 + end.getMinutes();
+    /* 단일 명확 구간과 같은 기준을 쓴다 — 도착부터 체류 종료까지 전체가 들어와야
+       "들어온다"고 본다. 절반만 겹치는 것을 통과시키면 개관 40분 전에 도착해
+       문 앞에서 기다리는 일정을 추천하게 된다. */
+    const fitsWholly = ([rangeStart, rangeEnd]: readonly [number, number]) =>
+      rangeEnd < rangeStart
+        ? (visitStartMinutes >= rangeStart || visitStartMinutes <= rangeEnd) &&
+          (visitEndMinutes >= rangeStart || visitEndMinutes <= rangeEnd)
+        : visitStartMinutes >= rangeStart &&
+          visitEndMinutes <= rangeEnd &&
+          visitEndMinutes >= visitStartMinutes;
+    const overlaps = ([rangeStart, rangeEnd]: readonly [number, number]) =>
+      rangeEnd < rangeStart
+        ? visitStartMinutes >= rangeStart ||
+          visitStartMinutes <= rangeEnd ||
+          visitEndMinutes >= rangeStart ||
+          visitEndMinutes <= rangeEnd
+        : visitEndMinutes >= rangeStart && visitStartMinutes <= rangeEnd;
+    if (!ranges.some(fitsWholly)) {
+      const partial = ranges.some(overlaps);
+      return {
+        status: "confirmed_closed",
+        operatingHours,
+        restDate: restDate || undefined,
+        contact: contact || undefined,
+        checkedAt,
+        note: partial
+          ? `체류 시간의 일부만 한국관광공사 운영시간(${operatingHours})과 겹칩니다. 적힌 어느 구간으로 읽어도 도착부터 체류 종료까지 전체가 들어오지 않습니다.`
+          : `한국관광공사 운영시간(${operatingHours})에 적힌 모든 구간 밖의 시간입니다. 어느 요일 기준으로 읽어도 이 시간에는 이용할 수 없습니다.`,
+        noteEn: partial
+          ? `Only part of your stay overlaps the official opening hours (${operatingHours}); no stated interval covers it end to end.`
+          : `Your visit falls outside every interval stated in the official hours (${operatingHours}). It is closed under any reading.`,
+        audit,
+      };
+    }
+  }
+
   if (operatingHours || restDate || eventStart !== null || eventEnd !== null) {
     return {
       status: "official_hours_unstructured",

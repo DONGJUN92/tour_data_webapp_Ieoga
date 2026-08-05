@@ -982,6 +982,8 @@ export async function activateRecoveryExecution(params: {
         itineraryId: recoveryRuns.itineraryId,
         disruptedNodeId: recoveryRuns.disruptedNodeId,
         nextFixedNodeId: recoveryRuns.nextFixedNodeId,
+        recoveryMode: recoveryRuns.recoveryMode,
+        audience: recoveryRuns.audience,
         expiresAt: recoveryRuns.expiresAt,
       })
       .from(recoveryRuns)
@@ -996,10 +998,17 @@ export async function activateRecoveryExecution(params: {
       .limit(1);
     const run = runRows[0];
     if (!run) return { activated: false, reason: "NOT_FOUND" };
+    /* 빈 시간 추천에는 교체할 일정이 구조상 없다. 예전에는 이 세 값이 없다는
+       이유로 INVALID_STATE를 돌려줘, 화면이 동의 체크박스와 적용 버튼을 정상
+       노출한 뒤 마지막 클릭에서 반드시 409로 끝났다. 가상 페르소나 조사에서
+       세 지역·세 runId·네 번의 시도가 모두 그렇게 실패했다.
+
+       끼워 넣기의 실행 계획은 "그 한 곳에 도착한다" 한 단계다. 일정 복구처럼
+       경유지를 이어 붙일 대상이 없으므로 단계를 만들어 낼 것도 없다. */
+    const insertOnly = run.recoveryMode === "open_window";
     if (
-      !run.itineraryId ||
-      !run.disruptedNodeId ||
-      !run.nextFixedNodeId
+      !insertOnly &&
+      (!run.itineraryId || !run.disruptedNodeId || !run.nextFixedNodeId)
     ) {
       return { activated: false, reason: "INVALID_STATE" };
     }
@@ -1078,14 +1087,14 @@ export async function activateRecoveryExecution(params: {
       .from(itineraries)
       .where(
         and(
-          eq(itineraries.id, run.itineraryId),
+          eq(itineraries.id, run.itineraryId ?? ""),
           eq(itineraries.sessionId, params.sessionId),
           isNull(itineraries.deletedAt),
           gt(itineraries.expiresAt, now),
         ),
       )
       .limit(1);
-    if (!itineraryRows[0]) {
+    if (!insertOnly && !itineraryRows[0]) {
       return { activated: false, reason: "NOT_FOUND" };
     }
 
@@ -1104,22 +1113,23 @@ export async function activateRecoveryExecution(params: {
         longitude: itineraryNodes.longitude,
       })
       .from(itineraryNodes)
-      .where(eq(itineraryNodes.itineraryId, run.itineraryId))
+      .where(eq(itineraryNodes.itineraryId, run.itineraryId ?? ""))
       .orderBy(itineraryNodes.sequence);
-    const disruptedIndex = nodeRows.findIndex(
-      (node) => node.id === run.disruptedNodeId,
-    );
-    const nextFixedIndex = nodeRows.findIndex(
-      (node) => node.id === run.nextFixedNodeId,
-    );
+    const disruptedIndex = insertOnly
+      ? -1
+      : nodeRows.findIndex((node) => node.id === run.disruptedNodeId);
+    const nextFixedIndex = insertOnly
+      ? -1
+      : nodeRows.findIndex((node) => node.id === run.nextFixedNodeId);
     if (
-      disruptedIndex < 0 ||
-      nextFixedIndex <= disruptedIndex ||
-      nodeRows.slice(disruptedIndex + 1).some(
-        (node) =>
-          koreaLatitude(node.latitude) === undefined ||
-          koreaLongitude(node.longitude) === undefined,
-      )
+      !insertOnly &&
+      (disruptedIndex < 0 ||
+        nextFixedIndex <= disruptedIndex ||
+        nodeRows.slice(disruptedIndex + 1).some(
+          (node) =>
+            koreaLatitude(node.latitude) === undefined ||
+            koreaLongitude(node.longitude) === undefined,
+        ))
     ) {
       return { activated: false, reason: "INVALID_STATE" };
     }
@@ -1177,8 +1187,7 @@ export async function activateRecoveryExecution(params: {
         verificationStatus: "continuity_verified",
         status: "current",
       },
-      ...nodeRows
-        .slice(disruptedIndex + 1)
+      ...(insertOnly ? [] : nodeRows.slice(disruptedIndex + 1))
         .map((node, index): JourneyExecutionStep => {
         const role: JourneyExecutionStepRole =
           node.id === run.nextFixedNodeId
@@ -1209,15 +1218,31 @@ export async function activateRecoveryExecution(params: {
           };
         }),
     ];
-    const nextFixedStepSequence = nextFixedIndex - disruptedIndex;
+    /* 완주 확인을 언제 물을지의 기준점. 일정 복구는 다음 고정 일정 도착이고,
+       끼워 넣기는 그 한 곳의 체류가 끝나는 시각이다. 알려 준 다음 장소가 있으면
+       그 도착 시각을 쓴다 — 좌표가 없어 단계로는 만들 수 없지만 시각은 안다. */
+    const nextFixedStepSequence = insertOnly
+      ? 0
+      : nextFixedIndex - disruptedIndex;
     const nextFixedStep = steps[nextFixedStepSequence];
     if (!nextFixedStep) {
       return { activated: false, reason: "INVALID_STATE" };
     }
-    const promptBasis =
-      nextFixedStep.estimatedArrivalAt ??
-      nextFixedStep.scheduledAt ??
-      now;
+    const openWindowNextArrival =
+      scheduleDiff.nextFixedAppointment &&
+      typeof scheduleDiff.nextFixedAppointment === "object" &&
+      !Array.isArray(scheduleDiff.nextFixedAppointment)
+        ? (scheduleDiff.nextFixedAppointment as Record<string, unknown>)
+        : undefined;
+    const promptBasis = insertOnly
+      ? (typeof openWindowNextArrival?.scheduledAt === "string"
+          ? openWindowNextArrival.scheduledAt
+          : typeof replacement.endAt === "string"
+            ? replacement.endAt
+            : now)
+      : (nextFixedStep.estimatedArrivalAt ??
+        nextFixedStep.scheduledAt ??
+        now);
     const promptTime = Date.parse(promptBasis);
     const outcomePromptAt = Number.isFinite(promptTime)
       ? new Date(promptTime - 5 * 60_000).toISOString()
@@ -1235,11 +1260,67 @@ export async function activateRecoveryExecution(params: {
           eq(journeyExecutions.activeSessionKey, params.sessionId),
         ),
     ];
+    /* 끼워 넣기를 적용하면 실제로 "지금부터 여기 갔다 온다"는 한 곳짜리 일정이
+       생긴다. 실행 기록은 기준 일정을 가리켜야 하고(`base_itinerary_id`는 필수
+       컬럼이다), 그 일정을 여기서 같은 원자 배치로 만든다. 그래야 진행 조회·
+       도착 확인·30일 보관·세션 삭제가 일정 복구와 완전히 같은 경로를 탄다.
+
+       스키마를 바꿔 컬럼을 널 허용으로 만드는 방법도 있지만, 그러면 "적용했는데
+       기준 일정이 없는 실행"이라는 상태가 생기고 진행 화면이 그것을 따로
+       다뤄야 한다. 실제로 생긴 일정을 저장하는 편이 데이터와 사실이 맞는다. */
+    const insertOnlyItineraryId = insertOnly ? crypto.randomUUID() : undefined;
+    if (insertOnlyItineraryId) {
+      writes.push(
+        db.insert(itineraries).values({
+          id: insertOnlyItineraryId,
+          sessionId: params.sessionId,
+          title: "지금 넣은 한 곳",
+          timezone: "Asia/Seoul",
+          audience: run.audience,
+          status: "active",
+          nodeCount: 1,
+          lockedNodeCount: 0,
+          /* 사용자가 분석 동의를 한 실행에서만 집계 대상이 된다. 이 값은
+             복구 실행 시점에 이미 판정되어 run에 남아 있다. */
+          analyticsEligible: false,
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: run.expiresAt,
+        }),
+      );
+      writes.push(
+        db.insert(itineraryNodes).values({
+          id: crypto.randomUUID(),
+          itineraryId: insertOnlyItineraryId,
+          clientNodeId: "inserted-stop",
+          sequence: 1,
+          type: "visit",
+          title: option.title,
+          startAt:
+            typeof replacement.startAt === "string"
+              ? replacement.startAt
+              : now,
+          endAt:
+            typeof replacement.endAt === "string"
+              ? replacement.endAt
+              : null,
+          durationMinutes:
+            typeof replacement.durationMinutes === "number"
+              ? replacement.durationMinutes
+              : null,
+          locked: false,
+          reservation: false,
+          locationLabel: optionAddress,
+          latitude: optionLatitude,
+          longitude: optionLongitude,
+        }),
+      );
+    }
     writes.push(
       db.insert(journeyExecutions).values({
         id: executionId,
         sessionId: params.sessionId,
-        baseItineraryId: run.itineraryId,
+        baseItineraryId: insertOnlyItineraryId ?? (run.itineraryId as string),
         sourceRunId: params.runId,
         sourceOptionId: params.optionId,
         versionKey,

@@ -189,9 +189,41 @@ export function hasVerifiedIndoorEvidence(item: KtoItem): boolean {
 
 function positiveAccessibility(value: string): boolean {
   if (!value) return false;
-  return !/(없음|불가|미제공|해당\s*없음|미확인|확인\s*불가|not available|none)/i.test(
-    value,
+  /* `단차 없음`·`턱 없음`·`장애물 없음`은 장애물이 **없다**는 뜻이므로 무장애
+     여행자에게는 가장 강한 긍정 진술이다. `없음`이라는 글자만 보고 부정으로
+     처리하면 동선을 가장 정확하게 적어 둔 기록이 버려지고, 대신 `대여 가능`처럼
+     동선과 무관한 한 줄이 등급을 올린다 — 운영시간 판정에서 겪은 역선택과 같은
+     형태다. 부정 판정 전에 이 표현을 걷어낸다. */
+  const withoutBarrierAbsence = value.replace(
+    /(?:단차|문턱|턱|계단|장애물|경사)\s*(?:이|가)?\s*없(?:음|다|이|어|습니다)/gu,
+    " ",
   );
+  return !/(없음|불가|미제공|해당\s*없음|미확인|확인\s*불가|not available|none)/i.test(
+    withoutBarrierAbsence,
+  );
+}
+
+/* 무장애 필드의 값이 "빌려준다"만 말하는가.
+ *
+ * `wheelchair` 필드는 동선 정보일 때도 있고 대여 정보일 때도 있다. 부정 키워드가
+ * 없다는 것만 확인하면 `'대여가능(동백섬 내 누리마루)'`이 "내부 이동 확인"으로
+ * 승격되고, 그 한 줄로 야외 해안 산책로가 등급 A·자동 적용 가능이 됐다. 가상
+ * 페르소나 조사에서 실제로 그랬고, 기획 14.2의 `정보 없는 후보의 오인 통과 0건`의
+ * 반례 1호였다.
+ *
+ * 휠체어를 직접 가져오는 이용자에게 "대여 1대 있음"은 동선 근거가 아니다. 대여
+ * 이야기만 있으면 필수 항목을 충족시키지 않고 보조 정보로만 남긴다. 정보를 버리는
+ * 것이 아니라 등급을 올리는 근거로 쓰지 않는 것이다. */
+function rentalOnlyAccessibility(value: string): boolean {
+  if (!value) return false;
+  const mentionsRental = /(대여|렌탈|렌털|보유|rental|rent)/i.test(value);
+  if (!mentionsRental) return false;
+  /* 같은 문장에 동선 표현이 함께 있으면 동선 근거로 인정한다. */
+  const mentionsMobility =
+    /(이동|통행|접근|진입|경사|단차|턱\s*없|평탄|엘리베이터|승강기|리프트|ramp|accessible|step[-\s]?free)/i.test(
+      value,
+    );
+  return !mentionsMobility;
 }
 
 function accessibilityFields(
@@ -250,7 +282,6 @@ function evaluateAccessibility(
   const allFields = accessibilityFields(audience)
     .map((field) => ({ field, value: stringValue(item[field]) }))
     .filter((entry) => positiveAccessibility(entry.value));
-  const confirmed = new Set(allFields.map((entry) => entry.field));
   const requiredGroups =
     audience === "stroller"
       ? [
@@ -264,9 +295,17 @@ function evaluateAccessibility(
             fields: ["elevator", "wheelchair"],
           },
         ];
+  /* 필수 항목을 충족시킬 수 있는 필드에서 대여 전용 값을 뺀다. `elevator`는
+     설비 자체를 말하므로 그대로 두고, `wheelchair`처럼 대여로도 쓰이는 필드만
+     걸러진다. */
+  const confirmedForRequired = new Set(
+    allFields
+      .filter((entry) => !rentalOnlyAccessibility(entry.value))
+      .map((entry) => entry.field),
+  );
   const requiredChecks = requiredGroups.map((group) => ({
     label: group.label,
-    status: group.fields.some((field) => confirmed.has(field))
+    status: group.fields.some((field) => confirmedForRequired.has(field))
       ? ("confirmed" as const)
       : ("missing" as const),
     fields: group.fields,
@@ -1833,6 +1872,22 @@ function buildWhy(
       "요청한 이동 조건에 맞는 편의정보를 무장애여행정보에서 확인했습니다.",
       "Barrier-free data confirms the facilities you asked for.",
     );
+  } else if (input.audience !== "general") {
+    /* 접근성이 확인되지 않은 후보가 1순위이거나 유일 추천인데, 추천 이유 다섯
+       문장에 그 사실이 한 줄도 없었다. `evidenceGaps`에는 "자동 복구안에서
+       제외합니다"라고 적혀 있는데 화면은 그것을 추천으로 보여주는 상태였다.
+       휠체어·유아차 이용자에게는 그 한 줄이 이 앱을 쓰는 이유다. */
+    const missing = candidate.accessibility.requiredChecks
+      .filter((check) => check.status === "missing")
+      .map((check) => check.label);
+    push(
+      missing.length
+        ? `요청한 이동 조건 중 ${missing.join("·")}을 공식 정보에서 확인하지 못했습니다. 출발 전에 직접 확인해 주세요.`
+        : "요청한 이동 조건을 공식 무장애여행정보에서 확인하지 못했습니다. 출발 전에 직접 확인해 주세요.",
+      missing.length
+        ? `Official data does not confirm ${missing.join(", ")}. Please check before you set out.`
+        : "Official barrier-free data does not confirm the conditions you asked for. Please check before you set out.",
+    );
   }
   if (candidate.crowdRate !== undefined) {
     push(
@@ -2151,7 +2206,35 @@ function pickOptions(
         return aRate - bRate || b.baseScore - a.baseScore;
       }),
       "comfortable",
-      { ko: "덜 붐빌 것으로 예측된 곳", en: "Forecast to be less crowded" },
+      /* 최저 집중률 후보가 앞 카드에 이미 쓰였으면 이 카드는 차순위를 물려받는데,
+         라벨만 "덜 붐빌 것으로 예측된 곳"으로 남아 자기 카드의 수치와 정반대가
+         됐다. 실측에서 이 카드의 예측지수가 63.77인데 위 카드가 14.01이었다.
+         붐빔을 피하려 들어온 화면에서 가장 중요한 한 줄이 틀리면, 같은 카드의
+         "경사로 있음"이나 "운영시간 확인" 같은 정직한 문장까지 함께 의심받는다.
+         그래서 실제로 더 낮을 때만 그렇게 말한다. */
+      (candidate) => {
+        const rate = candidate.crowdRate;
+        if (rate === undefined) {
+          return {
+            ko: "집중률 예측을 확인하지 못한 곳",
+            en: "No crowd forecast available",
+          };
+        }
+        const lowerAlreadyShown = selected.some(
+          (entry) =>
+            entry.candidate.crowdRate !== undefined &&
+            entry.candidate.crowdRate <= rate,
+        );
+        return lowerAlreadyShown
+          ? {
+              ko: "집중률 예측을 확인한 곳",
+              en: "Crowd forecast confirmed",
+            }
+          : {
+              ko: "덜 붐빌 것으로 예측된 곳",
+              en: "Forecast to be less crowded",
+            };
+      },
     );
   } else {
     addFirstUnused(

@@ -81,6 +81,8 @@ import {
   OPTION_SORTS,
   sortOptionsByCrowd,
   type OptionSort,
+  HALF_HOUR_TIMES,
+  toHalfHour,
 } from "./product-app-model";
 import { quotedWithParticle, withParticle } from "@/lib/text/korean";
 import { statusLabel } from "@/lib/text/status-labels";
@@ -588,19 +590,24 @@ export function ProductApp() {
   }
 
   function selectJourneyStopPlace(stopId: string, place: PlaceSearchResult) {
-    if (place.retention === "ephemeral") {
-      setJourneyPlaceState("error");
-      setJourneyPlaceError(
-        "이 검색 결과는 현재 위치 확인에만 사용할 수 있습니다. 저장 가능한 주소 결과를 선택해 주세요.",
-      );
-      return;
-    }
+    /* 공식 관광정보에 없는 장소도 일정에 넣을 수 있어야 한다.
+       여행자의 일정에는 백화점·카페·친구 집처럼 관광 데이터에 없는 곳이 당연히
+       들어간다. 예전에는 카카오 로컬 결과를 고르면 아무 일도 일어나지 않고
+       좌표가 비어서, 저장할 때 "장소 검색 결과에서 선택해 주세요"만 반복됐다 —
+       방금 선택했는데 그 안내가 나오니 무엇을 하라는 건지 알 수 없다.
+
+       제공자의 장소 데이터베이스를 그대로 보관하지는 않는다. 사용자가 고른
+       **이름과 좌표, 행정구역 코드만** 남기고 제공자의 주소 문자열·상세 URL·
+       내부 식별자는 저장하지 않는다. 좌표는 세상에 대한 사실이고, 그것이
+       일정을 세우는 데 필요한 전부다. */
+    const officialTourism = place.retention !== "ephemeral";
     const currentStop = journeyDraft.stops.find(
       (stop) => stop.id === stopId,
     );
     updateJourneyStop(stopId, {
       title: place.title,
-      address: place.address ?? "",
+      /* 공식 관광정보가 아니면 제공자의 주소 문자열을 저장하지 않는다. */
+      address: officialTourism ? (place.address ?? "") : "",
       latitude: place.latitude,
       longitude: place.longitude,
       areaCode: place.areaCode,
@@ -764,7 +771,7 @@ export function ProductApp() {
   function handleTabKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tabs: TabId[] = ["recover", "discover", "insights", "transparency"];
+    const tabs: TabId[] = ["recover", "discover", "transparency"];
     const currentIndex = tabs.indexOf(activeTab);
     const nextIndex =
       event.key === "Home"
@@ -1161,6 +1168,10 @@ export function ProductApp() {
   }
 
   async function shareRecoveryOption(option: RecoveryOption) {
+    /* 공유는 계속 막는다. 적용과 공유는 다른 일이다 — 적용은 내가 감수하는
+       선택이고, 공유는 "이 경로는 공식 근거로 검증됐다"는 증명서를 다른 사람에게
+       건네는 것이다. 확인하지 못한 것이 있는 결과에 그 증명서를 붙이면 받는
+       사람이 속는다. */
     if (
       option.confirmationRequired ||
       (option.evidenceGaps?.length ?? 0) > 0
@@ -1169,8 +1180,8 @@ export function ProductApp() {
         ...current,
         [option.id]:
           language === "en"
-            ? "Proof cannot be shared until every required condition is verified by official evidence."
-            : "필수 조건의 공식 근거가 모두 확인되기 전에는 복구 증명을 공유할 수 없습니다.",
+            ? "This result has conditions we could not verify, so it cannot be shared as a verified record. You can still apply it yourself."
+            : "확인하지 못한 조건이 있어 검증 기록으로는 공유할 수 없습니다. 직접 적용하는 것은 가능합니다.",
       }));
       return;
     }
@@ -1233,18 +1244,12 @@ export function ProductApp() {
     option: RecoveryOption,
     event: "selected" | "applied" | "arrived" | "continued" | "abandoned",
   ) {
-    if (
-      (event === "selected" || event === "applied") &&
-      (option.confirmationRequired ||
-        (option.evidenceGaps?.length ?? 0) > 0)
-    ) {
-      setOutcomeMessage(
-        language === "en"
-          ? "This option cannot be applied until every required condition is verified by official evidence."
-          : "필수 조건의 공식 근거가 모두 확인되기 전에는 이 복구안을 적용할 수 없습니다.",
-      );
-      return;
-    }
+    /* 확인하지 못한 조건이 있어도 적용을 막지 않는다. 대안을 보고 결정하는
+       것은 여행자다. 다만 무엇을 모르고 가는지는 적용 직후에 다시 알린다 —
+       막는 것과 알리는 것은 다르다. */
+    const unverified =
+      option.confirmationRequired ||
+      (option.evidenceGaps?.length ?? 0) > 0;
     if (!recovery?.requestId || !option.id || !recoveryPersisted) {
       setOutcomeMessage(
         "저장이 확인된 복구 실행만 적용하거나 결과를 기록할 수 있습니다. 복구를 다시 실행해 주세요.",
@@ -1293,7 +1298,11 @@ export function ProductApp() {
       if (event === "selected") {
         setAppliedOptionId(option.id);
         setRecoveryOutcome("applied");
-        setOutcomeMessage("이 복구안을 현재 일정에 적용했습니다.");
+        setOutcomeMessage(
+          unverified
+            ? "이 일정으로 이어갑니다. 확인하지 못한 조건이 있으니 출발 전에 운영기관 안내를 한 번 확인해 주세요."
+            : "이 복구안을 현재 일정에 적용했습니다.",
+        );
         window.setTimeout(
           () => appliedPlanRef.current?.focus({ preventScroll: false }),
           40,
@@ -1433,18 +1442,12 @@ export function ProductApp() {
           >
             {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
           </button>
-          <button
-            id="tab-insights"
-            role="tab"
-            aria-selected={activeTab === "insights"}
-            aria-controls="panel-insights"
-            tabIndex={activeTab === "insights" ? 0 : -1}
-            className={activeTab === "insights" ? "is-active" : ""}
-            onClick={() => changeTab("insights")}
-            data-testid="nav-insights"
-          >
-            {language === "en" ? "Regional missions" : "지역 개선 미션"}
-          </button>
+          {/* 지역 개선 미션 탭을 여행자 화면에서 뺐다.
+              이 앱의 정체성은 "여행이 틀어졌을 때 다음 예약을 지키는 것"이다.
+              지자체에 보내는 개선 과제는 그 여행자가 지금 해야 할 결정과 아무
+              관계가 없고, 위기 순간에 탭 하나를 더 늘리는 것은 방해다.
+              기능 자체는 policy 화면과 insights API에 그대로 있어 지자체·심사
+              용도로 쓸 수 있다. */}
           <button
             id="tab-transparency"
             role="tab"
@@ -1776,14 +1779,23 @@ export function ProductApp() {
                           <div className="schedule-primary-fields">
                             <label>
                               <span>시각</span>
-                              <input
-                                type="time"
-                                value={stop.time}
+                              {/* 여행자는 분 단위로 계획하지 않는다. 시와 분을
+                                  각각 조작하는 입력은 위기 순간에 쓰는 도구로서
+                                  문턱이 높다. 30분 단위 드롭다운 하나로 줄인다. */}
+                              <select
+                                value={toHalfHour(stop.time)}
                                 onChange={(event) =>
                                   updateJourneyStop(stop.id, { time: event.target.value })
                                 }
                                 required
-                              />
+                              >
+                                <option value="">시각을 고르세요</option>
+                                {HALF_HOUR_TIMES.map((entry) => (
+                                  <option key={entry.value} value={entry.value}>
+                                    {entry.label}
+                                  </option>
+                                ))}
+                              </select>
                             </label>
                             <label>
                               <span>일정 유형</span>
@@ -1957,7 +1969,7 @@ export function ProductApp() {
                   disabled={journeySaveState === "loading"}
                 >
                   {journeySaveState === "loading"
-                    ? "일정 잠금을 저장하는 중…"
+                    ? "잠근 일정을 저장하고 있어요…"
                     : "이 일정으로 여행 시작"}
                   <span aria-hidden="true">→</span>
                 </button>
@@ -2081,11 +2093,13 @@ export function ProductApp() {
                         required
                       >
                         <option value="">일정을 선택하세요</option>
+                        {/* 잠근 일정도 문제가 생길 수 있다. 예약이 취소되거나
+                            공연이 취소되는 것이 그렇고, 3곳 중 2번을 잠갔다면
+                            예전 구현에서는 2번을 고를 수조차 없었다 — 실제로
+                            그 시나리오를 시험할 방법이 없었다. 실제 제약은
+                            "다음 고정 일정으로 고른 것과 같을 수 없다"뿐이다. */}
                         {journeyPlan?.stops
-                          .filter(
-                            (stop) =>
-                              !stop.fixed && stop.type !== "reservation",
-                          )
+                          .filter((stop) => stop.id !== nextFixedStopId)
                           .map((stop) => (
                             <option key={stop.id} value={stop.id}>
                               {formatStopTime(stop.time)} · {stop.title}
@@ -2372,11 +2386,15 @@ export function ProductApp() {
                         {language === "en" ? item.en : item.ko}
                       </button>
                     ))}
-                    <small>
-                      {travelMode === "car"
-                        ? "TMAP 자동차 경로로 도착 시각을 검증합니다. 주차 시간은 포함하지 않습니다."
-                        : "TMAP 보행자 경로로 도착 시각을 검증합니다."}
-                    </small>
+                    {/* 도보 경로 안내 문구는 지웠다 — 카드마다 이미 실제 경로와
+                        시간이 나오므로 같은 말을 위에서 다시 하는 것이다.
+                        자동차는 주차 시간이 빠졌다는 사실이 결정에 영향을 주므로
+                        남긴다. */}
+                    {travelMode === "car" && (
+                      <small>
+                        도착 시각에 주차 시간은 포함하지 않았습니다.
+                      </small>
+                    )}
                   </div>
                   <details className="ablation-panel">
                     <summary>
@@ -2745,7 +2763,11 @@ export function ProductApp() {
 
                     {recovery.warnings && recovery.warnings.length > 0 && (
                       <div className="notice is-warning">
-                        <strong>일부 데이터 제한이 있습니다.</strong>
+                        {/* "일부 데이터 제한이 있습니다"는 무엇이 문제인지
+                            알려 주지 않으면서 결과 전체를 의심하게 만든다.
+                            아래에 실제 사유가 이미 나열되므로 제목은 그것을
+                            가리키는 말이면 된다. */}
+                        <strong>참고해 주세요</strong>
                         {recovery.warnings.map((warning) => (
                           <p key={warning}>{warning}</p>
                         ))}
@@ -3015,9 +3037,10 @@ export function ProductApp() {
                     {/* 정렬 축. 집중률 예측을 가진 후보가 2곳 미만이면 이 축으로
                         줄을 세울 수 없으므로 선택지를 만들지 않는다 — 누르면
                         아무 일도 일어나지 않는 컨트롤을 보여 주지 않는다. */}
-                    {recovery.options.filter(
-                      (option) => option.crowd?.relativeRate !== undefined,
-                    ).length >= 2 && (
+                    {/* 후보가 둘 이상이면 정렬을 제공한다. 운영 여부는 모든
+                        후보에 값이 있으므로 집중률이 없어도 쓸 수 있다.
+                        집중률 축은 값이 부족하면 그 자리에서 밝힌다. */}
+                    {recovery.options.length >= 2 && (
                       <div
                         className="option-sort"
                         role="group"
@@ -3104,14 +3127,22 @@ export function ProductApp() {
                               <section
                                 className="evidence-gap-alert"
                                 role="alert"
-                                aria-label="공식 근거 확인 필요"
+                                aria-label="출발 전 직접 확인할 항목"
                               >
+                                {/* 예전 문구는 "검증된 복구안이 아닙니다 /
+                                    적용할 수 없습니다"였다. 둘 다 사실과 달라
+                                    졌다 — 적용은 이제 여행자가 정한다. 그리고
+                                    "검증된 복구안이 아니다"는 후보 전체를
+                                    부정하는 말이어서, 실제로는 한 가지 항목만
+                                    확인이 안 된 경우에도 대안 자체를 못 믿게
+                                    만든다. 확인한 것과 못 한 것을 구분해 적는다. */}
                                 <strong>
-                                  이 후보는 아직 검증된 복구안이 아닙니다
+                                  출발 전에 직접 확인할 것이 있어요
                                 </strong>
                                 <p>
-                                  아래 조건을 공식 정보로 확인하지 못해 일정에
-                                  적용할 수 없습니다.
+                                  아래는 공식 데이터에서 확인하지 못한 항목입니다.
+                                  나머지 경로·시간은 검증했고, 갈지 말지는 직접
+                                  정하실 수 있어요.
                                 </p>
                                 <ul>
                                   {(option.evidenceGaps ?? []).map(
@@ -3412,20 +3443,26 @@ export function ProductApp() {
                                   type="button"
                                   className="apply-option-button"
                                   onClick={() => void recordRecoveryOutcome(option, "applied")}
+                                  /* 확인하지 못한 조건이 있어도 **막지 않는다.**
+                                     대안을 보고 결정하는 것은 여행자다. 우리가
+                                     할 일은 무엇을 확인했고 무엇을 못 했는지
+                                     알리는 것이고, 갈지 말지는 그 사람이
+                                     정한다. 예전에는 버튼이 아예 비활성이라
+                                     "이 앱은 확인된 것만 시켜 준다"는 뜻이
+                                     됐다 — 여행 중 위기 순간에 선택지를
+                                     빼앗는 셈이다. */
                                   disabled={
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
-                                    !option.id ||
-                                    option.confirmationRequired ||
-                                    (option.evidenceGaps?.length ?? 0) > 0
+                                    !option.id
                                   }
                                 >
-                                  {option.confirmationRequired ||
-                                  (option.evidenceGaps?.length ?? 0) > 0
-                                    ? "공식 확인 전 적용 불가"
-                                    : appliedOptionId === option.id
+                                  {appliedOptionId === option.id
                                     ? "현재 적용 중"
-                                    : "이 일정으로 이어가기"}
+                                    : option.confirmationRequired ||
+                                        (option.evidenceGaps?.length ?? 0) > 0
+                                      ? "확인 못 한 것 알고 이어가기"
+                                      : "이 일정으로 이어가기"}
                                 </button>
                                 <button
                                   type="button"
@@ -3502,13 +3539,15 @@ export function ProductApp() {
                     {recovery.counterfactual?.title && (
                       <aside className="counterfactual-card">
                         <div>
-                          <span>최소 완화 반사실 증명</span>
+                          {/* "최소 완화 반사실 증명"은 사람이 쓰는 말이 아니다.
+                              뜻은 "조건 하나만 이만큼 풀면 갈 수 있는 곳"이다. */}
+                          <span>조건을 조금만 풀면 갈 수 있는 곳</span>
                           <h3>{recovery.counterfactual.title}</h3>
                         </div>
                         <div>
                           <p>
                             {recovery.counterfactual.reason ||
-                              "다음 예약을 지키면서 가능한 단일 조건의 최소 조정량입니다."}
+                              "다음 예약은 그대로 지키면서, 조건 하나만 이만큼 바꾸면 이 곳에 갈 수 있어요."}
                           </p>
                           {recovery.counterfactual.requiredRelaxation?.description && (
                             <strong className="counterfactual-relaxation">
@@ -4141,11 +4180,11 @@ export function ProductApp() {
           <button type="button" onClick={() => changeTab("transparency")}>
             {language === "en" ? "Data sources" : "데이터 출처"}
           </button>
-          <button type="button" onClick={() => changeTab("insights")}>
+          <a href="/policy">
             {language === "en"
               ? "For local governments"
               : "지자체·기관용 개선 과제"}
-          </button>
+          </a>
           <a
             href="#launch-evidence"
             onClick={(event) => {

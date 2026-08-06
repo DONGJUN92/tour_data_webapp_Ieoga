@@ -909,12 +909,20 @@ function DiscoverResults({
         })}
       </ul>
 
+      {/* 예전에는 "조건을 통과하지 못한 후보 N곳은 제시하지 않았습니다"라고
+          적었다. 두 가지가 잘못됐다. 첫째, 여행에 정답이 없는데 우리가 통과·
+          탈락을 선고하는 말투다. 둘째, 그 N곳이 무엇인지 알려 주지 않으므로
+          여행자는 자기가 무엇을 못 봤는지도 모른다.
+
+          엔진이 이제 운영시간으로 후보를 지우지 않고 사유와 함께 보여 주므로
+          여기서 남는 것은 정말로 갈 수 없는 경우(경로가 없거나 남은 시간을
+          넘김)뿐이다. 그 사실만 담담하게 적는다. */}
       {typeof result.rejectedCount === "number" && result.rejectedCount > 0 && (
         <p className={styles.rejected}>
           {tr(
             language,
-            `조건을 통과하지 못한 후보 ${result.rejectedCount}곳은 제시하지 않았습니다.`,
-            `${result.rejectedCount} candidates did not pass and were not shown.`,
+            `근처 ${result.rejectedCount}곳은 남은 시간 안에 다녀올 수 없어 목록에서 빠졌습니다.`,
+            `${result.rejectedCount} nearby places do not fit in the time you have left.`,
           )}
         </p>
       )}

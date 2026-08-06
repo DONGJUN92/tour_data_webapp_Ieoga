@@ -1783,18 +1783,14 @@ async function enrichForContinuity(params: {
             : undefined,
       });
     }
-    if (availability.status === "confirmed_closed") {
-      violations.push({
-        contentId: candidate.contentId,
-        title: candidate.title,
-        reasonCode: "OFFICIALLY_CLOSED",
-        reason:
-          availability.note ||
-          "복구 일정 도착 시각에 공식 운영정보상 이용할 수 없습니다.",
-        distanceMeters: routedDistance,
-        changedNodeCount: 1,
-      });
-    }
+    /* 운영시간이 맞지 않는 곳을 **목록에서 지우지 않는다.**
+       실측에서 이 탈락 하나 때문에 대전 국립중앙과학관 주변 후보 3곳이 전부
+       사라져 대안이 0건이 됐다. 여행자는 "지금은 닫혀 있지만 30분 뒤에 열리는
+       곳"이나 "오늘은 닫혔지만 근처에 있어 알고는 있어야 하는 곳"을 스스로
+       판단할 수 있다. 우리가 대신 지우면 그 판단 기회를 없앤다.
+
+       대신 카드에 닫혔다는 사실을 크게 적고 순위를 뒤로 보낸다. 여행에 정답은
+       없고, 너무 멀지 않으면 폭넓게 보여 주는 쪽이 맞다. */
 
     if (violations.length) {
       const [primary] = violations;
@@ -2521,6 +2517,24 @@ function pickOptions(
                   ko: "조건을 통과한 다른 곳",
                   en: "Another place that passed every condition",
                 },
+    });
+  }
+
+  /* 전략 카드 세 장을 고른 뒤, **검증한 나머지 후보를 전부 점수순으로 아래에
+     붙인다.**
+     예전에는 세 장만 돌려주었다. 그래서 후보가 8곳 검증돼도 화면에는 3곳,
+     하나가 걸러지면 1곳만 남았다. 여행에 정답은 없고, 너무 멀지 않으면 폭넓게
+     보여 주고 고르는 것은 여행자가 할 일이다. 위에는 조건을 가장 잘 맞춘 곳,
+     아래에는 그 밖의 곳을 점수순으로 둔다. */
+  const remaining = [...pool]
+    .filter((candidate) => !used.has(candidate.contentId))
+    .sort((a, b) => b.baseScore - a.baseScore);
+  for (const candidate of remaining) {
+    used.add(candidate.contentId);
+    selected.push({
+      candidate,
+      strategy: "local_discovery",
+      label: { ko: "근처의 다른 선택지", en: "Another nearby choice" },
     });
   }
 
@@ -3272,7 +3286,17 @@ export async function recoverTrip(
      Failures stay per-candidate — one that cannot be verified drops out
      without taking the others with it. */
   const continuityCandidates: WorkingCandidate[] = [];
-  const shortlist = accessibilityVerified.slice(0, 3);
+  /* 검증 대상을 3곳에서 8곳으로 넓힌다.
+     실측: 대전 국립중앙과학관 주변에서 공사 목록이 37곳을 줬는데 검증은 3곳만
+     하고 그 3곳이 전부 운영시간으로 탈락해 대안이 **0건**이 됐다. 즉 "대안이
+     하나만 나온다"의 원인은 후보가 없는 것이 아니라 **우리가 3곳만 들여다본
+     것**이었다.
+
+     8곳이면 하나가 걸러져도 여러 장이 남는다. 검증은 4곳씩 병렬로 두 묶음이고
+     20초 예산 안에서 끝난다 — 후보당 상세조회 1회 + 경로 1회다. 더 늘리면
+     KTO 일 한도와 마감 예산이 함께 위험해지므로 여기서 멈춘다. */
+  const CONTINUITY_VERIFY_LIMIT = 8;
+  const shortlist = accessibilityVerified.slice(0, CONTINUITY_VERIFY_LIMIT);
   if (Date.now() >= continuityDeadlineAt || execution.signal?.aborted) {
     warnings.push(
       "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",

@@ -393,9 +393,12 @@ test("새 탭이 링크·키보드·탭목록 어디에서도 빠지지 않는�
   /* 탭을 추가할 때 같이 늘려야 하는 세 곳. 하나라도 빠지면 화면은 있는데
      링크나 키보드로는 닿지 않는 상태가 된다. 실제로 구현 중 URL 화이트리스트를
      빼먹어 공유 링크가 조용히 첫 탭으로 떨어졌다. */
+  /* `insights`(지역 개선 미션)는 여행자 탭에서 뺐다 — 이 앱의 정체성은 여행
+     연속성이고, 지자체용 개선 과제는 여행자가 지금 할 결정과 무관하다. 기능은
+     policy 화면과 insights API에 남아 있다. */
   assert.match(
     product,
-    /const tabs: TabId\[\] = \["recover", "discover", "insights", "transparency"\]/,
+    /const tabs: TabId\[\] = \["recover", "discover", "transparency"\]/,
     "키보드 좌우 이동 목록에 discover가 없다",
   );
   assert.match(

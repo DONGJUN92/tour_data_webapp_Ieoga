@@ -327,7 +327,7 @@ test("정렬 축은 값이 있는 후보만 줄 세우고 없는 후보는 따�
      목록에 섞으면 "왜 이 위치인가"를 설명할 수 없다. */
   assert.deepEqual(
     OPTION_SORTS.map((entry) => entry.value),
-    ["recommended", "quiet_first", "busy_first"],
+    ["recommended", "quiet_first", "busy_first", "open_first"],
   );
   const options = [
     { id: "a", title: "붐빔", crowd: { relativeRate: 80 } },
@@ -368,11 +368,9 @@ test("정렬 축은 값이 있는 후보만 줄 세우고 없는 후보는 따�
 
 test("정렬 컨트롤은 줄 세울 값이 2개 이상일 때만 나온다", async () => {
   const product = await src("../app/ProductApp.tsx");
-  /* 누르면 아무 일도 일어나지 않는 컨트롤을 보여 주지 않는다. */
-  assert.match(
-    product,
-    /\(option\) => option\.crowd\?\.relativeRate !== undefined,\s*\n\s*\)\.length >= 2 &&/,
-  );
+  /* 후보가 둘 이상이면 정렬을 준다. 운영 여부는 모든 후보에 값이 있으므로
+     집중률이 없어도 쓸 수 있다. */
+  assert.match(product, /\{recovery\.options\.length >= 2 && \(/);
   /* 방향을 라벨에 적어 어느 쪽도 오해하지 않게 한다. */
   const model = await src("../app/product-app-model.ts");
   assert.match(model, /ko: "한적한 순"/);
@@ -432,4 +430,23 @@ test("예보가 현재 시각 이후부터 시작해도 지금 칸이 비지 않
   assert.equal(slots[0].skyCode, 3, "지금 칸이 실황의 하늘상태를 쓰지 않았다");
   /* 1시간 후(00:15)에 가장 가까운 슬롯은 00:00이다. */
   assert.equal(slots[1].at, "2026-08-06T00:00:00+09:00");
+});
+
+test("운영 여부 정렬은 닫힌 곳을 지우지 않고 맨 아래로 보낸다", async () => {
+  const { sortOptionsByCrowd } = await import("../app/product-app-model.ts");
+  /* 닫힌 곳도 30분 뒤에 열릴 수 있고, 근처에 있다는 사실 자체가 판단에
+     쓰인다. 우리가 지우면 그 판단 기회를 없앤다. */
+  const options = [
+    { id: "closed", availability: { status: "confirmed_closed" } },
+    { id: "unknown", availability: { status: "official_hours_unstructured" } },
+    { id: "open", availability: { status: "confirmed_open" } },
+    { id: "none" },
+  ];
+  const sorted = sortOptionsByCrowd(options, "open_first");
+  assert.deepEqual(
+    sorted.ranked.map((o) => o.id),
+    ["open", "unknown", "none", "closed"],
+  );
+  /* 운영 여부는 모두에게 값이 있으므로 따로 내릴 묶음이 없다. */
+  assert.deepEqual(sorted.unranked, []);
 });

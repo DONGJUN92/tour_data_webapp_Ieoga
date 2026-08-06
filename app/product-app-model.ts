@@ -1097,6 +1097,13 @@ export const OPTION_SORTS = [
     hint: "집중률 예측이 높은 곳부터 봅니다.",
     hintEn: "Highest predicted crowding first.",
   },
+  {
+    value: "open_first",
+    ko: "운영 여부",
+    en: "Open now first",
+    hint: "지금 열려 있다고 확인된 곳부터 봅니다. 확인하지 못한 곳이 그다음이고, 닫힌 곳은 마지막입니다.",
+    hintEn: "Confirmed open first, unconfirmed next, closed last.",
+  },
 ] as const;
 
 export type OptionSort = (typeof OPTION_SORTS)[number]["value"];
@@ -1114,11 +1121,45 @@ export type SortedOptionGroups<T> = {
   unranked: T[];
 };
 
+/* 운영 여부의 순서. 낮은 값이 먼저 온다.
+   `confirmed_open`이 가장 쓸모 있고, 확인하지 못한 곳이 그다음, 닫힌 곳이
+   마지막이다. 닫힌 곳도 **지우지 않는다** — 30분 뒤에 열릴 수도 있고, 근처에
+   있다는 사실 자체가 판단에 쓰인다. */
+const AVAILABILITY_ORDER: Record<string, number> = {
+  confirmed_open: 0,
+  official_hours_unstructured: 1,
+  unknown: 2,
+  confirmed_closed: 3,
+};
+
+function availabilityRank(option: RecoveryOption): number {
+  const status =
+    typeof option.availability === "object" && option.availability
+      ? (option.availability as { status?: string }).status
+      : undefined;
+  return AVAILABILITY_ORDER[status ?? "unknown"] ?? 2;
+}
+
 export function sortOptionsByCrowd(
   options: RecoveryOption[],
   sort: OptionSort,
 ): SortedOptionGroups<RecoveryOption> {
   if (sort === "recommended") return { ranked: options, unranked: [] };
+  if (sort === "open_first") {
+    /* 운영 여부는 모든 후보에 값이 있다(모르면 `unknown`). 그래서 따로 내릴
+       묶음이 없다. */
+    return {
+      ranked: options
+        .map((option, index) => ({ option, index }))
+        .sort(
+          (a, b) =>
+            availabilityRank(a.option) - availabilityRank(b.option) ||
+            a.index - b.index,
+        )
+        .map((entry) => entry.option),
+      unranked: [],
+    };
+  }
   const rate = (option: RecoveryOption) => option.crowd?.relativeRate;
   const ranked = options.filter((option) => rate(option) !== undefined);
   const unranked = options.filter((option) => rate(option) === undefined);
@@ -1137,4 +1178,39 @@ export function sortOptionsByCrowd(
       .map((entry) => entry.option),
     unranked,
   };
+}
+
+/* 일정 시각 선택지 — 30분 단위.
+ *
+ * 여행자는 분 단위로 계획하지 않는다. `type="time"` 입력은 시와 분을 각각
+ * 조작해야 하고 모바일에서는 스크롤 휠 두 개가 뜬다. "오후 2시쯤"을 넣으려고
+ * 두 번 조작하는 것은 위기 순간에 쓰는 도구로서 문턱이 높다. 30분 단위 드롭다운
+ * 하나로 줄인다. */
+export const HALF_HOUR_TIMES: Array<{ value: string; label: string }> = (() => {
+  const out: Array<{ value: string; label: string }> = [];
+  for (let minutes = 0; minutes < 24 * 60; minutes += 30) {
+    const hour = Math.floor(minutes / 60);
+    const minute = minutes % 60;
+    const value = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    const meridiem = hour < 12 ? "오전" : "오후";
+    const display = hour % 12 === 0 ? 12 : hour % 12;
+    out.push({
+      value,
+      label: `${meridiem} ${display}:${String(minute).padStart(2, "0")}`,
+    });
+  }
+  return out;
+})();
+
+/* 이미 저장된 분 단위 값을 가장 가까운 30분으로 맞춘다. 목록에 없는 값이 들어
+   오면 드롭다운이 빈 채로 보이고 사용자는 자기가 넣은 시각을 잃는다. */
+export function toHalfHour(time: string): string {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return "";
+  const rounded = Math.round((hour * 60 + minute) / 30) * 30;
+  const clamped = Math.min(rounded, 23 * 60 + 30);
+  return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
 }

@@ -69,11 +69,20 @@ export function ActiveJourneyCockpit({
   const nextFixed = execution.steps.find(
     (step) => step.sequence === execution.nextFixedStepSequence,
   );
-  const completedCount = execution.steps.filter(
+  /* 진행 표시는 **앱이 도착 확인을 요구하는 구간까지만** 센다.
+     예전에는 분모가 전체 단계 수였다. 그런데 다음 고정 일정 이후의 단계는
+     사용자가 원래 계획대로 알아서 이어가는 구간이고 앱이 도착을 묻지 않는다.
+     그래서 "1/3 완료"에서 더 넘어갈 방법이 없었다 — 사용자가 무엇을 덜 했는지
+     찾게 만드는 표시였다. 지켜야 할 약속까지를 분모로 둔다. */
+  const trackedSteps = execution.steps.filter(
+    (step) => step.sequence <= execution.nextFixedStepSequence,
+  );
+  const completedCount = trackedSteps.filter(
     (step) => step.status === "arrived",
   ).length;
-  const progress = execution.steps.length
-    ? Math.round((completedCount / execution.steps.length) * 100)
+  const trackedTotal = trackedSteps.length;
+  const progress = trackedTotal
+    ? Math.round((completedCount / trackedTotal) * 100)
     : 0;
   const promptReached = now >= Date.parse(execution.outcomePromptAt);
 
@@ -177,10 +186,15 @@ export function ActiveJourneyCockpit({
         <i style={{ width: `${progress}%` }} />
       </div>
       <div className="cockpit-topline">
-        <span>{tr("복구 여행 진행 중", "Recovered trip in progress")}</span>
-        <b>
-          {completedCount}/{execution.steps.length} {tr("완료", "done")}
-        </b>
+        <span>{tr("이어가는 중", "Picking your trip back up")}</span>
+        {/* 셀 구간이 한 곳뿐이면(빈 시간에 한 곳 넣기) 숫자가 정보를 주지
+            않는다. 1/1은 진행률이 아니라 장식이다. */}
+        {trackedTotal > 1 && (
+          <b>
+            {tr("다음 예약까지", "to your booking")} {completedCount}/
+            {trackedTotal}
+          </b>
+        )}
       </div>
 
       <div className="cockpit-main">

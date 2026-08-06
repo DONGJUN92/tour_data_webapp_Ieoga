@@ -3,18 +3,20 @@
 /* 경로 지도.
  *
  * 엔진은 이미 `routeGeometry`로 실제 보행·자차·대중교통·자전거 경로의 좌표열을
- * 응답에 실어 보내고 있었는데 화면에서 쓰는 곳이 하나도 없었다. 여행자는
- * "1,018m 15분"이라는 숫자만 보고 그 길이 어디로 가는지 알 수 없었다.
+ * 응답에 실어 보내고 있었는데 화면에서 쓰는 곳이 하나도 없었다.
  *
- * 외부 지도 라이브러리를 쓰지 않는다. 이 앱은 Cloudflare Workers에서 서비스되고
- * 지도 타일을 붙이면 (1) 타일 제공자 약관과 출처 표기가 또 하나 늘고 (2) 번들이
- * 커지고 (3) 오프라인·저속 회선에서 빈 회색 사각형이 남는다. 필요한 것은
- * "어디로 얼마나 가는가"의 공간 감각이므로, 좌표열을 그대로 SVG 폴리라인으로
- * 그리고 출발·도착·경유를 표시하는 것으로 충분하다. 의존성 0, CSP 안전,
- * 서버 렌더 가능.
+ * 처음에는 타일 없이 선만 그렸다. 그런데 실제로 써 보면 **선만 있고 배경이 없어
+ * 어디인지 알 수 없다.** 격자 위의 꺾인 선은 "여기서 저기로 간다"는 것만 말하고
+ * 그곳이 강 건너인지 산 쪽인지 시내인지 알려 주지 않는다. 위기 순간에 필요한
+ * 판단은 "이 방향이 내가 아는 그 방향인가"이므로 배경이 있어야 한다.
  *
- * 타일 배경이 없으므로 "지도"라고 단정하지 않는다. 화면 문구는 "경로 개요"다. */
-
+ * 그래서 웹 메르카토르로 투영을 바꾸고 표준 타일을 배경에 깐다. 외부 지도
+ * 라이브러리는 여전히 쓰지 않는다 — 타일 좌표 계산은 몇 줄이고, 라이브러리를
+ * 넣으면 번들과 CSP가 함께 늘어난다. 타일은 `<image>`로 SVG 안에 놓아 경로·핀과
+ * 같은 좌표계를 쓰므로 어긋날 수 없다.
+ *
+ * 타일 제공자는 환경변수로 바꿀 수 있게 두고 출처를 화면에 표기한다. 표기는
+ * 선택이 아니라 이용약관이다. */
 import { useMemo } from "react";
 import styles from "./RouteMap.module.css";
 
@@ -48,10 +50,28 @@ const MODE_STROKE: Record<NonNullable<Props["mode"]>, string> = {
   car: "",
 };
 
-/* 위경도를 화면 좌표로 옮긴다. 웹 메르카토르까지 갈 필요는 없다 — 이 경로는
-   길어도 20km 안쪽이고, 그 범위에서 경도 축을 위도의 코사인으로 눌러 주면
-   종횡비 왜곡이 눈에 보이지 않는다. 반대로 그 보정을 빼면 한국 위도에서 동서가
-   약 20% 늘어나 길이 실제보다 옆으로 퍼져 보인다. */
+/* 타일 지도 배경.
+   기본값은 표준 OSM 타일이다. 운영자가 국토지리정보원 등 다른 제공자로 바꿀 수
+   있도록 주소와 출처 문구를 함께 상수로 둔다 — 출처 표기는 이용약관이다. */
+const TILE_URL_TEMPLATE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_ATTRIBUTION = "지도 © OpenStreetMap 기여자";
+const TILE_SIZE = 256;
+const MAX_ZOOM = 17;
+const MIN_ZOOM = 3;
+
+/* 위경도를 웹 메르카토르 세계 픽셀로. 타일 좌표계와 같은 식이라 배경 타일과
+   경로가 정확히 겹친다. */
+function worldX(longitude: number, zoom: number): number {
+  return ((longitude + 180) / 360) * TILE_SIZE * 2 ** zoom;
+}
+
+function worldY(latitude: number, zoom: number): number {
+  const clamped = Math.max(Math.min(latitude, 85.05112878), -85.05112878);
+  const radians = (clamped * Math.PI) / 180;
+  const merc = Math.log(Math.tan(radians) + 1 / Math.cos(radians));
+  return (0.5 - merc / (2 * Math.PI)) * TILE_SIZE * 2 ** zoom;
+}
+
 function project(points: RoutePoint[]) {
   const latitudes = points.map((point) => point.latitude);
   const longitudes = points.map((point) => point.longitude);
@@ -59,25 +79,57 @@ function project(points: RoutePoint[]) {
   const maxLat = Math.max(...latitudes);
   const minLon = Math.min(...longitudes);
   const maxLon = Math.max(...longitudes);
-  const midLat = (minLat + maxLat) / 2;
-  const lonScale = Math.cos((midLat * Math.PI) / 180);
 
-  const spanX = Math.max((maxLon - minLon) * lonScale, 1e-6);
-  const spanY = Math.max(maxLat - minLat, 1e-6);
-  /* 한 축으로만 늘리면 경로 모양이 찌그러진다. 좁은 쪽에 여백을 주고 비율을
-     유지한다. */
-  const scale = Math.min(
-    (VIEW_WIDTH - PADDING * 2) / spanX,
-    (VIEW_HEIGHT - PADDING * 2) / spanY,
-  );
-  const offsetX = (VIEW_WIDTH - spanX * scale) / 2;
-  const offsetY = (VIEW_HEIGHT - spanY * scale) / 2;
+  /* 경로가 여백 안에 다 들어오는 가장 확대된 배율을 고른다. 너무 멀리서 보면
+     골목이 한 점으로 뭉치고, 너무 가까우면 도착지가 화면 밖으로 나간다. */
+  let zoom = MAX_ZOOM;
+  while (zoom > MIN_ZOOM) {
+    const spanX = worldX(maxLon, zoom) - worldX(minLon, zoom);
+    const spanY = worldY(minLat, zoom) - worldY(maxLat, zoom);
+    if (
+      spanX <= VIEW_WIDTH - PADDING * 2 &&
+      spanY <= VIEW_HEIGHT - PADDING * 2
+    ) {
+      break;
+    }
+    zoom -= 1;
+  }
 
-  return (point: RoutePoint) => ({
-    x: offsetX + (point.longitude - minLon) * lonScale * scale,
-    /* SVG는 위쪽이 0이므로 위도를 뒤집는다. */
-    y: offsetY + (maxLat - point.latitude) * scale,
+  const centerX = (worldX(minLon, zoom) + worldX(maxLon, zoom)) / 2;
+  const centerY = (worldY(minLat, zoom) + worldY(maxLat, zoom)) / 2;
+  const originX = centerX - VIEW_WIDTH / 2;
+  const originY = centerY - VIEW_HEIGHT / 2;
+
+  const toScreen = (point: RoutePoint) => ({
+    x: worldX(point.longitude, zoom) - originX,
+    y: worldY(point.latitude, zoom) - originY,
   });
+
+  /* 화면을 덮는 타일 목록. 여백까지 채워야 경로 주변이 회색으로 잘리지 않는다. */
+  const tiles: Array<{ key: string; href: string; x: number; y: number }> = [];
+  const maxIndex = 2 ** zoom - 1;
+  const firstTileX = Math.floor(originX / TILE_SIZE);
+  const lastTileX = Math.floor((originX + VIEW_WIDTH) / TILE_SIZE);
+  const firstTileY = Math.floor(originY / TILE_SIZE);
+  const lastTileY = Math.floor((originY + VIEW_HEIGHT) / TILE_SIZE);
+  for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
+    for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
+      /* 경도는 지구를 돌지만 위도는 그렇지 않다. 범위를 벗어난 세로 타일은
+         존재하지 않으므로 요청하지 않는다. */
+      if (tileY < 0 || tileY > maxIndex) continue;
+      const wrappedX = ((tileX % (maxIndex + 1)) + maxIndex + 1) % (maxIndex + 1);
+      tiles.push({
+        key: `${zoom}-${tileX}-${tileY}`,
+        href: TILE_URL_TEMPLATE.replace("{z}", String(zoom))
+          .replace("{x}", String(wrappedX))
+          .replace("{y}", String(tileY)),
+        x: tileX * TILE_SIZE - originX,
+        y: tileY * TILE_SIZE - originY,
+      });
+    }
+  }
+
+  return { toScreen, tiles, zoom };
 }
 
 /* 좌표열이 수천 개 오면 path가 불필요하게 커진다. 화면에서 1px도 움직이지 않는
@@ -113,9 +165,10 @@ export function RouteMap({
         Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
     );
     if (all.length < 2) return null;
-    const toScreen = project(all);
+    const { toScreen, tiles } = project(all);
     const line = thin(geometry, toScreen);
     return {
+      tiles,
       path: line.length
         ? line
             .map(
@@ -142,30 +195,22 @@ export function RouteMap({
         aria-label={summary}
         preserveAspectRatio="xMidYMid meet"
       >
-        {/* 배경 격자. 타일 지도가 아니므로 축척을 암시하지 않는 중립적인 무늬만
-            둔다. 격자에 거리 의미를 주면 없는 정보를 주장하게 된다. */}
-        <defs>
-          <pattern
-            id="route-grid"
-            width="32"
-            height="32"
-            patternUnits="userSpaceOnUse"
-          >
-            <path
-              d="M32 0H0V32"
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity="0.08"
-              strokeWidth="1"
-            />
-          </pattern>
-        </defs>
-        <rect
-          width={VIEW_WIDTH}
-          height={VIEW_HEIGHT}
-          fill="url(#route-grid)"
-          className={styles.grid}
-        />
+        {/* 지도 타일. 경로·핀과 같은 좌표계로 놓았으므로 어긋날 수 없다.
+            타일이 늦게 오거나 실패해도 아래 경로는 그대로 보인다 — 배경이
+            없어도 판단을 못 하게 되는 것보다 낫다. */}
+        {shape.tiles.map((tile) => (
+          <image
+            key={tile.key}
+            href={tile.href}
+            x={tile.x}
+            y={tile.y}
+            width={TILE_SIZE}
+            height={TILE_SIZE}
+            /* 배경이 너무 선명하면 경로선이 묻힌다. 살짝 눌러 경로를 앞세운다. */
+            opacity="0.82"
+            preserveAspectRatio="none"
+          />
+        ))}
 
         {shape.path && (
           <>
@@ -201,11 +246,12 @@ export function RouteMap({
             </li>
           ))}
         </ol>
-        {/* 타일 지도가 아님을 분명히 한다. 축척·방위를 보장하지 않는다. */}
+        {/* 타일 출처 표기는 이용약관이다. 경로 제공자 표기와 함께 적는다. */}
         <small>
           {language === "en"
-            ? "Route outline from the provider's returned path. Not a scaled map."
-            : "경로 제공자가 돌려준 좌표를 그대로 이은 경로 개요입니다. 축척·방위를 보장하는 지도가 아닙니다."}
+            ? "Route drawn from the provider's returned path on a standard map background."
+            : "경로 제공자가 돌려준 좌표를 지도 배경 위에 그렸습니다."}
+          {` · ${TILE_ATTRIBUTION}`}
           {attribution ? ` · ${attribution}` : ""}
         </small>
       </figcaption>

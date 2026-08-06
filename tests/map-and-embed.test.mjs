@@ -29,24 +29,36 @@ test("경로 지도가 응답의 좌표열을 실제로 소비한다", async () 
   }
 });
 
-test("경로 개요는 지도라고 단정하지 않고 축척을 주장하지 않는다", async () => {
+test("경로를 실제 지도 배경 위에 그린다", async () => {
   const map = await src("../app/RouteMap.tsx");
-  /* 타일 배경이 없으므로 축척·방위를 보장할 수 없다. 보장하지 않는 것을
-     보장하는 것처럼 보이면 그것도 과장이다. */
-  assert.match(map, /축척·방위를 보장하는 지도가 아닙니다/);
-  assert.match(map, /Not a scaled map/);
+  /* 선만 그리고 배경이 없으면 "여기서 저기로 간다"만 알 수 있고 그곳이 강
+     건너인지 시내인지 알 수 없다. 위기 순간에 필요한 판단은 "이 방향이 내가
+     아는 그 방향인가"이므로 배경이 있어야 한다. */
+  assert.match(map, /const TILE_URL_TEMPLATE = /);
+  assert.match(map, /<image/);
+  assert.match(map, /shape\.tiles\.map\(\(tile\) => \(/);
+  /* 타일 출처 표기는 선택이 아니라 이용약관이다. */
+  assert.match(map, /const TILE_ATTRIBUTION = /);
+  assert.match(map, /\{` · \$\{TILE_ATTRIBUTION\}`\}/);
   /* 스크린리더는 선 그림을 읽을 수 없다. 문장 요약이 필수다. */
   assert.match(map, /role="img"/);
   assert.match(map, /aria-label=\{summary\}/);
+  /* 배경이 없어도 경로는 보여야 한다 — 타일 실패가 판단을 막으면 안 된다. */
+  assert.match(map, /타일이 늦게 오거나 실패해도 아래 경로는 그대로 보인다/);
 });
 
-test("경로 개요가 종횡비를 보정한다", async () => {
+test("타일 좌표계와 경로 좌표계가 같다", async () => {
   const map = await src("../app/RouteMap.tsx");
-  /* 보정을 빼면 한국 위도에서 동서가 약 20% 늘어나 길이 옆으로 퍼져 보인다. */
-  assert.match(map, /Math\.cos\(\(midLat \* Math\.PI\) \/ 180\)/);
-  assert.match(map, /lonScale/);
-  /* 한 축만 늘리면 경로 모양이 찌그러진다. */
-  assert.match(map, /Math\.min\(\s*\(VIEW_WIDTH/);
+  /* 배경과 경로가 다른 투영을 쓰면 눈에 보이게 어긋난다. 웹 메르카토르 한
+     가지로 둘을 함께 계산한다. */
+  assert.match(map, /function worldX\(longitude: number, zoom: number\)/);
+  assert.match(map, /function worldY\(latitude: number, zoom: number\)/);
+  assert.match(map, /Math\.log\(Math\.tan\(radians\) \+ 1 \/ Math\.cos\(radians\)\)/);
+  /* 경로가 여백 안에 들어오는 가장 확대된 배율을 고른다. */
+  assert.match(map, /let zoom = MAX_ZOOM;/);
+  assert.match(map, /VIEW_WIDTH - PADDING \* 2/);
+  /* 존재하지 않는 세로 타일을 요청하지 않는다. */
+  assert.match(map, /if \(tileY < 0 \|\| tileY > maxIndex\) continue;/);
 });
 
 test("수단별 선 모양이 구분되고 애니메이션이 그 패턴을 덮지 않는다", async () => {

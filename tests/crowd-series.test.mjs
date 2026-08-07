@@ -149,7 +149,8 @@ test("집중률을 사람 수로 말하지 않는다", async () => {
   assert.match(model, /easy: \{ icon: "🟢", ko: "원활"/);
   assert.match(model, /normal: \{ icon: "🟡", ko: "보통"/);
   assert.match(model, /busy: \{ icon: "🔴", ko: "혼잡"/);
-  assert.match(model, /return `\$\{badge\.icon\} \$\{badge\.label\}`;/);
+  /* 표시는 `note`를 앞세운다 — `(주변 기준)` 같은 꼬리표가 라벨에는 없다. */
+  assert.match(model, /return `\$\{badge\.icon\} \$\{note \|\| badge\.label\}`;/);
 });
 
 test("시간 단위 상승은 주장하지 않는다", async () => {

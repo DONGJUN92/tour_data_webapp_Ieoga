@@ -196,6 +196,11 @@ export type RecoveryOption = {
     baseDate?: string;
     percentileOfSeries?: number;
     seriesDays?: number;
+    /* 이 값이 이 장소를 직접 잰 것인지, 주변·시군구에서 빌려 온 것인지.
+       정렬 가중치가 여기에 달려 있으므로 화면 타입에도 있어야 한다. */
+    basis?: "place" | "nearby" | "district";
+    level?: string;
+    relatedRank?: number;
     note?: string;
     noteEn?: string;
   };
@@ -1037,10 +1042,28 @@ export function crowdLevelBadge(
   return { icon: entry.icon, label: language === "en" ? entry.en : entry.ko };
 }
 
+/* 붐빔 표시는 **한 함수만 쓴다.** 두 화면이 따로 적어 두었더니 갈라졌다:
+   `FlowApp`은 `note`를 읽어 `🟡 보통 (주변 기준)`을 냈는데, 이 함수는
+   `CROWD_LEVELS` 라벨만 써서 꼬리표를 통째로 버렸다 — 주변에서 빌려 온 값이
+   그 장소를 직접 잰 값처럼 보였다. 인기 순위(`popularity_rank`)는 `level`이
+   없어 `compactValue`로 떨어졌고, 매핑에 없는 코드라 **"확인 중"**이 나왔다.
+   값을 갖고 있으면서 확인 중이라고 적는 것은 사실이 아니다. */
 export function formatCrowd(value: unknown, language: "ko" | "en" = "ko"): string {
+  const record = asRecord(value);
+  const note =
+    (language === "en"
+      ? typeof record?.noteEn === "string"
+        ? record.noteEn
+        : undefined
+      : undefined) ??
+    (typeof record?.note === "string" ? record.note : undefined) ??
+    "";
+  /* 인기 순위는 붐빔과 다른 축이다. 신호등을 쓰면 초록을 "지금 한산하다"로
+     읽는데 실제로는 월 단위 인기 집계다. */
+  if (record?.status === "popularity_rank") return note ? `⭐ ${note}` : "";
   const badge = crowdLevelBadge(value, language);
-  if (badge) return `${badge.icon} ${badge.label}`;
-  return compactValue(value);
+  if (badge) return `${badge.icon} ${note || badge.label}`;
+  return note || compactValue(value);
 }
 
 export async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
@@ -1214,7 +1237,24 @@ export function sortOptionsByCrowd(
       unranked: [],
     };
   }
-  const rate = (option: RecoveryOption) => option.crowd?.relativeRate;
+  /* 원시 집중률로 정렬하면 **빌려 온 값이 직접 잰 값과 똑같이 겨룬다.**
+     엔진은 주변 대체를 0.6배, 시군구 값을 0.25배로 눌러 순위에 끼어들지
+     못하게 하는데, 이 정렬만 그 규칙 밖에 있었다. 강릉처럼 여덟 후보가 모두
+     시군구 값을 받은 지역에서는 순서가 무의미하게 흔들린다.
+
+     같은 축소를 여기서도 쓴다 — 방향은 그대로 두고 크기만 줄이므로 직접 잰
+     후보가 같은 값에서 앞선다. */
+  const rate = (option: RecoveryOption) => {
+    const raw = option.crowd?.relativeRate;
+    if (raw === undefined) return undefined;
+    const weight =
+      option.crowd?.basis === "district"
+        ? 0.25
+        : option.crowd?.basis === "nearby"
+          ? 0.6
+          : 1;
+    return 50 + (raw - 50) * weight;
+  };
   const ranked = options.filter((option) => rate(option) !== undefined);
   const unranked = options.filter((option) => rate(option) === undefined);
   const direction = sort === "quiet_first" ? 1 : -1;

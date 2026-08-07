@@ -92,8 +92,11 @@ test("인기 순위는 붐빔과 다른 축으로 표시한다", async () => {
 
   /* 신호등 아이콘을 쓰면 초록을 "지금 한산하다"로 읽는다. 실제로는 월 단위
      인기 집계다. */
+  /* 표시 규칙은 한 함수만 쓴다. 두 화면이 따로 적어 두었더니 갈라졌다. */
+  const model = await src("../app/product-app-model.ts");
+  assert.match(model, /if \(record\?\.status === "popularity_rank"\) return note \? `⭐ \$\{note\}` : "";/);
   const flow = await src("../app/flow/FlowApp.tsx");
-  assert.match(flow, /if \(record\.status === "popularity_rank"\) return label \? `⭐ \$\{label\}` : "";/);
+  assert.match(flow, /const crowdBadgeText = formatCrowd;/);
 });
 
 test("호출은 되는데 이름이 안 맞아 전부 비는 일이 없게 한다", async () => {
@@ -155,4 +158,45 @@ test("지역 바닥값은 오늘 값이 아니라 원본 행에서 뽑는다", a
   );
   /* 응답에 있는 가장 최근 날짜를 쓴다 — 지역마다 발행 창이 다르다. */
   assert.match(engine, /if \(date && date > latest\) latest = date;/);
+});
+
+test("두 화면이 같은 붐빔 문자열을 낸다", async () => {
+  const model = await src("../app/product-app-model.ts");
+  /* `ProductApp`은 `CROWD_LEVELS` 라벨만 써서 `(주변 기준)` 꼬리표를 통째로
+     버렸다 — 빌려 온 값이 직접 잰 값처럼 보였다. 인기 순위는 `level`이 없어
+     매핑에 없는 코드로 떨어져 **"확인 중"**이 나왔다. 값을 갖고 있으면서
+     확인 중이라고 적는 것은 사실이 아니다. */
+  assert.match(model, /return `\$\{badge\.icon\} \$\{note \|\| badge\.label\}`;/);
+  assert.match(model, /return note \|\| compactValue\(value\);/);
+
+  const format = (crowd) => {
+    const note = crowd.note ?? "";
+    if (crowd.status === "popularity_rank") return note ? `⭐ ${note}` : "";
+    const icon = { easy: "🟢", normal: "🟡", busy: "🔴" }[crowd.level];
+    if (icon) return `${icon} ${note}`;
+    return note || "확인되지 않음";
+  };
+  assert.equal(
+    format({ status: "available", level: "normal", note: "보통 (주변 기준)" }),
+    "🟡 보통 (주변 기준)",
+    "빌려 온 값의 꼬리표가 사라졌다",
+  );
+  assert.equal(format({ status: "popularity_rank", note: "인기 11위" }), "⭐ 인기 11위");
+  assert.equal(format({ status: "unavailable", note: "공식 정보 없음" }), "공식 정보 없음");
+});
+
+test("혼잡도순 정렬도 근거의 무게를 지킨다", async () => {
+  const model = await src("../app/product-app-model.ts");
+  /* 엔진은 주변 대체를 0.6배, 시군구 값을 0.25배로 누르는데 이 정렬만 그
+     규칙 밖에 있어 빌려 온 값이 직접 잰 값과 똑같이 겨뤘다. */
+  assert.match(model, /option\.crowd\?\.basis === "district"/);
+  assert.match(model, /return 50 \+ \(raw - 50\) \* weight;/);
+
+  const weighted = (raw, basis) =>
+    50 + (raw - 50) * (basis === "district" ? 0.25 : basis === "nearby" ? 0.6 : 1);
+  /* 같은 집중률이면 직접 잰 쪽이 더 붐빈다고 인정받는다(혼잡도 높은 순 기준). */
+  assert.ok(weighted(90, "place") > weighted(90, "nearby"));
+  assert.ok(weighted(90, "nearby") > weighted(90, "district"));
+  /* 방향은 뒤집히지 않는다. */
+  assert.ok(weighted(90, "district") > weighted(10, "district"));
 });

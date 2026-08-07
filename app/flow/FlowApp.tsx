@@ -8,6 +8,7 @@ import type {
 } from "@/lib/recovery/execution";
 import type { RejectionReasonCode } from "@/lib/recovery/types";
 import {
+  formatCrowd,
   MAX_APPOINTMENT_MINUTES,
   MIN_APPOINTMENT_MINUTES,
   appointmentAfterMinutesInKorea,
@@ -398,27 +399,10 @@ function sortFlowOptions<T extends { distanceMeters?: number; crowd?: unknown }>
 
 /* 붐빔은 아이콘 한 개와 단어 하나로. 색만으로 뜻을 나르지 않도록 단어를
    항상 붙인다. 값이 없으면 그 사실을 그대로 적는다. */
-const CROWD_ICON: Record<string, string> = {
-  easy: "🟢",
-  normal: "🟡",
-  busy: "🔴",
-};
 
-function crowdBadgeText(value: unknown, language: "ko" | "en"): string {
-  const record = (value ?? {}) as {
-    status?: string;
-    level?: string;
-    note?: string;
-    noteEn?: string;
-  };
-  const label = (language === "en" ? record.noteEn : record.note) ?? "";
-  /* 인기 순위는 붐빔과 **다른 축**이라 같은 신호등 아이콘을 쓰면 안 된다.
-     초록을 보고 "지금 한산하다"로 읽는데, 실제로는 "이 지역에서 많이 찾는
-     곳"이라는 월 단위 집계다. 별표로 축을 갈라 놓는다. */
-  if (record.status === "popularity_rank") return label ? `⭐ ${label}` : "";
-  const icon = record.level ? CROWD_ICON[record.level] : undefined;
-  return icon ? `${icon} ${label}` : label;
-}
+/* 표시 규칙은 `product-app-model`의 `formatCrowd` 하나만 쓴다. 여기에 따로
+   적어 두었더니 두 화면이 서로 다른 문자열을 냈다. */
+const crowdBadgeText = formatCrowd;
 
 function navigationUrl(step: {
   title: string;

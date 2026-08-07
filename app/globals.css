@@ -5005,7 +5005,9 @@ body .decision-contribution > ul {
 }
 
 body .mobile-nav {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* 탭이 둘로 줄었다. 세 칸을 유지하면 빈 칸이 남아 두 항목이 왼쪽으로
+     쏠린다. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 body .mobile-nav button:not(:first-child),
@@ -6478,4 +6480,62 @@ body .hero-promise {
    높이와 글꼴이 어긋나면 하나만 다른 것처럼 보인다. */
 .mobile-nav a[data-testid="mobile-nav-flow"] {
   text-decoration: none;
+}
+
+/* 등록 여부를 묻는 갈림길. 탭을 하나 더 만드는 대신 이 자리에서 한 번 묻는다.
+   기본 경로(저장해 둔 일정 고치기)는 아래 폼이 그대로 보이므로, 이 줄은
+   "다른 길도 있다"를 알리는 역할만 한다. */
+.plan-branch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  border: 1px solid #d7dee6;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.plan-branch-question {
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.plan-branch-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-branch-current {
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.plan-branch-choices a {
+  padding: 8px 14px;
+  border: 1px solid #d7dee6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #333d4b;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.plan-branch-choices a:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.plan-branch-choices a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }

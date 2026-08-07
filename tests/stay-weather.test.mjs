@@ -542,7 +542,7 @@ test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
   for (const testid of ["mobile-nav-recover", "mobile-nav-discover"]) {
     assert.match(nav, new RegExp(`data-testid="${testid}"`), `${testid} 없음`);
   }
-  assert.match(nav, /지금 갈 곳 찾기/);
+  assert.match(nav, /시간이 비었어요/);
   assert.match(nav, /changeTab\("discover"\)/);
   /* 지금 어느 탭인지 하단 바에도 드러나야 한다. */
   assert.match(nav, /activeTab === "discover" \? "is-active" : ""/);
@@ -559,61 +559,48 @@ test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
   );
   /* 데이터 투명성은 두 내비 모두에서 빠지고 하단 메뉴로 갔다 — 그것도
      "같아야 한다"의 일부다. */
-  for (const label of ["여행 복구", "지금 갈 곳 찾기"]) {
+  for (const label of ["일정이 틀어졌어요", "시간이 비었어요"]) {
     assert.ok(tabBar.includes(label), `데스크톱 탭에 ${label} 없음`);
     assert.ok(nav.includes(label), `모바일 내비에 ${label} 없음`);
   }
 });
 
-test("등록 없이 복구가 탭 줄과 하단 바 양쪽에 같은 이름으로 있다", async () => {
+test("탭은 상황으로 이름 붙이고, 같은 상황을 두 입구로 나누지 않는다", async () => {
   const product = await src("../app/ProductApp.tsx");
-  /* 예전에는 헤더 오른쪽 끝의 `지금 바로 복구` 버튼이었고 820px 미만에서는
-     숨겨져 휴대폰에서는 보이지도 않았다. 이름도 무엇이 다른지 말해 주지
-     않았다 — 옆의 `여행 복구`도 지금 바로 하는 일이다. */
-  assert.ok(
-    !/className="header-cta" href="\/flow"/.test(product),
-    "헤더 CTA가 아직 남아 있다",
-  );
-  /* 화면에 그려지는 문자열만 본다. 주석에는 왜 바꿨는지가 남아 있어도 된다. */
-  assert.ok(
-    !/[:?]\s*"지금 바로 복구"/.test(product),
-    "뜻이 겹치던 옛 이름이 아직 화면에 그려진다",
-  );
-  /* 실제 차이는 일정을 미리 등록하지 않아도 된다는 것이고, 이름이 그것을
-     말한다. */
-  const label = "등록 없이 복구";
-  assert.equal([...label.replace(/\s/g, "")].length, 6, "이름이 6자를 넘는다");
-  assert.match(product, /data-testid="nav-flow"/);
-  assert.match(product, /data-testid="mobile-nav-flow"/);
-  assert.equal(
-    (product.match(/등록 없이 복구/g) || []).length,
-    2,
-    "탭 줄과 하단 바 중 한쪽에만 있다",
-  );
-
-  /* 다른 화면으로 가는 링크이므로 탭이 아니다. `role="tablist"` 안에 넣으면
-     탭 의미가 깨진다 — 탭은 같은 화면의 패널을 열고, 링크는 화면을 옮긴다. */
-  assert.match(product, /className="desktop-nav-tabs"/);
-  assert.match(product, /<a\s*\n?\s*className="desktop-nav-link"/);
-  const tablist = product.slice(
-    product.indexOf('className="desktop-nav-tabs"'),
-    product.indexOf('data-testid="nav-flow"'),
-  );
-  assert.ok(
-    tablist.includes("</nav>"),
-    "링크가 tablist 안에 들어가 있다",
-  );
-
-  /* 하단 바는 셋을 같은 순서로 둔다. */
-  const nav = product.slice(
-    product.indexOf('className="mobile-nav"'),
-    product.indexOf('<footer className="product-footer">'),
-  );
-  const order = ["여행 복구", "지금 갈 곳 찾기", "등록 없이 복구"];
-  let cursor = -1;
-  for (const item of order) {
-    const at = nav.indexOf(item);
-    assert.ok(at > cursor, `하단 바 순서가 데스크톱과 다르다: ${item}`);
-    cursor = at;
+  /* 탭 이름이 앱의 동작(복구·찾기)이면 사용자가 자기 상황을 그 동작으로
+     번역해야 한다. 상황을 그대로 적으면 그 단계가 사라진다. */
+  assert.match(product, /"일정이 틀어졌어요"/);
+  assert.match(product, /"시간이 비었어요"/);
+  assert.match(product, /"My plan broke"/);
+  assert.match(product, /"I have free time"/);
+  /* 옛 기능 중심 이름이 화면에 남아 있으면 안 된다. */
+  for (const stale of ["여행 복구", "지금 갈 곳 찾기", "등록 없이 복구"]) {
+    assert.ok(
+      !new RegExp(`[:?]\s*"${stale}"`).test(product),
+      `옛 이름이 아직 화면에 그려진다: ${stale}`,
+    );
   }
+
+  /* 상황으로 이름 붙이니 `등록 없이 복구`와 `일정이 틀어졌어요`가 같은
+     상황이라는 것이 드러났다 — 다른 것은 상황이 아니라 등록 여부다. 같은
+     상황에 입구가 둘이면 사용자가 매번 어느 쪽인지 판단해야 한다. 탭은 둘로
+     줄이고 등록 여부는 탭 안에서 묻는다. */
+  assert.ok(
+    !/data-testid="nav-flow"/.test(product),
+    "flow가 아직 별도 탭이다",
+  );
+  assert.ok(
+    !/data-testid="mobile-nav-flow"/.test(product),
+    "flow가 아직 모바일 하단 바에 있다",
+  );
+  assert.match(product, /여기에 저장해 둔 일정이 있나요\?/);
+  assert.match(product, /data-testid="plan-branch-flow"/);
+  /* 기본값은 "있어요"다. 아래 폼이 그대로 보이므로 늘 쓰던 사람은 클릭이
+     늘지 않는다. */
+  assert.match(product, /네, 아래에서 고칠게요/);
+  assert.match(product, /아니요, 세 번만 답하고 찾을게요/);
+
+  /* 탭이 둘이므로 하단 바 격자도 둘이어야 빈 칸이 남지 않는다. */
+  const css = await src("../app/globals.css");
+  assert.match(css, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
 });

@@ -1439,7 +1439,7 @@ export function ProductApp() {
             onClick={() => changeTab("recover")}
             data-testid="nav-recover"
           >
-            {language === "en" ? "Trip recovery" : "여행 복구"}
+            {language === "en" ? "My plan broke" : "일정이 틀어졌어요"}
           </button>
           <button
             id="tab-discover"
@@ -1451,24 +1451,14 @@ export function ProductApp() {
             onClick={() => changeTab("discover")}
             data-testid="nav-discover"
           >
-            {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
+            {language === "en" ? "I have free time" : "시간이 비었어요"}
           </button>
         </nav>
-        {/* 예전에는 이 기능이 헤더 오른쪽 끝의 `지금 바로 복구` 버튼이었고,
-            820px 미만에서는 아예 숨겨졌다. 이름도 무엇이 다른지 말해 주지
-            않았다 — 옆의 `여행 복구`도 지금 바로 하는 일이기 때문이다.
-
-            실제 차이는 **일정을 미리 등록하지 않아도 된다**는 것이다.
-            무슨 일이 생겼는지, 지금 어디인지, 몇 시까지 어디로 가야 하는지
-            세 번만 답하면 된다. 그것이 여행자가 얻는 값이므로 이름에 그대로
-            적는다. */}
-        <a
-          className="desktop-nav-link"
-          href="/flow"
-          data-testid="nav-flow"
-        >
-          {language === "en" ? "Recover, no setup" : "등록 없이 복구"}
-        </a>
+        {/* `등록 없이 복구`를 탭에서 뺐다.
+            상황으로 이름을 붙이니 그 탭과 `일정이 틀어졌어요`가 **같은 상황**을
+            가리킨다는 것이 드러났다 — 둘 다 일정이 틀어진 사람이고, 다른 것은
+            상황이 아니라 일정을 미리 등록했는지 여부다. 그래서 탭을 둘로 줄이고
+            등록 여부는 이 탭 안에서 한 번 묻는다. */}
         </div>
 
         <div className="header-actions">
@@ -1519,6 +1509,33 @@ export function ProductApp() {
             aria-labelledby="tab-recover"
             className="page-section"
           >
+            {/* 등록 여부를 여기서 한 번 묻는다.
+                예전에는 이것이 `등록 없이 복구`라는 별도 탭이었다. 그런데 탭을
+                상황으로 이름 붙이니 그 탭과 이 탭이 **같은 상황**(일정이
+                틀어짐)을 가리킨다는 것이 드러났다 — 다른 것은 상황이 아니라
+                일정을 미리 넣어 두었는지 여부다. 상황이 같은데 입구가 둘이면
+                사용자는 어느 쪽인지 매번 판단해야 한다.
+
+                기본값은 "있어요"다. 아래 폼이 그대로 보이므로 늘 쓰던 사람은
+                클릭이 늘지 않는다. */}
+            <div className="plan-branch" role="group" aria-label="시작 방법">
+              <span className="plan-branch-question">
+                {language === "en"
+                  ? "Do you have a plan saved here?"
+                  : "여기에 저장해 둔 일정이 있나요?"}
+              </span>
+              <div className="plan-branch-choices">
+                <span className="plan-branch-current" aria-current="true">
+                  {language === "en" ? "Yes — edit it below" : "네, 아래에서 고칠게요"}
+                </span>
+                <a href="/flow" data-testid="plan-branch-flow">
+                  {language === "en"
+                    ? "No — answer three questions instead"
+                    : "아니요, 세 번만 답하고 찾을게요"}
+                </a>
+              </div>
+            </div>
+
             {executionState === "loading" && (
               <div className="execution-loading" role="status">
                 <span className="loading-ring dark" aria-hidden="true" />
@@ -4217,7 +4234,7 @@ export function ProductApp() {
           data-testid="mobile-nav-recover"
         >
           <span aria-hidden="true">↗</span>
-          {language === "en" ? "Recovery" : "여행 복구"}
+          {language === "en" ? "My plan broke" : "일정이 틀어졌어요"}
         </button>
         <button
           type="button"
@@ -4227,14 +4244,8 @@ export function ProductApp() {
           data-testid="mobile-nav-discover"
         >
           <span aria-hidden="true">◷</span>
-          {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
+          {language === "en" ? "I have free time" : "시간이 비었어요"}
         </button>
-        {/* 데스크톱 탭 줄과 같은 셋을 같은 순서로 둔다. 이 항목만 다른 화면으로
-            가는 링크라 `button`이 아니라 `a`다. */}
-        <a href="/flow" data-testid="mobile-nav-flow">
-          <span aria-hidden="true">◇</span>
-          {language === "en" ? "Recover, no setup" : "등록 없이 복구"}
-        </a>
       </nav>
 
       <footer className="product-footer">

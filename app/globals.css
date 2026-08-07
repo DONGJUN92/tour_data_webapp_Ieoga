@@ -193,6 +193,24 @@
   gap: 10px;
 }
 
+/* 실행 화면에서 되돌아가는 길. 주 동작(길찾기·도착 확인)을 가리지 않도록
+   조용한 글자 버튼으로 두되, 손가락으로 누를 만한 크기는 지킨다. */
+.cockpit-back {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cockpit-back:hover {
+  color: var(--ink);
+}
+
 .cockpit-primary,
 .cockpit-arrived {
   min-height: 58px;

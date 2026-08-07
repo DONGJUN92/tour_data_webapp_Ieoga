@@ -18,6 +18,9 @@ type Props = {
      않으면 사실만 알리고 버튼을 만들지 않는다 — 누를 곳 없는 버튼을 보여
      주는 것보다 낫다. */
   onRecoverAgain?: () => void;
+  /* 복구안을 골라 실행에 들어온 뒤 되돌아갈 길이 없었다. 마음이 바뀌면 앱을
+     처음부터 다시 시작하는 수밖에 없었다는 뜻이다. */
+  onBack?: () => void;
 };
 
 function formatTime(value: string | undefined, language: "ko" | "en"): string {
@@ -48,37 +51,6 @@ function navigationUrl(step: JourneyExecutionStep): string {
   return `https://map.kakao.com/link/to/${encodeURIComponent(step.title)},${step.latitude},${step.longitude}`;
 }
 
-/* 출발지를 **지금 서 있는 곳**으로 채운 길찾기 주소.
- *
- * `link/to/`는 목적지만 넣는다. 그래서 지도 앱이 열리면 출발지가 비어 있거나
- * 지난번에 쓰던 곳으로 남아, 사용자가 거기서 자기 위치를 다시 잡아야 했다.
- * 복구안을 받아 들고 움직이려는 순간에 그 한 단계가 붙는다.
- *
- * 앱에 등록해 둔 위치를 쓰지 않는 이유: 그 값은 복구안을 만들 때의 기준점이고,
- * 지금은 이미 걷고 있을 수 있다. 길찾기의 출발지는 **지금** 있는 곳이어야
- * 한다. */
-function navigationUrlFrom(
-  step: JourneyExecutionStep,
-  from: { latitude: number; longitude: number } | undefined,
-): string {
-  if (!from) return navigationUrl(step);
-  /* `link/from/A/to/B`는 카카오맵이 인식하지 못한다. 실제로 열어 보면 경로가
-     통째로 버려지고 `map.kakao.com` 루트로 리다이렉트되어 **출발지도 목적지도
-     비어 있었다.** 사용자가 본 것이 이 화면이다.
-
-     동작하는 것은 `link/to/이름,위도,경도` 하나다. 이것을 열면 카카오가
-     `?rt=,,584038,793115&rt2=천연기념물센터`로 바꿔 준다 — 목적지는 채워지되
-     출발지 자리는 비어 있고, 좌표계가 WGS84가 아니라 WCONGNAMUL이라 우리가
-     출발지를 직접 끼워 넣을 수 없다.
-
-     출발지를 함께 넘길 수 있는 것은 앱 스킴뿐이다. 앱이 있으면 두 지점이 모두
-     채워지고, 없으면 웹으로 떨어져 목적지만 채워진다. */
-  const scheme = `kakaomap://route?sp=${from.latitude},${from.longitude}&ep=${step.latitude},${step.longitude}&by=CAR`;
-  return typeof navigator !== "undefined" &&
-    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    ? scheme
-    : navigationUrl(step);
-}
 
 export function ActiveJourneyCockpit({
   execution,
@@ -86,6 +58,7 @@ export function ActiveJourneyCockpit({
   onCloseCompleted,
   language = "ko",
   onRecoverAgain,
+  onBack,
 }: Props) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
@@ -257,41 +230,30 @@ export function ActiveJourneyCockpit({
           </div>
         </div>
 
+        {onBack && (
+          <button
+            type="button"
+            className="cockpit-back"
+            onClick={onBack}
+          >
+            {tr("← 이전으로", "← Back")}
+          </button>
+        )}
+
         <div className="cockpit-actions">
-          {/* 새 창은 **클릭 그 순간에** 열어야 한다. 위치를 먼저 기다렸다가
-              열면 브라우저가 사용자 동작과 무관한 팝업으로 보고 막는다.
-              그래서 빈 창을 먼저 열고, 위치가 오면 주소만 채운다. 위치를 못
-              얻으면 목적지만 있는 주소로 그대로 진행한다 — 길찾기 자체를
-              막지는 않는다. */}
+          {/* 빈 창을 먼저 열고 위치가 오면 주소를 채우던 방식을 버렸다.
+              위치 권한 창이 떠 있는 동안, 또는 사용자가 무시하는 동안 그 탭이
+              `about:blank`로 남았다 — 사용자가 본 것이 이 화면이다. 앱 스킴을
+              팝업에 넣으면 아무 일도 일어나지 않아 더 확실히 멈춘다.
+
+              카카오맵 웹은 어차피 출발지를 파라미터로 받지 않는다(좌표계가
+              WCONGNAMUL이다). 그러니 링크를 그대로 따라가게 두고 목적지만
+              확실히 채운다. 카카오가 출발지 자리를 "현재 위치"로 물어본다. */}
           <a
             className="cockpit-primary"
             href={navigationUrl(current)}
             target="_blank"
             rel="noreferrer"
-            onClick={(event) => {
-              if (!navigator.geolocation) return;
-              event.preventDefault();
-              const opened = window.open("", "_blank", "noopener,noreferrer");
-              if (!opened) return;
-              const fallback = navigationUrl(current);
-              navigator.geolocation.getCurrentPosition(
-                (position) => {
-                  opened.location.href = navigationUrlFrom(
-                    current,
-                    {
-                      /* 좌표는 소수점 다섯 자리로 줄여 넘긴다. 이 앱이 좌표를
-                         다루는 다른 곳과 같은 기준이다. */
-                      latitude: Number(position.coords.latitude.toFixed(5)),
-                      longitude: Number(position.coords.longitude.toFixed(5)),
-                    },
-                  );
-                },
-                () => {
-                  opened.location.href = fallback;
-                },
-                { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
-              );
-            }}
           >
             {tr("현재 위치에서 길찾기", "Directions from where I am")}
             <span aria-hidden="true">→</span>

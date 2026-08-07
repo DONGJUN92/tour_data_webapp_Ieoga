@@ -1560,6 +1560,14 @@ export function ProductApp() {
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
                   });
                 }}
+                /* 실행을 접고 복구안 목록으로 되돌아간다. `recovery`는
+                   그대로 두는 것이 핵심이다 — 다시 조회하지 않고 방금 보던
+                   다른 대안을 바로 고를 수 있어야 "이전으로"가 뜻을 가진다. */
+                onBack={() => {
+                  setActiveExecution(null);
+                  setAppliedOptionId("");
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
                 onCloseCompleted={() => {
                   setActiveExecution(null);
                   setAppliedOptionId("");

@@ -2541,17 +2541,28 @@ input:disabled {
 .footer-links {
   display: flex;
   flex-wrap: wrap;
+  /* 항목들이 서로 다른 높이를 가지면 밑줄이 층으로 어긋난다. 세로 가운데로
+     맞춘다. */
+  align-items: center;
   gap: 17px;
 }
 
+/* 이 목록에는 `a`와 `button`이 섞여 있다. 버튼은 글꼴을 상속하지 않고 텍스트를
+   세로 가운데 정렬하므로, 아무 것도 하지 않으면 같은 줄에서 밑줄과 글자 크기가
+   눈에 띄게 어긋난다 — 실제로 그렇게 보였다. 둘을 같은 상자로 만든다. */
 .footer-links a,
 .footer-links button {
+  display: inline-flex;
+  align-items: center;
   border: 0;
   background: transparent;
   color: var(--muted);
   min-height: 44px;
   padding: 8px 2px;
+  font-family: inherit;
   font-size: 13px;
+  font-weight: inherit;
+  line-height: 1.4;
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -6393,4 +6404,39 @@ body .hero-promise {
   color: #8f1d1d;
   font-size: 13px;
   font-weight: 700;
+}
+
+/* 이동 도움 여부는 켜고 끄는 하나다. 세 갈래 드롭다운을 대신한다. */
+.assist-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid #d7dee6;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.assist-toggle input {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.assist-toggle strong {
+  display: block;
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.assist-toggle small {
+  display: block;
+  margin-top: 3px;
+  color: #4e5968;
+  font-size: 12px;
+  line-height: 1.6;
 }

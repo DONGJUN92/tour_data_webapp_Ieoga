@@ -539,17 +539,17 @@ test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
   );
   /* 라우트 링크가 아니라 탭 전환이어야 한다. */
   assert.ok(!/<a href="\/policy">/.test(nav), "모바일 내비가 라우트로 나간다");
-  for (const testid of [
-    "mobile-nav-recover",
-    "mobile-nav-discover",
-    "mobile-nav-transparency",
-  ]) {
+  for (const testid of ["mobile-nav-recover", "mobile-nav-discover"]) {
     assert.match(nav, new RegExp(`data-testid="${testid}"`), `${testid} 없음`);
   }
   assert.match(nav, /지금 갈 곳 찾기/);
   assert.match(nav, /changeTab\("discover"\)/);
   /* 지금 어느 탭인지 하단 바에도 드러나야 한다. */
   assert.match(nav, /activeTab === "discover" \? "is-active" : ""/);
+  assert.ok(
+    !/데이터 투명성/.test(nav),
+    "데이터 투명성이 아직 모바일 하단 바에 있다",
+  );
   assert.match(nav, /aria-current=\{activeTab === "recover" \? "page" : undefined\}/);
 
   /* 두 내비의 항목이 정확히 같아야 한다. */
@@ -557,7 +557,9 @@ test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
     product.indexOf('className="desktop-nav"'),
     product.indexOf('<div className="header-actions">'),
   );
-  for (const label of ["여행 복구", "지금 갈 곳 찾기", "데이터 투명성"]) {
+  /* 데이터 투명성은 두 내비 모두에서 빠지고 하단 메뉴로 갔다 — 그것도
+     "같아야 한다"의 일부다. */
+  for (const label of ["여행 복구", "지금 갈 곳 찾기"]) {
     assert.ok(tabBar.includes(label), `데스크톱 탭에 ${label} 없음`);
     assert.ok(nav.includes(label), `모바일 내비에 ${label} 없음`);
   }

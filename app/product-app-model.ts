@@ -8,7 +8,16 @@ import { statusLabel, statusTone } from "@/lib/text/status-labels";
 
 export type TabId = "recover" | "discover" | "insights" | "transparency";
 export type Incident = "rain" | "delay" | "crowd" | "less_walk";
-export type Audience = "general" | "stroller" | "wheelchair" | "senior";
+/* `assisted`는 유아차·휠체어·고령자를 하나로 합친 값이다. 세 갈래로 물었지만
+   판정은 두 갈래였고(휠체어와 고령자는 완전히 동일), 고르는 사람에게는 결과를
+   바꾸지 않는 선택이 하나 더 있는 셈이었다. 예전 세 값은 저장된 일정을 계속
+   읽기 위해 타입에 남긴다. */
+export type Audience =
+  | "general"
+  | "assisted"
+  | "stroller"
+  | "wheelchair"
+  | "senior";
 export type LoadState = "idle" | "loading" | "success" | "error";
 export type LocationMode = "unselected" | "automatic" | "manual";
 export type RecoveryOutcome = "idle" | "applied" | "arrived" | "not_arrived";
@@ -371,15 +380,16 @@ export const ABLATION_SOURCES = [
   },
 ] as const;
 
+/* 화면에는 켜고 끄는 하나만 남긴다. 세 갈래로 물어도 판정이 갈리지 않으므로
+   고르는 수고만 늘리는 선택이었다. */
 export const AUDIENCES: { value: Audience; label: string }[] = [
   { value: "general", label: "일반 여행" },
-  { value: "stroller", label: "유아차 동반" },
-  { value: "wheelchair", label: "휠체어 이용" },
-  { value: "senior", label: "고령자 동반" },
+  { value: "assisted", label: "이동 도움이 필요해요" },
 ];
 
 export const AUDIENCES_EN: Record<Audience, string> = {
   general: "General travel",
+  assisted: "Someone needs step-free access",
   stroller: "With a stroller",
   wheelchair: "Wheelchair user",
   senior: "With a senior traveler",

@@ -247,6 +247,27 @@ function rentalOnlyAccessibility(value: string): boolean {
 function accessibilityFields(
   audience: RecoveryRequest["audience"],
 ): string[] {
+  /* `assisted`는 유아차·휠체어·고령자를 하나로 합친 값이다.
+     셋을 따로 두었지만 실제 판정은 갈리지 않았다 — 휠체어와 고령자는 조회
+     필드도 필수 항목도 **완전히 같았고**, 유아차만 `stroller` 필드를 따로
+     봤다. 고르는 사람에게는 세 갈래인데 결과는 두 갈래였으니, 그 선택은
+     대부분 아무 일도 하지 않으면서 입력 부담만 늘렸다.
+
+     합치면서 확인 대상은 셋의 합집합으로 둔다. 좁히는 것이 아니라 넓히는
+     방향이다 — 유아차 이용자도 엘리베이터가 확인되면 내부 이동을 인정받고,
+     휠체어 이용자도 유아차 통행 기록이 있으면 근거로 쓴다. */
+  if (audience === "assisted") {
+    return [
+      "stroller",
+      "wheelchair",
+      "elevator",
+      "exit",
+      "restroom",
+      "parking",
+      "lactationroom",
+      "babysparechair",
+    ];
+  }
   if (audience === "stroller") {
     return [
       "stroller",
@@ -301,7 +322,17 @@ function evaluateAccessibility(
     .map((field) => ({ field, value: stringValue(item[field]) }))
     .filter((entry) => positiveAccessibility(entry.value));
   const requiredGroups =
-    audience === "stroller"
+    audience === "assisted"
+      ? [
+          { label: "출입 동선", fields: ["exit"] },
+          {
+            /* 유아차·휠체어·보행보조 중 무엇이든 안에서 다닐 수 있다는
+               근거가 하나라도 있으면 인정한다. */
+            label: "내부 이동",
+            fields: ["elevator", "wheelchair", "stroller"],
+          },
+        ]
+      : audience === "stroller"
       ? [
           { label: "유아차 이용 정보", fields: ["stroller"] },
           { label: "출입 동선", fields: ["exit"] },
@@ -332,7 +363,9 @@ function evaluateAccessibility(
     (check) => check.status === "confirmed",
   ).length;
   const supplementalFieldNames =
-    audience === "stroller"
+    audience === "assisted"
+      ? ["lactationroom", "babysparechair", "restroom", "parking"]
+      : audience === "stroller"
       ? ["lactationroom", "babysparechair", "restroom", "parking"]
       : ["restroom", "parking"];
   const supplementalFields = allFields.filter((entry) =>

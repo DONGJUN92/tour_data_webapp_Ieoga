@@ -113,7 +113,7 @@ const itineraryCoreSchema = z.object({
   title: z.string().trim().min(1).max(100).default("내 여행 일정"),
   timezone: z.literal("Asia/Seoul").default("Asia/Seoul"),
   audience: z
-    .enum(["general", "stroller", "wheelchair", "senior"])
+    .enum(["general", "assisted", "stroller", "wheelchair", "senior"])
     .default("general"),
   nodes: z.array(itineraryNodeSchema).min(2).max(30),
 });
@@ -389,7 +389,7 @@ export const recoveryRequestSchema = z
     availableMinutes: z.number().int().min(15).max(240),
     maxDistanceMeters: z.number().int().min(300).max(20_000),
     audience: z
-      .enum(["general", "stroller", "wheelchair", "senior"])
+      .enum(["general", "assisted", "stroller", "wheelchair", "senior"])
       .default("general"),
     /* 3상태다. 미지정이면 우천 상황에서 실내를 요구하고, 명시적 `false`는
        그 기본값을 이긴다. `.default(false)`였을 때는 두 값이 구분되지 않아

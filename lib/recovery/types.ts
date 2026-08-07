@@ -22,7 +22,9 @@ export type RecoveryMode =
 export type AccessibilityEvidence = {
   status: "not_required" | "verified" | "partial" | "unverified";
   grade: "A" | "B" | "C" | "X";
-  audience: "general" | "stroller" | "wheelchair" | "senior";
+  /* `assisted`는 유아차·휠체어·고령자를 합친 값이다. 예전 세 값은 저장된
+     일정과 이미 발급된 결과를 계속 읽기 위해 남겨 둔다. */
+  audience: "general" | "assisted" | "stroller" | "wheelchair" | "senior";
   confirmedFields: Array<{ field: string; value: string }>;
   requiredChecks: Array<{
     label: string;

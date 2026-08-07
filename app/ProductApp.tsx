@@ -772,7 +772,7 @@ export function ProductApp() {
   function handleTabKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tabs: TabId[] = ["recover", "discover", "transparency"];
+    const tabs: TabId[] = ["recover", "discover"];
     const currentIndex = tabs.indexOf(activeTab);
     const nextIndex =
       event.key === "Home"
@@ -952,7 +952,7 @@ export function ProductApp() {
     ) {
       setRecoverState("error");
       setRecoverError(
-        "다음 고정 일정까지 남은 시간이 안전 여유보다 짧습니다. 일정 시각을 확인하거나 긴급 지원을 이용해 주세요.",
+        "다음 예약까지 남은 시간이 남겨 두기로 한 여유보다 짧습니다. 일정 시각을 확인하거나 긴급 지원을 이용해 주세요.",
       );
       return;
     }
@@ -987,7 +987,7 @@ export function ProductApp() {
       minimumStayMinutes > 180
     ) {
       setRecoverState("error");
-      setRecoverError("시간은 15~240분, 최소 체류는 10~180분, 이동 거리는 300~20,000m, 탐색 반경은 500~20,000m로 입력해 주세요.");
+      setRecoverError("쓸 수 있는 시간은 15~240분, 머무는 시간은 10~180분, 이동 거리는 300~20,000m, 찾는 범위는 500~20,000m 사이로 넣어 주세요.");
       return;
     }
 
@@ -1449,18 +1449,10 @@ export function ProductApp() {
               관계가 없고, 위기 순간에 탭 하나를 더 늘리는 것은 방해다.
               기능 자체는 policy 화면과 insights API에 그대로 있어 지자체·심사
               용도로 쓸 수 있다. */}
-          <button
-            id="tab-transparency"
-            role="tab"
-            aria-selected={activeTab === "transparency"}
-            aria-controls="panel-transparency"
-            tabIndex={activeTab === "transparency" ? 0 : -1}
-            className={activeTab === "transparency" ? "is-active" : ""}
-            onClick={() => changeTab("transparency")}
-            data-testid="nav-transparency"
-          >
-            {language === "en" ? "Data transparency" : "데이터 투명성"}
-          </button>
+          {/* 데이터 투명성은 상단 탭에서 뺐다. 여행 중에 급히 쓰는 화면의
+              첫 줄에 있을 내용이 아니다 — 출처와 갱신 시각은 궁금할 때 찾아
+              보는 것이고, 그 자리는 하단 메뉴(개인정보 처리방침·이용약관 옆)가
+              맞다. 화면 자체는 그대로 있고 하단 "데이터 출처"로 들어간다. */}
         </nav>
 
         <div className="header-actions">
@@ -1709,24 +1701,38 @@ export function ProductApp() {
                       />
                     </label>
                     <label>
-                      <span>이동·접근성 조건</span>
-                      <select
-                        value={journeyDraft.audience}
-                        onChange={(event) =>
-                          setJourneyDraft((current) => ({
-                            ...current,
-                            audience: event.target.value as Audience,
-                          }))
-                        }
-                      >
-                        {AUDIENCES.map((item) => (
-                          <option key={item.value} value={item.value}>
+                      <span>이동 도움</span>
+                      {/* 예전에는 유아차·휠체어·고령자를 각각 고르게 했다.
+                          그런데 판정은 갈리지 않았다 — 휠체어와 고령자는 조회
+                          필드도 필수 항목도 완전히 같았고 유아차만 달랐다.
+                          결과를 바꾸지 않는 선택을 세 개 늘어놓으면 고르는
+                          수고만 는다. 켜고 끄는 하나로 줄인다. */}
+                      <label className="assist-toggle">
+                        <input
+                          type="checkbox"
+                          checked={journeyDraft.audience !== "general"}
+                          onChange={(event) =>
+                            setJourneyDraft((current) => ({
+                              ...current,
+                              audience: (event.target.checked
+                                ? "assisted"
+                                : "general") as Audience,
+                            }))
+                          }
+                        />
+                        <span>
+                          <strong>
                             {language === "en"
-                              ? AUDIENCES_EN[item.value]
-                              : item.label}
-                          </option>
-                        ))}
-                      </select>
+                              ? AUDIENCES_EN.assisted
+                              : "이동 도움이 필요해요"}
+                          </strong>
+                          <small>
+                            유아차·휠체어·보행보조 등 계단 없는 동선이 필요한
+                            경우입니다. 공식 무장애여행정보에서 출입 동선과 내부
+                            이동을 확인합니다.
+                          </small>
+                        </span>
+                      </label>
                     </label>
                   </div>
                 </details>
@@ -1833,6 +1839,16 @@ export function ProductApp() {
                                     sigunguCode: undefined,
                                   })
                                 }
+                                /* 이 입력은 폼 안에 있다. Enter를 그냥 두면
+                                   장소를 찾는 대신 **폼이 제출되어** "일정을
+                                   저장할 수 없습니다"가 뜬다 — 방금 이름을
+                                   적었는데 저장 실패가 나오니 무엇을 하라는
+                                   건지 알 수 없다. Enter는 검색으로 돌린다. */
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Enter") return;
+                                  event.preventDefault();
+                                  void searchJourneyStopPlace(stop.id);
+                                }}
                                 maxLength={80}
                                 placeholder="예: 국립현대미술관 서울"
                                 required
@@ -2078,7 +2094,7 @@ export function ProductApp() {
                         {nextAppointmentMinutes === null
                           ? "남은 시간 계산 전"
                           : nextAppointmentMinutes > 0
-                            ? `${nextAppointmentMinutes}분 후 · 안전 여유 ${safetyBufferMinutes}분`
+                            ? `${nextAppointmentMinutes}분 후 · 여유 ${safetyBufferMinutes}분 남기기`
                             : "고정 일정 시각이 지났습니다."}
                       </small>
                     </div>
@@ -2380,7 +2396,7 @@ export function ProductApp() {
                     <span>{language === "en" ? "Time you can use before the next booking" : "다음 예약까지 쓸 수 있는 시간"}</span>
                     <strong>{availableMinutes}분</strong>
                     <small>
-                      예약 시각과 안전 여유 {safetyBufferMinutes}분을 반영해
+                      예약 시각과 남겨 둘 여유 {safetyBufferMinutes}분을 반영해
                       자동 계산했어요.
                     </small>
                   </div>
@@ -2494,15 +2510,15 @@ export function ProductApp() {
                     </div>
                   </details>
                   <details className="advanced-constraints">
-                    <summary>시간·거리 세부 조건 조정</summary>
+                    <summary>시간·거리 자세히 정하기</summary>
                     <div className="field-grid three">
                       <label>
                         <span>
-                          사용 가능한 시간 <i aria-hidden="true">(분)</i>
+                          지금부터 쓸 수 있는 시간
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="사용 가능한 시간 (15~240분)"
+                            aria-label="지금부터 쓸 수 있는 시간 (15~240분)"
                             type="number"
                             min={15}
                             max={240}
@@ -2515,11 +2531,11 @@ export function ProductApp() {
                       </label>
                       <label>
                         <span>
-                          안전 여유 <i aria-hidden="true">(분)</i>
+                          예약 전에 남겨 둘 여유
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="안전 여유 (5~60분)"
+                            aria-label="예약 전에 남겨 둘 여유 (5~60분)"
                             type="number"
                             min={5}
                             max={60}
@@ -2532,11 +2548,11 @@ export function ProductApp() {
                       </label>
                       <label>
                         <span>
-                          대체 일정 최소 체류 <i aria-hidden="true">(분)</i>
+                          가면 최소 이만큼은 머물기
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="대체 일정 최소 체류 (10~180분)"
+                            aria-label="가면 최소 이만큼은 머물기 (10~180분)"
                             type="number"
                             min={10}
                             max={180}
@@ -2551,11 +2567,11 @@ export function ProductApp() {
                       </label>
                       <label>
                         <span>
-                          최대 이동 거리 <i aria-hidden="true">(m)</i>
+                          여기까지만 이동
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="최대 이동 거리 (300~20,000m)"
+                            aria-label="여기까지만 이동 (300~20,000m)"
                             type="number"
                             min={300}
                             max={20000}
@@ -2568,11 +2584,11 @@ export function ProductApp() {
                       </label>
                       <label>
                         <span>
-                          탐색 반경 <i aria-hidden="true">(m)</i>
+                          이 범위 안에서 찾기
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="탐색 반경 (500~20,000m)"
+                            aria-label="이 범위 안에서 찾기 (500~20,000m)"
                             type="number"
                             min={500}
                             max={20000}
@@ -2709,7 +2725,7 @@ export function ProductApp() {
                     <span>적용 가능 후보 0</span>
                     <h3>조건을 만족하는 일정을 찾지 못했습니다.</h3>
                     <p>
-                      없는 후보를 만들어내지 않았습니다. 탐색 반경이나 이동 거리를 조금 넓히거나, 실내
+                      없는 후보를 만들어내지 않았습니다. 찾는 범위나 이동 거리를 조금 넓히거나, 실내
                       조건을 해제한 뒤 다시 확인해 주세요.
                     </p>
                     {typeof recovery.rejectedCount === "number" && (
@@ -4197,16 +4213,6 @@ export function ProductApp() {
         >
           <span aria-hidden="true">◷</span>
           {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
-        </button>
-        <button
-          type="button"
-          className={activeTab === "transparency" ? "is-active" : ""}
-          aria-current={activeTab === "transparency" ? "page" : undefined}
-          onClick={() => changeTab("transparency")}
-          data-testid="mobile-nav-transparency"
-        >
-          <span aria-hidden="true">◎</span>
-          {language === "en" ? "Data transparency" : "데이터 투명성"}
         </button>
       </nav>
 

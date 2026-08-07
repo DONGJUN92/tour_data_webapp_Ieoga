@@ -166,7 +166,7 @@ export function ManualLocationPicker({
     setSearchError("");
     try {
       const payload = await getJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(trimmed)}&purpose=current_location&fallback=1`,
+        `/api/v1/places/search?keyword=${encodeURIComponent(trimmed)}&purpose=current_origin&fallback=auto`,
       );
       setResults(asPlaces(payload).slice(0, 8));
       setSearchState("success");
@@ -189,7 +189,7 @@ export function ManualLocationPicker({
     try {
       const label = `${region.name} ${district.name}`;
       const payload = await getJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(label)}&purpose=current_location&fallback=1`,
+        `/api/v1/places/search?keyword=${encodeURIComponent(label)}&purpose=current_origin&fallback=auto`,
       );
       const [first] = asPlaces(payload);
       if (!first) {

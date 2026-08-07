@@ -474,6 +474,13 @@ export default function DiscoverWindowPanel({
                     onChange={(event) =>
                       setNextPlaceKeyword(event.target.value)
                     }
+                    /* 이름을 적고 Enter를 누르는 것은 검색하겠다는 뜻이다.
+                       폼 안이라 Enter를 그냥 두면 제출로 새어 나간다. */
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      void searchNextPlace();
+                    }}
                     maxLength={80}
                     placeholder={tr(
                       language,

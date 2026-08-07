@@ -6647,3 +6647,73 @@ body .option-footer-actions a:focus-visible {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 찾은 곳을 일정 어디에 넣을지 고르는 자리. 조용히 넘어가면 안 되는 선택이라
+   화면 흐름 안에 눈에 띄게 놓되, 모달로 가두지는 않는다 — 뒤의 일정을 보면서
+   골라야 어디에 넣을지 판단할 수 있다. */
+.plan-merge {
+  margin: 0 0 20px;
+  padding: 18px;
+  border: 2px solid var(--brand);
+  border-radius: 16px;
+  background: var(--brand-tint, #eef7f6);
+}
+
+.plan-merge-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 800;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.plan-merge-note {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.plan-merge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.plan-merge-actions button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--brand);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--brand-deep, #0b6a69);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  word-break: keep-all;
+}
+
+.plan-merge-actions button:hover {
+  background: #ffffff;
+  border-color: var(--brand-strong, #0b6a69);
+}
+
+.plan-merge-cancel {
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.plan-merge-actions button:focus-visible,
+.plan-merge-cancel:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}

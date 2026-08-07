@@ -412,6 +412,39 @@ export const OPEN_APIS = [
 ];
 
 export const POLICY_APIS = OPEN_APIS.slice(4);
+/* 주소에서 시·군 단위를 뽑는다.
+ *
+ * 앞 두 토막을 그대로 쓰면 `대전광역시 서구`와 `대전광역시 유성구`가 다른
+ * 지역으로 갈린다. 같은 대전 안에서 구만 다른 것을 "다른 지역이니 기존 일정을
+ * 지울까요"라고 묻는 것은 말이 안 된다.
+ *
+ * 광역시·특별시·특별자치시는 그 자체가 단위다. 도는 그 아래 시·군이 단위다
+ * (`경기도 수원시` → `수원시`, `강원특별자치도 양양군` → `양양군`). */
+const WIDE_CITY = /(특별시|광역시|특별자치시)$/u;
+const PROVINCE = /(^|[가-힣])도$|특별자치도$/u;
+const CITY_OR_COUNTY = /(시|군)$/u;
+
+export function administrativeUnit(address: string): string {
+  const tokens = address.trim().split(/\s+/u).filter(Boolean);
+  for (const [index, token] of tokens.entries()) {
+    if (WIDE_CITY.test(token)) return token;
+    if (PROVINCE.test(token)) {
+      /* 도 다음에 오는 시·군을 찾는다. `경기도 성남시 분당구`에서 `분당구`가
+         아니라 `성남시`를 잡아야 한다. */
+      const next = tokens.slice(index + 1).find((entry) => CITY_OR_COUNTY.test(entry));
+      if (next) return next;
+    }
+  }
+  /* 도 표기를 생략한 주소도 흔하다. */
+  return tokens.find((token) => CITY_OR_COUNTY.test(token)) ?? "";
+}
+
+export function sameAdministrativeArea(left: string, right: string): boolean {
+  const a = administrativeUnit(left);
+  const b = administrativeUnit(right);
+  return Boolean(a) && a === b;
+}
+
 export function makeStop(overrides: Partial<JourneyStop> = {}): JourneyStop {
   return {
     id: crypto.randomUUID(),

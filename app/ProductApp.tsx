@@ -15,6 +15,11 @@ import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
+import {
+  PlanPlacementDialog,
+  type PlanCandidate,
+  type PlanPlacement,
+} from "./PlanPlacementDialog";
 import { LaunchEvidencePanel } from "./LaunchEvidencePanel";
 import { PolicyMissionPanel } from "./PolicyMissionPanel";
 import { SimulationGuide } from "./SimulationGuide";
@@ -98,6 +103,9 @@ export function ProductApp() {
   const [regionError, setRegionError] = useState("");
 
   const [journeyDraft, setJourneyDraft] = useState<JourneyPlan>(emptyJourneyDraft);
+  /* "시간이 비었어요"에서 넘어온 장소. 초안이 비어 있으면 바로 넣고, 이미
+     적어 둔 일정이 있으면 어디에 넣을지 물어본다. */
+  const [placeToPlan, setPlaceToPlan] = useState<PlanCandidate | null>(null);
   const [journeyPlan, setJourneyPlan] = useState<JourneyPlan | null>(null);
   const [journeyState, setJourneyState] = useState<"loading" | "ready">("loading");
   const [journeySaveState, setJourneySaveState] = useState<LoadState>("idle");
@@ -756,6 +764,56 @@ export function ProductApp() {
         error instanceof Error ? error.message : "내 데이터를 삭제하지 못했습니다.",
       );
     }
+  }
+
+  /* 고른 위치대로 초안을 고친다. 화면에서 갈라 두면 갈리므로 한 곳에 모은다. */
+  function applyPlanPlacement(
+    place: PlanCandidate,
+    placement: PlanPlacement,
+  ) {
+    const fresh = () =>
+      makeStop({
+        title: place.title,
+        address: place.address,
+        type: stopTypeFromTourismContent(place.contentTypeId),
+      });
+    setJourneyDraft((previous) => {
+      if (placement.kind === "reset") {
+        /* 다른 지역이라 지우기로 했다. 지켜야 할 약속 자리는 남겨 둔다 —
+           그것을 채워야 복구 판정이 돌아간다. */
+        return {
+          ...previous,
+          stops: [fresh(), makeStop({ type: "reservation", fixed: true })],
+        };
+      }
+      if (placement.kind === "replace") {
+        return {
+          ...previous,
+          stops: previous.stops.map((stop) =>
+            stop.id === placement.stopId
+              ? {
+                  ...stop,
+                  title: place.title,
+                  address: place.address,
+                  type: stopTypeFromTourismContent(place.contentTypeId),
+                }
+              : stop,
+          ),
+        };
+      }
+      return {
+        ...previous,
+        stops:
+          placement.kind === "prepend"
+            ? [fresh(), ...previous.stops]
+            : [...previous.stops, fresh()],
+      };
+    });
+    /* 편집기가 접혀 있으면 바뀐 일정이 보이지 않는다. 사용자가 방금 고른
+       결과는 반드시 눈에 보여야 한다 — 이것이 "아무 일도 안 일어난다"의
+       원인이었다. */
+    setJourneyEditing(true);
+    setPlaceToPlan(null);
   }
 
   function changeTab(tab: TabId) {
@@ -1543,6 +1601,22 @@ export function ProductApp() {
                 진행 중인 복구 여행을 확인하고 있습니다.
               </div>
             )}
+            {placeToPlan && (
+              <PlanPlacementDialog
+                place={placeToPlan}
+                stops={journeyDraft.stops.map((stop) => ({
+                  id: stop.id,
+                  title: stop.title,
+                  address: stop.address,
+                }))}
+                language={language}
+                onChoose={(placement) =>
+                  applyPlanPlacement(placeToPlan, placement)
+                }
+                onCancel={() => setPlaceToPlan(null)}
+              />
+            )}
+
             {activeExecution && (
               <ActiveJourneyCockpit
                 execution={activeExecution}
@@ -3735,35 +3809,21 @@ export function ProductApp() {
                  초안은 덮어쓰지 않고 **빈 자리부터 채운다.** 이미 적어 둔
                  일정을 이 버튼 한 번으로 지워 버리면, 되돌릴 방법이 없다. */
               onPlanFromPlace={(place) => {
-                setJourneyDraft((previous) => {
-                  const target =
-                    previous.stops.findIndex(
-                      (stop) => !stop.fixed && !stop.title.trim(),
-                    ) ??
-                    -1;
-                  const index = target >= 0 ? target : 0;
-                  return {
-                    ...previous,
-                    stops: previous.stops.map((stop, stopIndex) =>
-                      stopIndex === index
-                        ? {
-                            ...stop,
-                            title: place.title,
-                            address: place.address,
-                            type: stopTypeFromTourismContent(
-                              place.contentTypeId,
-                            ),
-                          }
-                        : stop,
-                    ),
-                  };
-                });
                 changeTab("recover");
                 window.requestAnimationFrame(() => {
                   document
                     .getElementById("main-content")
                     ?.scrollIntoView({ behavior: "smooth", block: "start" });
                 });
+                const filled = journeyDraft.stops.filter((stop) =>
+                  stop.title.trim(),
+                );
+                if (!filled.length) {
+                  /* 빈 초안이면 물어볼 것이 없다. */
+                  applyPlanPlacement(place, { kind: "prepend" });
+                  return;
+                }
+                setPlaceToPlan(place);
               }}
             />
           </section>

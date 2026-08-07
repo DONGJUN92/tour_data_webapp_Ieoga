@@ -28,6 +28,8 @@ import {
   type RecoveryOption,
   type RecoveryResponse,
   type TravelMode,
+  sortSimpleOptions,
+  type SimpleOptionSort,
 } from "./product-app-model";
 
 const STAY_CHOICES = [30, 60, 90, 120, 150, 180] as const;
@@ -54,6 +56,14 @@ type Props = {
      바꿔 버려, 버튼을 누른 사용자가 지금 하려던 일과 입력한 조건을 함께
      잃었다. */
   onManualLocation: (place: ManualPlace) => void;
+  /* 찾은 곳을 그대로 일정으로 가져간다. 이 화면은 "지금 갈 곳"만 보여 주고
+     끝나서, 마음에 드는 곳을 찾아도 다음 약속을 지킬 수 있는지 따져 보려면
+     이름을 외워 다른 탭에 다시 입력해야 했다. */
+  onPlanFromPlace?: (place: {
+    title: string;
+    address: string;
+    contentTypeId?: string;
+  }) => void;
 };
 
 function tr(language: Language, ko: string, en: string): string {
@@ -102,6 +112,7 @@ export default function DiscoverWindowPanel({
   analyticsConsent,
   onRequestLocation,
   onManualLocation,
+  onPlanFromPlace,
 }: Props) {
   /* 직접 입력을 이 화면 안에서 편다. 탭을 바꾸면 지금 하려던 일이 사라진다. */
   const [manualOpen, setManualOpen] = useState(false);
@@ -687,7 +698,11 @@ export default function DiscoverWindowPanel({
           </p>
         )}
         {state === "success" && result && (
-          <DiscoverResults language={language} result={result} />
+          <DiscoverResults
+            language={language}
+            result={result}
+            onPlanFromPlace={onPlanFromPlace}
+          />
         )}
       </section>
     </div>
@@ -697,10 +712,16 @@ export default function DiscoverWindowPanel({
 function DiscoverResults({
   language,
   result,
+  onPlanFromPlace,
 }: {
   language: Language;
   result: RecoveryResponse;
+  onPlanFromPlace?: Props["onPlanFromPlace"];
 }) {
+  /* 여행 복구 화면에는 있던 정렬이 이쪽에는 없었다. 같은 대안 목록인데 한쪽
+     에서만 "가까운 순"으로 볼 수 있으면 여행자는 화면마다 규칙을 새로
+     배워야 한다. */
+  const [sort, setSort] = useState<SimpleOptionSort>("recommended");
   if (!result.options.length) {
     return (
       <div className={styles.noResult} role="status">
@@ -727,8 +748,30 @@ function DiscoverResults({
 
   return (
     <>
+      {result.options.length > 1 && (
+        <div className={styles.sortRow} role="group" aria-label={tr(language, "정렬", "Sort")}>
+          {(
+            [
+              ["recommended", "추천순", "Recommended"],
+              ["nearest_first", "가까운 순", "Nearest"],
+              ["quiet_first", "한적한 순", "Quietest"],
+              ["busy_first", "붐비는 순", "Busiest"],
+            ] as const
+          ).map(([value, ko, en]) => (
+            <button
+              key={value}
+              type="button"
+              className={sort === value ? styles.sortActive : styles.sortChip}
+              aria-pressed={sort === value}
+              onClick={() => setSort(value)}
+            >
+              {tr(language, ko, en)}
+            </button>
+          ))}
+        </div>
+      )}
       <ul className={styles.cards}>
-        {result.options.map((option, index) => {
+        {sortSimpleOptions(result.options, sort).map((option, index) => {
           const window = option.scheduleDiff?.openWindow;
           /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
              화면 상태(선택한 수단)로 쓰면 자차 조회가 실패해 보행으로 내려간
@@ -932,6 +975,29 @@ function DiscoverResults({
                   ),
                 )}
               </ul>
+
+              {/* 찾은 곳을 일정으로 가져간다. 이 화면은 "지금 갈 곳"을 알려
+                  주고 끝나서, 마음에 드는 곳을 찾아도 다음 약속과 맞는지
+                  따져 보려면 이름을 외워 다른 탭에 다시 입력해야 했다. */}
+              {onPlanFromPlace && (
+                <button
+                  type="button"
+                  className={styles.planFromPlace}
+                  onClick={() =>
+                    onPlanFromPlace({
+                      title: option.title,
+                      address: option.address ?? "",
+                      contentTypeId: option.contentTypeId,
+                    })
+                  }
+                >
+                  {tr(
+                    language,
+                    "이 곳을 일정에 넣기",
+                    "Add this to my plan",
+                  )}
+                </button>
+              )}
             </li>
           );
         })}

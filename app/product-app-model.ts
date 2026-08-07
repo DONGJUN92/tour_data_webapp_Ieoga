@@ -1199,6 +1199,53 @@ function availabilityRank(option: RecoveryOption): number {
   return AVAILABILITY_ORDER[status ?? "unknown"] ?? 2;
 }
 
+/* 카드 목록 정렬. 화면 셋(여행 복구·등록 없이 찾기·시간이 비었어요)이 같은
+   축을 쓰므로 함수도 하나만 둔다. `FlowApp`이 자기 것을 따로 갖고 있었을 때
+   `basis` 가중치가 빠져 빌려 온 붐빔 값이 직접 잰 값과 똑같이 겨뤘다. */
+export type SimpleOptionSort =
+  | "recommended"
+  | "nearest_first"
+  | "quiet_first"
+  | "busy_first";
+
+export function sortSimpleOptions<
+  T extends { distanceMeters?: number; crowd?: unknown },
+>(options: T[], sort: SimpleOptionSort): T[] {
+  if (sort === "recommended") return options;
+  const keyed = options.map((option, index) => ({ option, index }));
+  if (sort === "nearest_first") {
+    keyed.sort(
+      (a, b) =>
+        (a.option.distanceMeters ?? Number.POSITIVE_INFINITY) -
+          (b.option.distanceMeters ?? Number.POSITIVE_INFINITY) ||
+        a.index - b.index,
+    );
+    return keyed.map((entry) => entry.option);
+  }
+  /* 주변·시군구에서 빌려 온 값은 중립 쪽으로 눌러 직접 잰 후보를 이기지
+     못하게 한다. 엔진의 추천순 점수와 같은 가중치다. */
+  const rate = (option: T) => {
+    const crowd = option.crowd as
+      | { relativeRate?: number; basis?: string }
+      | undefined;
+    if (typeof crowd?.relativeRate !== "number") return undefined;
+    const weight =
+      crowd.basis === "district" ? 0.25 : crowd.basis === "nearby" ? 0.6 : 1;
+    return 50 + (crowd.relativeRate - 50) * weight;
+  };
+  const direction = sort === "quiet_first" ? 1 : -1;
+  keyed.sort((a, b) => {
+    const left = rate(a.option);
+    const right = rate(b.option);
+    if (left === undefined && right === undefined) return a.index - b.index;
+    /* 값이 없는 후보는 뒤로 보내되 지우지 않는다. */
+    if (left === undefined) return 1;
+    if (right === undefined) return -1;
+    return (left - right) * direction || a.index - b.index;
+  });
+  return keyed.map((entry) => entry.option);
+}
+
 export function sortOptionsByCrowd(
   options: RecoveryOption[],
   sort: OptionSort,

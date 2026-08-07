@@ -9,6 +9,7 @@ import type {
 import type { RejectionReasonCode } from "@/lib/recovery/types";
 import {
   formatCrowd,
+  sortSimpleOptions,
   MAX_APPOINTMENT_MINUTES,
   MIN_APPOINTMENT_MINUTES,
   appointmentAfterMinutesInKorea,
@@ -380,38 +381,8 @@ function formatKstTime(value?: string): string {
 
 /* 검증 결과 정렬. 값이 없는 후보는 뒤로 보내되 **지우지 않는다** — 이 화면의
    원칙은 폭넓게 보여 주고 고르는 것은 여행자가 하는 것이다. */
-function sortFlowOptions<T extends { distanceMeters?: number; crowd?: unknown }>(
-  options: T[],
-  sort: "recommended" | "nearest_first" | "quiet_first" | "busy_first",
-): T[] {
-  if (sort === "recommended") return options;
-  const rate = (option: T) => {
-    const crowd = option.crowd as { relativeRate?: number } | undefined;
-    return typeof crowd?.relativeRate === "number"
-      ? crowd.relativeRate
-      : undefined;
-  };
-  const keyed = options.map((option, index) => ({ option, index }));
-  if (sort === "nearest_first") {
-    keyed.sort(
-      (a, b) =>
-        (a.option.distanceMeters ?? Number.POSITIVE_INFINITY) -
-          (b.option.distanceMeters ?? Number.POSITIVE_INFINITY) ||
-        a.index - b.index,
-    );
-    return keyed.map((entry) => entry.option);
-  }
-  const direction = sort === "quiet_first" ? 1 : -1;
-  keyed.sort((a, b) => {
-    const left = rate(a.option);
-    const right = rate(b.option);
-    if (left === undefined && right === undefined) return a.index - b.index;
-    if (left === undefined) return 1;
-    if (right === undefined) return -1;
-    return (left - right) * direction || a.index - b.index;
-  });
-  return keyed.map((entry) => entry.option);
-}
+/* 정렬도 공용 함수 하나만 쓴다. 따로 두었을 때 `basis` 가중치가 빠져 있었다. */
+const sortFlowOptions = sortSimpleOptions;
 
 /* 붐빔은 아이콘 한 개와 단어 하나로. 색만으로 뜻을 나르지 않도록 단어를
    항상 붙인다. 값이 없으면 그 사실을 그대로 적는다. */
@@ -2176,10 +2147,9 @@ export default function FlowApp() {
                     {shareMessage && <p>{shareMessage}</p>}
                   </div>
                 )}
-                <p className={styles.proofId}>
-                  {tr("복구 요청 ID", "Recovery request ID")}{" "}
-                  <code>{recoveryRequestId}</code>
-                </p>
+                {/* 성공 화면에서 요청 ID를 뺐다. 잘 끝난 여행에서 여행자가
+                    이 값으로 할 일이 없다. 실패 화면에는 그대로 남는다 —
+                    거기서는 문의할 때 쓰는 유일한 단서다. */}
               </div>
             ) : currentExecutionStep ? (
               <>

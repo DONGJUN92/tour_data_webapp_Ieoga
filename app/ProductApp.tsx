@@ -3727,6 +3727,44 @@ export function ProductApp() {
                 );
                 setGeoAttribution(place.sourceLabel ?? "");
               }}
+              /* 두 탭을 잇는 자리. "시간이 비었어요"에서 찾은 곳을 일정 초안의
+                 **첫 방문지**로 넣고 복구 탭으로 넘긴다. 이후 지켜야 할 약속만
+                 채우면 그 곳을 넣고도 약속을 지킬 수 있는지 바로 따져 볼 수
+                 있다.
+
+                 초안은 덮어쓰지 않고 **빈 자리부터 채운다.** 이미 적어 둔
+                 일정을 이 버튼 한 번으로 지워 버리면, 되돌릴 방법이 없다. */
+              onPlanFromPlace={(place) => {
+                setJourneyDraft((previous) => {
+                  const target =
+                    previous.stops.findIndex(
+                      (stop) => !stop.fixed && !stop.title.trim(),
+                    ) ??
+                    -1;
+                  const index = target >= 0 ? target : 0;
+                  return {
+                    ...previous,
+                    stops: previous.stops.map((stop, stopIndex) =>
+                      stopIndex === index
+                        ? {
+                            ...stop,
+                            title: place.title,
+                            address: place.address,
+                            type: stopTypeFromTourismContent(
+                              place.contentTypeId,
+                            ),
+                          }
+                        : stop,
+                    ),
+                  };
+                });
+                changeTab("recover");
+                window.requestAnimationFrame(() => {
+                  document
+                    .getElementById("main-content")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+              }}
             />
           </section>
         )}

@@ -515,3 +515,65 @@
     align-items: start;
   }
 }
+
+/* 대안 정렬 칩. 여행 복구 화면과 같은 축(추천·가까운·한적·붐비는)을 쓰고
+   생김새도 맞춘다 — 같은 일을 하는 컨트롤이 화면마다 다르게 생기면 여행자가
+   화면마다 규칙을 새로 배워야 한다. */
+.sortRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.sortChip,
+.sortActive {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sortChip {
+  border: 1px solid #d7dee6;
+  background: #ffffff;
+  color: #333d4b;
+}
+
+.sortActive {
+  border: 1px solid #0b6a69;
+  background: #0b6a69;
+  color: #ffffff;
+}
+
+.sortChip:focus-visible,
+.sortActive:focus-visible {
+  outline: 3px solid #0b6a69;
+  outline-offset: 2px;
+}
+
+/* 찾은 곳을 일정으로 가져가는 버튼. 이 카드의 주 동작은 아니므로 테두리만
+   두되, 손가락으로 누를 크기는 지킨다. */
+.planFromPlace {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 14px;
+  border: 1px solid #0b6a69;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0b6a69;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planFromPlace:hover {
+  background: #f2f9f8;
+}
+
+.planFromPlace:focus-visible {
+  outline: 3px solid #0b6a69;
+  outline-offset: 2px;
+}

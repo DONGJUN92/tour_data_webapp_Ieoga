@@ -243,6 +243,9 @@ export async function POST(request: NextRequest) {
               : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
                 ? "일회성 현재 위치는 변경 가능한 일정 노드에만 지정할 수 있습니다."
               : "현재 일정을 저장하지 못했습니다.",
+          /* 원인을 화면까지 올린다. 로그를 볼 수 없는 자리에서 이 오류가 났고,
+             "재시도하세요"만 남으면 여행자도 우리도 다음 수가 없다. */
+          cause: "cause" in saved ? saved.cause : undefined,
         },
       },
       {

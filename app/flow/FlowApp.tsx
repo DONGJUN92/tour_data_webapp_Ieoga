@@ -112,10 +112,15 @@ type Language = "ko" | "en";
 class RequestError extends Error {
   requestId?: string;
 
-  constructor(message: string, requestId?: string) {
+  /* 서버가 실어 보낸 실패 원인. 로그를 볼 수 없는 자리에서 오류가 났고,
+     "재시도하세요"만 남으면 다음 수가 없다. */
+  cause?: string;
+
+  constructor(message: string, requestId?: string, cause?: string) {
     super(message);
     this.name = "RequestError";
     this.requestId = requestId;
+    this.cause = cause;
   }
 }
 
@@ -302,6 +307,10 @@ function requestIdFrom(
   );
 }
 
+function errorCauseOf(payload: Record<string, unknown> | undefined): string {
+  return readText(asRecord(payload?.error), ["cause"]) || "";
+}
+
 function requestErrorText(error: unknown, language: Language): string {
   const requestError = error as RequestError;
   const message =
@@ -309,9 +318,12 @@ function requestErrorText(error: unknown, language: Language): string {
     (language === "ko"
       ? "요청을 처리하지 못했습니다."
       : "The request could not be completed.");
-  return requestError?.requestId && !message.includes(requestError.requestId)
-    ? `${message} · ${language === "ko" ? "요청 ID" : "Request ID"} ${requestError.requestId}`
+  const withCause = requestError?.cause
+    ? `${message} (${requestError.cause})`
     : message;
+  return requestError?.requestId && !withCause.includes(requestError.requestId)
+    ? `${withCause} · ${language === "ko" ? "요청 ID" : "Request ID"} ${requestError.requestId}`
+    : withCause;
 }
 
 async function postJson(
@@ -331,7 +343,11 @@ async function postJson(
     const message =
       readText(asRecord(root?.error), ["message"]) ||
       "요청을 처리하지 못했습니다.";
-    throw new RequestError(message, requestIdFrom(response, root) || undefined);
+    throw new RequestError(
+      message,
+      requestIdFrom(response, root) || undefined,
+      errorCauseOf(root ?? undefined) || undefined,
+    );
   }
   return payload;
 }

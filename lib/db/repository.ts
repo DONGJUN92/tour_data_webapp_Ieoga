@@ -397,6 +397,7 @@ export async function saveItinerary(params: {
   | { saved: true; itinerary: StoredItinerary }
   | {
       saved: false;
+      cause?: string;
       reason:
         | "NOT_FOUND"
         | "INVALID_EPHEMERAL_LOCATION_NODE"
@@ -589,7 +590,15 @@ export async function saveItinerary(params: {
        못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
        D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
     console.error("[db] DB_UNAVAILABLE", error);
-    return { saved: false, reason: "DB_UNAVAILABLE" };
+    /* 로그를 볼 수 없는 환경에서도 원인이 드러나야 한다. D1이 준 문구를
+       그대로 짧게 실어 보낸다 — 값이나 자격 증명이 아니라 제약·컬럼 이름이
+       담기는 자리다. */
+    return {
+      saved: false,
+      reason: "DB_UNAVAILABLE",
+      cause: String(
+        (error as { message?: string } | undefined)?.message ?? error,
+      ).slice(0, 200), };
   }
 }
 

@@ -216,6 +216,8 @@ export function PlanWizard() {
           <h1>어디서 시작하세요?</h1>
           <ManualLocationPicker
             language="ko"
+            heading="출발지 찾기"
+            areaHint="시·군·구만 골라도 됩니다. 그 지역을 대표하는 지점에서 출발하는 것으로 잡습니다."
             onPick={(place) => {
               setStart(place);
               forward();
@@ -302,6 +304,10 @@ export function PlanWizard() {
           {!pending && (
             <ManualLocationPicker
               language="ko"
+              heading={
+                plan.length === 0 ? "약속 장소 찾기" : "갈 곳 찾기"
+              }
+              areaHint="시·군·구만 골라도 됩니다. 그 지역을 대표하는 지점을 기준으로 잡습니다."
               onPick={(place) => setPending(place)}
             />
           )}

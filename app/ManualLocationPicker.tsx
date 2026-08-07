@@ -41,6 +41,11 @@ type Props = {
   onRetryGeolocation?: () => void;
   geoBusy?: boolean;
   language?: "ko" | "en";
+  /* 이 고르개는 세 자리에서 쓴다: 지금 있는 곳, 출발지, 지켜야 할 약속.
+     문구를 `현재 장소`로 고정해 두었더니 약속을 고르는 화면에도 `현재 장소
+     직접 입력`이 떴다 — 무엇을 묻는지가 화면마다 다른데 안내가 하나였다. */
+  heading?: string;
+  areaHint?: string;
 };
 
 async function getJson(url: string): Promise<Record<string, unknown>> {
@@ -88,6 +93,8 @@ export function ManualLocationPicker({
   onRetryGeolocation,
   geoBusy = false,
   language = "ko",
+  heading,
+  areaHint,
 }: Props) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
 
@@ -225,7 +232,9 @@ export function ManualLocationPicker({
     <div className="manual-picker">
       <div className="manual-picker-head">
         <div>
-          <strong>{tr("현재 장소 직접 입력", "Enter your location")}</strong>
+          <strong>
+            {heading ?? tr("현재 장소 직접 입력", "Enter your location")}
+          </strong>
           <span>
             {tr(
               "장소명으로 찾거나, 시·군·구만 골라도 됩니다.",
@@ -369,10 +378,11 @@ export function ManualLocationPicker({
         {/* 구 전체를 대표하는 근사 지점이라는 사실을 적는다. 정확한 좌표인 것처럼
             보이면 "왜 이 근처가 아니지?"라는 오해가 생긴다. */}
         <p className="manual-picker-hint">
-          {tr(
-            "시·군·구를 고르면 그 지역을 대표하는 지점을 기준으로 찾습니다. 정확한 현재 위치가 아니라 그 구 일대라는 뜻입니다.",
-            "Picking a district searches around a representative point for that area — not your exact position.",
-          )}
+          {areaHint ??
+            tr(
+              "시·군·구를 고르면 그 지역을 대표하는 지점을 기준으로 찾습니다. 정확한 현재 위치가 아니라 그 구 일대라는 뜻입니다.",
+              "Picking a district searches around a representative point for that area — not your exact position.",
+            )}
         </p>
         {areaState === "error" && (
           <p className="manual-picker-error" role="alert">

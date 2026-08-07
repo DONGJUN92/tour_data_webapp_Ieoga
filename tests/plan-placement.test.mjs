@@ -192,3 +192,32 @@ test("화면에서 숨기는 텍스트가 실제로 숨겨진다", async () => {
      그려졌고, 글자가 세로로 한 줄씩 흘러 화면이 깨졌다. */
   assert.match(css, /\.sr-only \{[\s\S]*?clip: rect\(0, 0, 0, 0\);/);
 });
+
+test("고르개 문구가 그 화면이 묻는 것과 맞는다", async () => {
+  const picker = await src("../app/ManualLocationPicker.tsx");
+  /* 이 고르개는 세 자리에서 쓴다: 지금 있는 곳, 출발지, 지켜야 할 약속.
+     문구를 `현재 장소`로 고정해 두었더니 약속을 고르는 화면에도 `현재 장소
+     직접 입력`이 떴다 — 무엇을 묻는지가 화면마다 다른데 안내가 하나였다. */
+  assert.match(picker, /heading\?: string;/);
+  assert.match(picker, /areaHint\?: string;/);
+  assert.match(picker, /heading \?\? tr\("현재 장소 직접 입력"/);
+
+  const wizard = await src("../app/plan/PlanWizard.tsx");
+  assert.match(wizard, /heading="출발지 찾기"/);
+  assert.match(wizard, /"약속 장소 찾기"/);
+  assert.match(wizard, /"갈 곳 찾기"/);
+  /* 마법사 어디에도 `현재 장소`가 남으면 안 된다. */
+  assert.ok(
+    !/현재 장소/.test(wizard),
+    "일정 등록 화면에 다시 `현재 장소` 문구가 들어왔다",
+  );
+
+  /* 실제로 현재 위치를 묻는 두 화면은 기본 문구를 그대로 쓴다. */
+  for (const rel of ["../app/ProductApp.tsx", "../app/DiscoverWindowPanel.tsx"]) {
+    const source = await src(rel);
+    assert.ok(
+      !/heading="/.test(source.slice(source.indexOf("<ManualLocationPicker"))),
+      `${rel}는 현재 위치를 묻는 자리라 기본 문구를 써야 한다`,
+    );
+  }
+});

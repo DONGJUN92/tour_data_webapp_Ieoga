@@ -1750,14 +1750,10 @@ export default function FlowApp() {
                         )}
                       </span>
                     )}
-                    {hit.retention !== "persistable" && (
-                      <span className={styles.choiceWarn}>
-                        {tr(
-                          "공식 관광정보에 없는 장소입니다. 좌표만 사용하고 관광 근거는 붙지 않습니다.",
-                          "Not in the official tourism dataset. Only the coordinate is used; no tourism evidence is attached.",
-                        )}
-                      </span>
-                    )}
+                    {/* 카카오 로컬 장소의 면책 문구를 뺐다. 여행자는 방금 자기가 고른 곳이
+                        공사 데이터셋에 있는지 없는지 궁금하지 않다. 좌표만 쓴다는
+                        사실은 우리 사정이고, 그 결과(관광 근거가 안 붙는 것)는
+                        복구안 화면에서 이미 드러난다. */}
                   </span>
                 </button>
               ))}
@@ -1999,7 +1995,11 @@ export default function FlowApp() {
                   {(() => {
                     const facts = [
                       { key: "availability", ko: "운영 정보", en: "Opening", value: option.availability },
-                      { key: "indoor", ko: "실내 조건", en: "Indoor", value: option.indoorSuitability },
+                      /* 실내 조건 상자를 뺐다. 이 상자는 여행자가 실내를
+                         **요청했을 때만** 뜨는데, 그때는 모든 후보가 실내라
+                         카드마다 같은 값이 된다. 같은 값이 모든 카드에 있으면
+                         카드를 고르는 데 쓰이지 않고, 내용도 "콘텐츠 유형으로
+                         판단했습니다"라는 우리 판정 과정이었다. */
                       { key: "accessibility", ko: "접근성", en: "Accessibility", value: option.accessibility },
 
                     ]

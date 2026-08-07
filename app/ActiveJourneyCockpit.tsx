@@ -60,10 +60,24 @@ function navigationUrl(step: JourneyExecutionStep): string {
 function navigationUrlFrom(
   step: JourneyExecutionStep,
   from: { latitude: number; longitude: number } | undefined,
-  fromLabel: string,
 ): string {
   if (!from) return navigationUrl(step);
-  return `https://map.kakao.com/link/from/${encodeURIComponent(fromLabel)},${from.latitude},${from.longitude}/to/${encodeURIComponent(step.title)},${step.latitude},${step.longitude}`;
+  /* `link/from/A/to/B`는 카카오맵이 인식하지 못한다. 실제로 열어 보면 경로가
+     통째로 버려지고 `map.kakao.com` 루트로 리다이렉트되어 **출발지도 목적지도
+     비어 있었다.** 사용자가 본 것이 이 화면이다.
+
+     동작하는 것은 `link/to/이름,위도,경도` 하나다. 이것을 열면 카카오가
+     `?rt=,,584038,793115&rt2=천연기념물센터`로 바꿔 준다 — 목적지는 채워지되
+     출발지 자리는 비어 있고, 좌표계가 WGS84가 아니라 WCONGNAMUL이라 우리가
+     출발지를 직접 끼워 넣을 수 없다.
+
+     출발지를 함께 넘길 수 있는 것은 앱 스킴뿐이다. 앱이 있으면 두 지점이 모두
+     채워지고, 없으면 웹으로 떨어져 목적지만 채워진다. */
+  const scheme = `kakaomap://route?sp=${from.latitude},${from.longitude}&ep=${step.latitude},${step.longitude}&by=CAR`;
+  return typeof navigator !== "undefined" &&
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    ? scheme
+    : navigationUrl(step);
 }
 
 export function ActiveJourneyCockpit({
@@ -270,7 +284,6 @@ export function ActiveJourneyCockpit({
                       latitude: Number(position.coords.latitude.toFixed(5)),
                       longitude: Number(position.coords.longitude.toFixed(5)),
                     },
-                    tr("현재 위치", "My location"),
                   );
                 },
                 () => {

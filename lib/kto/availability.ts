@@ -64,24 +64,40 @@ function currentDateNumber(now = new Date()): number {
  * 갈 수 있는지 판단하는 재료다. */
 const ALWAYS_OPEN = /(상시\s*개방|연중\s*무휴|24\s*시간|항시\s*개방)/u;
 
+/* 계절·요일별로 시간이 다른 곳이 흔하다. 공사 원문은 `[하절기(3~10월)]
+ * 09:30~17:30 [동절기(11~2월)] 10:00~17:00`처럼 구간 표시를 대괄호로 준다.
+ * 이것을 한 줄에 이어 붙이면 어느 시간이 어느 기간의 것인지 세어 가며 읽어야
+ * 한다. 대괄호 앞에서 줄을 나눠 **한 줄에 한 조건**만 오게 한다. */
+function splitByCondition(value: string): string {
+  return value
+    .replace(/\s*(\[[^\]]+\])\s*/gu, "\n$1 ")
+    .split("\n")
+    .map((line) => line.replace(/\s+/gu, " ").replace(/^[·,/\s]+|[·,/\s]+$/gu, ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function hoursLine(operatingHours: string, restDate: string): string {
-  const hours = operatingHours.replace(/\s+/gu, " ").trim();
+  const hours = splitByCondition(operatingHours.replace(/\s+/gu, " ").trim());
   const rest = restDate.replace(/\s+/gu, " ").trim();
   const head = !hours
     ? ""
     : ALWAYS_OPEN.test(hours) && hours.length <= 12
       ? hours
-      : `운영시간 ${hours}`;
+      : `운영시간 ${hours.includes("\n") ? `\n${hours}` : hours}`;
   const tail = rest ? `휴무 ${rest}` : "";
-  return [head, tail].filter(Boolean).join(" · ");
+  return [head, tail].filter(Boolean).join("\n");
 }
 
 function hoursLineEn(operatingHours: string, restDate: string): string {
   const hours = operatingHours.replace(/\s+/gu, " ").trim();
   const rest = restDate.replace(/\s+/gu, " ").trim();
-  return [hours ? `Hours ${hours}` : "", rest ? `Closed ${rest}` : ""]
+  return [
+    hours ? `Hours ${splitByCondition(hours)}` : "",
+    rest ? `Closed ${rest}` : "",
+  ]
     .filter(Boolean)
-    .join(" · ");
+    .join("\n");
 }
 
 function parseTimeRanges(value: string): Array<[number, number]> {
@@ -227,18 +243,8 @@ export function evaluateAvailabilityItem(
       restDate: restDate || undefined,
       contact: contact || undefined,
       checkedAt,
-      note: [
-        intervalInside ? "도착 시각에 문을 엽니다." : "이 시간에는 닫혀 있습니다.",
-        hoursLine(operatingHours, restDate),
-      ]
-        .filter(Boolean)
-        .join(" "),
-      noteEn: [
-        intervalInside ? "Open when you arrive." : "Closed at that time.",
-        hoursLineEn(operatingHours, restDate),
-      ]
-        .filter(Boolean)
-        .join(" "),
+      note: hoursLine(operatingHours, restDate),
+      noteEn: hoursLineEn(operatingHours, restDate),
       audit,
     };
   }
@@ -317,20 +323,8 @@ export function evaluateAvailabilityItem(
          실행 가능한 안내다. */
       /* 원문을 앞세운다. 우리가 자동 대조를 못 했다는 사실은 뒤에 짧게 붙인다 —
          여행자가 먼저 봐야 할 것은 몇 시에 여는가이지 우리 사정이 아니다. */
-      note: [
-        hoursLine(operatingHours, restDate),
-        "도착 시각과 자동으로 대조하지는 못했습니다.",
-        contact ? `확인: ${contact}` : "",
-      ]
-        .filter(Boolean)
-        .join(" · "),
-      noteEn: [
-        hoursLineEn(operatingHours, restDate),
-        "We could not match this against your arrival time automatically.",
-        contact ? `Contact: ${contact}` : "",
-      ]
-        .filter(Boolean)
-        .join(" · "),
+      note: hoursLine(operatingHours, restDate),
+      noteEn: hoursLineEn(operatingHours, restDate),
       audit,
     };
   }

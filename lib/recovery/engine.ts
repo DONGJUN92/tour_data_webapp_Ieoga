@@ -849,8 +849,12 @@ function buildTravelPurposeProof(params: {
       originalStopTitle,
       replacementTitle: params.replacementTitle,
       evidenceSource: "KorService2",
-      statement: `${withParticle(originalStopTitle, "와/과")} 같은 관광·체험 목적으로 이어지는 공식 관광 콘텐츠입니다.`,
-      statementEn: `Official tourism content that continues the same sightseeing intent as ${originalStopTitle}.`,
+      /* 문장은 비운다. 관광 목적끼리 이어지는 것은 이 앱이 후보를 고르는
+         전제라 모든 카드에 똑같이 붙었고, 같은 말이 모든 카드에 있으면
+         카드를 고르는 데 아무 도움이 되지 않는다. 판정 자체(`status`)는
+         남아 목적이 **바뀐** 경우에만 문장이 나간다. */
+      statement: "",
+      statementEn: "",
     };
   }
 
@@ -1996,6 +2000,17 @@ function buildWhy(
     push(
       `한국관광공사 좌표 기준 직선거리 ${meters.toLocaleString("ko-KR")}m입니다.`,
       `${meters.toLocaleString("en-US")} m in a straight line from the official coordinates.`,
+    );
+  }
+
+  /* 연락처는 운영 정보 상자에서 뺐다. 그 상자는 "몇 시에 여는가" 하나만
+     답해야 읽히고, 전화번호는 그 답이 아니라 다음 행동이다. 버리지 않고
+     행동 목록인 이 불릿으로 옮긴다. */
+  const availabilityContact = candidate.availability?.contact;
+  if (availabilityContact) {
+    push(
+      `운영시간을 도착 전에 확인하려면 ${availabilityContact}로 문의할 수 있습니다.`,
+      `To confirm the hours before you go, call ${availabilityContact}.`,
     );
   }
 

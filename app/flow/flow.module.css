@@ -688,11 +688,23 @@
   background: var(--canvas);
 }
 
+.guideFacts > dl.factWide,
+.activeFacts > dl.factWide {
+  grid-column: 1 / -1;
+}
+
 .guideFacts dt,
 .activeFacts dt {
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 700;
+}
+
+/* 운영시간은 조건마다 줄을 나눠 만들어 온다. 그 줄바꿈을 살려야 하절기와
+   동절기가 구분된다. */
+.guideFacts > dl.factWide dd,
+.activeFacts > dl.factWide dd {
+  white-space: pre-line;
 }
 
 .guideFacts dd,

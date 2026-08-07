@@ -1984,12 +1984,15 @@ export default function FlowApp() {
                         {tr("거리", "Distance")}
                       </div>
                     </div>
+                    {/* `✓`/`!` 하나로는 무엇이 검증됐는지 알 수 없었고, 확인이
+                        필요한 항목은 이미 카드 위 경고와 아래 불릿이 말한다.
+                        그 자리에 여행자가 실제로 쓰는 값을 넣는다. */}
                     <div className={styles.stat}>
                       <div className={styles.statVal}>
-                        {requiresConfirmation ? "!" : "✓"}
+                        {crowdBadgeText(option.crowd, language) || "—"}
                       </div>
                       <div className={styles.statKey}>
-                        {tr("검증", "Status")}
+                        {tr("붐빔", "Crowd")}
                       </div>
                     </div>
                   </div>
@@ -2005,14 +2008,11 @@ export default function FlowApp() {
                       { key: "availability", ko: "운영 정보", en: "Opening", value: option.availability },
                       { key: "indoor", ko: "실내 조건", en: "Indoor", value: option.indoorSuitability },
                       { key: "accessibility", ko: "접근성", en: "Accessibility", value: option.accessibility },
-                      { key: "crowd", ko: "붐빔 정도", en: "Crowd", value: option.crowd },
+
                     ]
                       .map((fact) => ({
                         ...fact,
-                        text:
-                          fact.key === "crowd"
-                            ? crowdBadgeText(fact.value, language)
-                            : evidenceText(fact.value, language),
+                        text: evidenceText(fact.value, language),
                       }))
                       .filter((fact) => {
                         if (!fact.text) return false;
@@ -2020,7 +2020,6 @@ export default function FlowApp() {
                            사실 자체가 다른 후보와 비교할 때 쓰인다. 나머지는
                            우리 요청 조건에 대한 설명이라 상자를 쓸 값어치가
                            없다. */
-                        if (fact.key === "crowd") return true;
                         return !/(요청하지 않았|찾지 못했|확인하지 못했|필수 조건으로 쓰지 않았|not requested|could not|no .*available)/i.test(
                           fact.text,
                         );
@@ -2029,7 +2028,16 @@ export default function FlowApp() {
                     return (
                       <div className={styles.guideFacts}>
                         {facts.map((fact) => (
-                          <dl key={fact.key}>
+                          /* 운영시간 원문은 한 줄로 안 끝난다 — 하절기·동절기가
+                             따로 있고 휴무 요일이 붙는다. 절반 폭에 넣으면
+                             열 줄짜리 좁은 기둥이 되어 읽히지 않으므로 가로
+                             전체를 준다. */
+                          <dl
+                            key={fact.key}
+                            className={
+                              fact.key === "availability" ? styles.factWide : undefined
+                            }
+                          >
                             <dt>{tr(fact.ko, fact.en)}</dt>
                             <dd>{fact.text}</dd>
                           </dl>
@@ -2038,7 +2046,7 @@ export default function FlowApp() {
                     );
                   })()}
 
-                  {option.purposePreservation?.statement && (
+                  {!!option.purposePreservation?.statement && (
                     <p className={styles.cardAddr} style={{ marginTop: 14 }}>
                       {(language === "en" &&
                         option.purposePreservation.statementEn) ||

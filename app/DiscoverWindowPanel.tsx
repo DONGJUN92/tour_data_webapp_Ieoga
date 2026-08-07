@@ -10,6 +10,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import styles from "./DiscoverWindowPanel.module.css";
+import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import {
   AUDIENCES,
@@ -49,7 +50,10 @@ type Props = {
   geoAttribution: string;
   analyticsConsent: boolean;
   onRequestLocation: () => void;
-  onManualLocation: () => void;
+  /* 직접 입력한 위치를 받는다. 예전에는 이 자리에서 여행 복구 탭으로 화면을
+     바꿔 버려, 버튼을 누른 사용자가 지금 하려던 일과 입력한 조건을 함께
+     잃었다. */
+  onManualLocation: (place: ManualPlace) => void;
 };
 
 function tr(language: Language, ko: string, en: string): string {
@@ -99,6 +103,8 @@ export default function DiscoverWindowPanel({
   onRequestLocation,
   onManualLocation,
 }: Props) {
+  /* 직접 입력을 이 화면 안에서 편다. 탭을 바꾸면 지금 하려던 일이 사라진다. */
+  const [manualOpen, setManualOpen] = useState(false);
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
   const [plannedStayMinutes, setPlannedStayMinutes] = useState<number>(60);
   const [audience, setAudience] = useState<Audience>("general");
@@ -315,14 +321,29 @@ export default function DiscoverWindowPanel({
                   ? tr(language, "확인 중…", "Locating…")
                   : tr(language, "현재 위치 자동 입력", "Use my location")}
               </button>
-              <button type="button" onClick={onManualLocation}>
+              <button
+                type="button"
+                onClick={() => setManualOpen((open) => !open)}
+                aria-expanded={manualOpen}
+              >
                 {tr(
                   language,
-                  "위치 권한 없이 직접 입력",
-                  "Enter a place instead",
+                  manualOpen ? "직접 입력 닫기" : "위치 권한 없이 직접 입력",
+                  manualOpen ? "Close manual entry" : "Enter a place instead",
                 )}
               </button>
             </div>
+          )}
+          {manualOpen && (
+            <ManualLocationPicker
+              language={language}
+              geoBusy={geoState === "loading"}
+              onRetryGeolocation={onRequestLocation}
+              onPick={(place) => {
+                onManualLocation(place);
+                setManualOpen(false);
+              }}
+            />
           )}
           {geoMessage && (
             <p

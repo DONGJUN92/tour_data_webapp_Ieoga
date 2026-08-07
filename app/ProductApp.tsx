@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { JourneyExecution } from "@/lib/recovery/execution";
 import { WeatherGlanceStrip } from "./WeatherGlanceStrip";
+import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
@@ -2306,6 +2307,29 @@ export function ProductApp() {
                           </button>
                         )}
                       </div>
+
+                      {/* 장소명을 모를 때를 위한 두 번째 길.
+                          여행 중에는 지금 서 있는 곳의 이름을 모르는 일이 흔하다.
+                          그때 장소명만 요구하면 아무것도 할 수 없다. 시·군·구만
+                          골라도 그 일대를 기준으로 찾을 수 있게 한다. */}
+                      <ManualLocationPicker
+                        language={language}
+                        onPick={(place) => {
+                          setLatitude(String(place.latitude));
+                          setLongitude(String(place.longitude));
+                          setOriginLabel(place.title);
+                          setAreaCode(place.areaCode ?? "");
+                          setSigunguCode(place.sigunguCode ?? "");
+                          setPlaceKeyword(place.title);
+                          setPlaceResults([]);
+                          setPlaceSearchState("idle");
+                          setGeoState("success");
+                          setGeoMessage(
+                            `${place.title} 기준으로 찾습니다. 위치 권한은 쓰지 않았습니다.`,
+                          );
+                          setGeoAttribution(place.sourceLabel ?? "");
+                        }}
+                      />
                     </div>
                   )}
                 </fieldset>
@@ -3640,9 +3664,23 @@ export function ProductApp() {
               geoAttribution={geoAttribution}
               analyticsConsent={analyticsConsent}
               onRequestLocation={requestGeolocation}
-              /* 위치 직접 입력은 복구 탭의 검색 흐름을 그대로 쓴다. 개인정보
-                 처리(좌표 절삭·POST 전송·보관 정책)가 한 곳에만 있어야 한다. */
-              onManualLocation={() => changeTab("recover")}
+              /* 직접 입력한 위치를 **이 화면에서 그대로 받는다.**
+                 예전에는 여기서 복구 탭으로 화면을 바꿔 버려, 버튼을 누른
+                 사용자가 지금 하려던 일과 입력한 조건을 함께 잃었다. 좌표
+                 절삭·POST 전송·보관 정책은 요청을 만드는 쪽에 그대로 있으므로
+                 개인정보 처리가 흩어지지 않는다. */
+              onManualLocation={(place: ManualPlace) => {
+                setLatitude(String(place.latitude));
+                setLongitude(String(place.longitude));
+                setOriginLabel(place.title);
+                setAreaCode(place.areaCode ?? "");
+                setSigunguCode(place.sigunguCode ?? "");
+                setGeoState("success");
+                setGeoMessage(
+                  `${place.title} 기준으로 찾습니다. 위치 권한은 쓰지 않았습니다.`,
+                );
+                setGeoAttribution(place.sourceLabel ?? "");
+              }}
             />
           </section>
         )}

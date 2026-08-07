@@ -327,7 +327,13 @@ test("정렬 축은 값이 있는 후보만 줄 세우고 없는 후보는 따�
      목록에 섞으면 "왜 이 위치인가"를 설명할 수 없다. */
   assert.deepEqual(
     OPTION_SORTS.map((entry) => entry.value),
-    ["recommended", "quiet_first", "busy_first", "open_first"],
+    [
+      "recommended",
+      "quiet_first",
+      "busy_first",
+      "nearest_first",
+      "open_first",
+    ],
   );
   const options = [
     { id: "a", title: "붐빔", crowd: { relativeRate: 80 } },
@@ -448,5 +454,69 @@ test("운영 여부 정렬은 닫힌 곳을 지우지 않고 맨 아래로 보�
     ["open", "unknown", "none", "closed"],
   );
   /* 운영 여부는 모두에게 값이 있으므로 따로 내릴 묶음이 없다. */
+  assert.deepEqual(sorted.unranked, []);
+});
+
+test("위치 직접 입력이 탭을 바꾸지 않고 제자리에서 열린다", async () => {
+  const panel = await src("../app/DiscoverWindowPanel.tsx");
+  const product = await src("../app/ProductApp.tsx");
+  /* 예전에는 `onManualLocation={() => changeTab("recover")}`이었다. 버튼을
+     눌렀더니 다른 화면에 와 있고, 지금 하려던 일과 입력한 조건이 함께
+     사라졌다. */
+  assert.ok(
+    !/onManualLocation=\{\(\) => changeTab\("recover"\)\}/.test(product),
+    "직접 입력이 다시 탭을 바꾼다",
+  );
+  assert.match(panel, /const \[manualOpen, setManualOpen\] = useState\(false\)/);
+  assert.match(panel, /<ManualLocationPicker/);
+  /* 고른 위치를 그 자리에서 받아 좌표·행정구역까지 채운다. */
+  assert.match(product, /onManualLocation=\{\(place: ManualPlace\) => \{/);
+  assert.match(product, /setAreaCode\(place\.areaCode \?\? ""\)/);
+  assert.match(product, /setSigunguCode\(place\.sigunguCode \?\? ""\)/);
+});
+
+test("장소명을 몰라도 시·군·구로 위치를 정할 수 있다", async () => {
+  const picker = await src("../app/ManualLocationPicker.tsx");
+  const product = await src("../app/ProductApp.tsx");
+  /* 여행 중에는 지금 서 있는 곳의 이름을 모르는 일이 흔하다. 장소명만
+     요구하면 그때 아무것도 할 수 없다. */
+  assert.match(picker, /\/api\/v1\/regions"/);
+  assert.match(picker, /\/api\/v1\/regions\/\$\{regionCode\}\/districts`/);
+  assert.match(picker, /data-testid="manual-picker-region"/);
+  assert.match(picker, /data-testid="manual-picker-district"/);
+  /* 행정구역 코드는 검색 결과가 아니라 사용자가 고른 값을 쓴다. */
+  assert.match(picker, /areaCode: regionCode,\s*\n\s*sigunguCode: districtCode,/);
+  /* 구 전체를 대표하는 근사 지점임을 밝힌다. */
+  assert.match(picker, /정확한 현재 위치가 아니라 그 구 일대라는 뜻입니다/);
+  /* 두 탭이 같은 컴포넌트를 쓴다. */
+  assert.match(product, /<ManualLocationPicker/);
+});
+
+test("가까운 순 정렬은 거리로 줄 세우고 값 없는 후보를 지우지 않는다", async () => {
+  const { OPTION_SORTS, sortOptionsByCrowd } = await import(
+    "../app/product-app-model.ts"
+  );
+  assert.deepEqual(
+    OPTION_SORTS.map((entry) => entry.value),
+    [
+      "recommended",
+      "quiet_first",
+      "busy_first",
+      "nearest_first",
+      "open_first",
+    ],
+  );
+  const options = [
+    { id: "far", distanceMeters: 4200 },
+    { id: "none" },
+    { id: "near", distanceMeters: 800 },
+    { id: "mid", distanceMeters: 2100 },
+  ];
+  const sorted = sortOptionsByCrowd(options, "nearest_first");
+  assert.deepEqual(
+    sorted.ranked.map((o) => o.id),
+    ["near", "mid", "far", "none"],
+    "거리 값이 없는 후보는 뒤로 보내되 지우지 않는다",
+  );
   assert.deepEqual(sorted.unranked, []);
 });

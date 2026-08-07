@@ -1098,6 +1098,13 @@ export const OPTION_SORTS = [
     hintEn: "Highest predicted crowding first.",
   },
   {
+    value: "nearest_first",
+    ko: "가까운 순",
+    en: "Nearest first",
+    hint: "현재 위치에서 가까운 곳부터 봅니다. 직선거리가 아니라 실제 경로 거리입니다.",
+    hintEn: "Closest first, by the actual routed distance.",
+  },
+  {
     value: "open_first",
     ko: "운영 여부",
     en: "Open now first",
@@ -1145,6 +1152,24 @@ export function sortOptionsByCrowd(
   sort: OptionSort,
 ): SortedOptionGroups<RecoveryOption> {
   if (sort === "recommended") return { ranked: options, unranked: [] };
+  if (sort === "nearest_first") {
+    /* 거리는 후보마다 있다(경로를 못 얻으면 직선 추정이라도 들어간다). 값이
+       없는 후보만 뒤로 보낸다 — 지우지는 않는다. */
+    const meters = (option: RecoveryOption) =>
+      typeof option.distanceMeters === "number"
+        ? option.distanceMeters
+        : Number.POSITIVE_INFINITY;
+    return {
+      ranked: options
+        .map((option, index) => ({ option, index }))
+        .sort(
+          (a, b) =>
+            meters(a.option) - meters(b.option) || a.index - b.index,
+        )
+        .map((entry) => entry.option),
+      unranked: [],
+    };
+  }
   if (sort === "open_first") {
     /* 운영 여부는 모든 후보에 값이 있다(모르면 `unknown`). 그래서 따로 내릴
        묶음이 없다. */

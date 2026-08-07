@@ -6440,3 +6440,42 @@ body .hero-promise {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 탭 두 개를 감싼 래퍼. `display: contents`라 자식 버튼이 바깥 줄의 배치를
+   그대로 쓴다 — `role="tablist"` 의미를 지키면서 겉보기 한 줄을 유지한다. */
+.desktop-nav-tabs {
+  display: contents;
+}
+
+/* `/flow`로 가는 링크. 탭과 같은 모양이어야 한 줄로 읽힌다.
+   `.desktop-nav button` 규칙이 여러 곳에 흩어져 있어 링크에도 같은 값을 적어
+   둔다. 배경은 두지 않는다 — 활성 탭과 구분되어야 하고, 이 항목은 "지금 보고
+   있는 화면"이 아니라 "다른 화면으로 가는 길"이다. */
+.desktop-nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.desktop-nav-link:hover {
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+.desktop-nav-link:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 하단 바의 `/flow` 링크도 버튼과 같은 모양으로 맞춘다. 셋이 같은 줄에서
+   높이와 글꼴이 어긋나면 하나만 다른 것처럼 보인다. */
+.mobile-nav a[data-testid="mobile-nav-flow"] {
+  text-decoration: none;
+}

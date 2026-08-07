@@ -1413,9 +1413,19 @@ export function ProductApp() {
           </span>
         </a>
 
-        <nav
+        {/* 탭 두 개와 `/flow` 링크를 한 줄로 보여 준다.
+            `/flow`는 다른 화면이라 탭이 아니다 — 탭은 같은 화면 안의 패널을
+            여는 것이고, 링크는 화면을 옮긴다. 그래서 `role="tablist"` 안에
+            넣지 않고 형제로 두되, 겉보기에는 같은 줄에 놓는다. 안쪽 래퍼는
+            `display: contents`라 기존 배치가 그대로 유지된다. */}
+        <div
           className="desktop-nav"
+          role="navigation"
           aria-label={language === "en" ? "Main navigation" : "주요 메뉴"}
+        >
+        <nav
+          className="desktop-nav-tabs"
+          aria-label={language === "en" ? "Views" : "화면 전환"}
           role="tablist"
           onKeyDown={handleTabKeyDown}
         >
@@ -1443,17 +1453,23 @@ export function ProductApp() {
           >
             {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
           </button>
-          {/* 지역 개선 미션 탭을 여행자 화면에서 뺐다.
-              이 앱의 정체성은 "여행이 틀어졌을 때 다음 예약을 지키는 것"이다.
-              지자체에 보내는 개선 과제는 그 여행자가 지금 해야 할 결정과 아무
-              관계가 없고, 위기 순간에 탭 하나를 더 늘리는 것은 방해다.
-              기능 자체는 policy 화면과 insights API에 그대로 있어 지자체·심사
-              용도로 쓸 수 있다. */}
-          {/* 데이터 투명성은 상단 탭에서 뺐다. 여행 중에 급히 쓰는 화면의
-              첫 줄에 있을 내용이 아니다 — 출처와 갱신 시각은 궁금할 때 찾아
-              보는 것이고, 그 자리는 하단 메뉴(개인정보 처리방침·이용약관 옆)가
-              맞다. 화면 자체는 그대로 있고 하단 "데이터 출처"로 들어간다. */}
         </nav>
+        {/* 예전에는 이 기능이 헤더 오른쪽 끝의 `지금 바로 복구` 버튼이었고,
+            820px 미만에서는 아예 숨겨졌다. 이름도 무엇이 다른지 말해 주지
+            않았다 — 옆의 `여행 복구`도 지금 바로 하는 일이기 때문이다.
+
+            실제 차이는 **일정을 미리 등록하지 않아도 된다**는 것이다.
+            무슨 일이 생겼는지, 지금 어디인지, 몇 시까지 어디로 가야 하는지
+            세 번만 답하면 된다. 그것이 여행자가 얻는 값이므로 이름에 그대로
+            적는다. */}
+        <a
+          className="desktop-nav-link"
+          href="/flow"
+          data-testid="nav-flow"
+        >
+          {language === "en" ? "Recover, no setup" : "등록 없이 복구"}
+        </a>
+        </div>
 
         <div className="header-actions">
           <div
@@ -1489,10 +1505,9 @@ export function ProductApp() {
           </button>
           {/* Bridge recovery is the fast path: it needs no registered
               itinerary, so it is the primary entry rather than the tab. */}
-          <a className="header-cta" href="/flow">
-            {language === "en" ? "Recover now" : "지금 바로 복구"}
-            <span aria-hidden="true">→</span>
-          </a>
+          {/* `지금 바로 복구` 버튼을 헤더에서 뺐다. 탭 줄로 옮겼으므로 같은
+              곳으로 가는 길이 둘이 될 이유가 없고, 이 버튼은 820px 미만에서
+              숨겨져 휴대폰에서는 보이지도 않았다. */}
         </div>
       </header>
 
@@ -4214,6 +4229,12 @@ export function ProductApp() {
           <span aria-hidden="true">◷</span>
           {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
         </button>
+        {/* 데스크톱 탭 줄과 같은 셋을 같은 순서로 둔다. 이 항목만 다른 화면으로
+            가는 링크라 `button`이 아니라 `a`다. */}
+        <a href="/flow" data-testid="mobile-nav-flow">
+          <span aria-hidden="true">◇</span>
+          {language === "en" ? "Recover, no setup" : "등록 없이 복구"}
+        </a>
       </nav>
 
       <footer className="product-footer">

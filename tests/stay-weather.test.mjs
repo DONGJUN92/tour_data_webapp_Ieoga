@@ -564,3 +564,56 @@ test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
     assert.ok(nav.includes(label), `모바일 내비에 ${label} 없음`);
   }
 });
+
+test("등록 없이 복구가 탭 줄과 하단 바 양쪽에 같은 이름으로 있다", async () => {
+  const product = await src("../app/ProductApp.tsx");
+  /* 예전에는 헤더 오른쪽 끝의 `지금 바로 복구` 버튼이었고 820px 미만에서는
+     숨겨져 휴대폰에서는 보이지도 않았다. 이름도 무엇이 다른지 말해 주지
+     않았다 — 옆의 `여행 복구`도 지금 바로 하는 일이다. */
+  assert.ok(
+    !/className="header-cta" href="\/flow"/.test(product),
+    "헤더 CTA가 아직 남아 있다",
+  );
+  /* 화면에 그려지는 문자열만 본다. 주석에는 왜 바꿨는지가 남아 있어도 된다. */
+  assert.ok(
+    !/[:?]\s*"지금 바로 복구"/.test(product),
+    "뜻이 겹치던 옛 이름이 아직 화면에 그려진다",
+  );
+  /* 실제 차이는 일정을 미리 등록하지 않아도 된다는 것이고, 이름이 그것을
+     말한다. */
+  const label = "등록 없이 복구";
+  assert.equal([...label.replace(/\s/g, "")].length, 6, "이름이 6자를 넘는다");
+  assert.match(product, /data-testid="nav-flow"/);
+  assert.match(product, /data-testid="mobile-nav-flow"/);
+  assert.equal(
+    (product.match(/등록 없이 복구/g) || []).length,
+    2,
+    "탭 줄과 하단 바 중 한쪽에만 있다",
+  );
+
+  /* 다른 화면으로 가는 링크이므로 탭이 아니다. `role="tablist"` 안에 넣으면
+     탭 의미가 깨진다 — 탭은 같은 화면의 패널을 열고, 링크는 화면을 옮긴다. */
+  assert.match(product, /className="desktop-nav-tabs"/);
+  assert.match(product, /<a\s*\n?\s*className="desktop-nav-link"/);
+  const tablist = product.slice(
+    product.indexOf('className="desktop-nav-tabs"'),
+    product.indexOf('data-testid="nav-flow"'),
+  );
+  assert.ok(
+    tablist.includes("</nav>"),
+    "링크가 tablist 안에 들어가 있다",
+  );
+
+  /* 하단 바는 셋을 같은 순서로 둔다. */
+  const nav = product.slice(
+    product.indexOf('className="mobile-nav"'),
+    product.indexOf('<footer className="product-footer">'),
+  );
+  const order = ["여행 복구", "지금 갈 곳 찾기", "등록 없이 복구"];
+  let cursor = -1;
+  for (const item of order) {
+    const at = nav.indexOf(item);
+    assert.ok(at > cursor, `하단 바 순서가 데스크톱과 다르다: ${item}`);
+    cursor = at;
+  }
+});

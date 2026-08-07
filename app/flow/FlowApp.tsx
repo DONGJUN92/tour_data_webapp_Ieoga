@@ -432,6 +432,13 @@ export default function FlowApp() {
   const [apptQuery, setApptQuery] = useState("");
   const [apptHits, setApptHits] = useState<PlaceHit[]>([]);
   const [apptPlace, setApptPlace] = useState<PlaceHit | null>(null);
+  /* 등록한 일정을 적용 뒤에 한 번 더 고쳐 쓰기 위해 들고 있는다. 등록 시점의
+     노드는 `지금 있는 곳`과 `약속` 둘뿐이고, 고른 대안은 그 사이에 들어간다. */
+  const [registered, setRegistered] = useState<{
+    id: string;
+    nowIso: string;
+    nodes: unknown[];
+  } | null>(null);
   const [apptBusy, setApptBusy] = useState(false);
   const [apptNote, setApptNote] = useState("");
 
@@ -979,6 +986,9 @@ export default function FlowApp() {
         asRecord(registeredRoot?.itinerary) ?? registeredRoot,
         ["id"],
       );
+      if (itineraryId) {
+        setRegistered({ id: itineraryId, nowIso, nodes });
+      }
       if (!itineraryId) {
         throw new Error("일정을 등록하지 못했습니다. 잠시 후 다시 시도해 주세요.");
       }
@@ -1140,6 +1150,73 @@ export default function FlowApp() {
         );
       }
       setExecution(nextExecution as unknown as JourneyExecution);
+      /* 저장된 일정을 세 곳으로 다시 쓴다.
+         `지금 있는 곳` → `고른 곳` → `약속`.
+
+         지금까지는 고른 곳이 `지금 있는 곳`을 **대체**해서, 실행 화면은 세
+         단계로 보이는데 저장된 일정은 두 곳뿐이었다. 나중에 그 일정을 다시
+         열면 어디를 다녀왔는지가 남지 않는다.
+
+         도착 시각은 `현재 시각 + 이동 시간`이다. 그 값이 약속 시각을 넘으면
+         쓰지 않는다. 서버는 이 순서를 거부하지 않지만(운영에서 확인: 뒤집힌
+         순서도 201로 저장된다) 약속보다 늦게 도착하는 일정을 기록으로 남기면
+         나중에 그 일정을 여는 사람에게 거짓을 말하는 것이다. 그때는 고치지
+         않고 둔다 — 실행은 이미 성공했다. */
+      void (async () => {
+        if (!registered) return;
+        const travelMinutes = selectedOption.estimatedTravelMinutes;
+        const latitude = selectedOption.latitude;
+        const longitude = selectedOption.longitude;
+        if (
+          typeof travelMinutes !== "number" ||
+          typeof latitude !== "number" ||
+          typeof longitude !== "number"
+        ) {
+          return;
+        }
+        const arrival = new Date(
+          new Date(registered.nowIso).getTime() + travelMinutes * 60_000,
+        );
+        const appointment = asRecord(registered.nodes[1])?.startAt;
+        if (
+          typeof appointment !== "string" ||
+          arrival.getTime() >= new Date(appointment).getTime()
+        ) {
+          return;
+        }
+        try {
+          await postJson("/api/v1/itineraries", {
+            ephemeralLocationNodeIds: ["now"],
+            itinerary: {
+              id: registered.id,
+              title: "오늘의 여행",
+              timezone: "Asia/Seoul",
+              audience,
+              nodes: [
+                registered.nodes[0],
+                {
+                  id: "chosen",
+                  sequence: 1,
+                  type: "visit" as const,
+                  title: selectedOption.title,
+                  startAt: arrival.toISOString(),
+                  locked: false,
+                  reservation: false,
+                  location: {
+                    latitude,
+                    longitude,
+                    label: selectedOption.title,
+                  },
+                },
+                { ...(asRecord(registered.nodes[1]) ?? {}), sequence: 2 },
+              ],
+            },
+          });
+        } catch {
+          /* 기록을 남기지 못해도 복구 자체는 이미 적용됐다. 여기서 사용자에게
+             오류를 보이면 성공한 일을 실패로 읽게 만든다. */
+        }
+      })();
       setActionMessage(
         tr(
           "복구안이 적용됐습니다. 아래 길찾기와 도착 확인을 순서대로 진행해 주세요.",
@@ -1167,6 +1244,8 @@ export default function FlowApp() {
     acknowledgedOptionId,
     recoveryRequestId,
     recoveryPersisted,
+    registered,
+    audience,
     go,
     tr,
   ]);

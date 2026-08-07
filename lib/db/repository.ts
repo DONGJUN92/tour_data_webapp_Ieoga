@@ -584,7 +584,11 @@ export async function saveItinerary(params: {
         expiresAt,
       },
     };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { saved: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -774,7 +778,11 @@ export async function getOwnedSessionItinerary(params: {
         })),
       },
     };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { found: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1389,7 +1397,11 @@ export async function activateRecoveryExecution(params: {
     return execution
       ? { activated: true, execution }
       : { activated: false, reason: "INVALID_STATE" };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { activated: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1770,7 +1782,11 @@ export async function persistHealth(
     // D1 rolls the complete batch back when any individual upsert fails.
     await db.batch(writes);
     return { persisted: true };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1929,7 +1945,11 @@ export async function persistPolicySnapshot(params: {
         },
       });
     return { persisted: true };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1961,7 +1981,11 @@ export async function persistRegionPackMetadata(params: {
       activatedAt: new Date().toISOString(),
     });
     return { persisted: true };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1973,7 +1997,11 @@ export async function deleteSessionData(
     const db = getDb();
     await db.delete(sessions).where(eq(sessions.id, sessionId));
     return { persisted: true };
-  } catch {
+  } catch (error) {
+    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
+       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
+       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
+    console.error("[db] DB_UNAVAILABLE", error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }

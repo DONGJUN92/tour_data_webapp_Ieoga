@@ -92,7 +92,8 @@ test("production home server-renders intact Korean nationwide markers", async ()
 
 test("production entry and routes do not activate prototype or synthetic fallback paths", async () => {
   const [page, capabilities, routeFiles] = await Promise.all([
-    source("app/page.tsx"),
+    /* 앱 본체는 `/app`으로 옮겼다. `/`는 로고와 버튼 셋만 있는 랜딩이다. */
+    source("app/app/page.tsx"),
     source("app/api/v1/capabilities/route.ts"),
     sourceFiles("app/api"),
   ]);

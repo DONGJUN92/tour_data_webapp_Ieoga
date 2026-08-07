@@ -114,3 +114,38 @@ test("출발지 자리는 어느 경로로도 빼앗기지 않는다", async () 
   assert.deepEqual(insert(["출발지", "약속"], "append"), ["출발지", "약속", "고른곳"]);
   assert.deepEqual(insert([], "prepend"), ["고른곳"]);
 });
+
+test("랜딩은 로고와 버튼 셋만 두고, 직행 링크는 건너뛴다", async () => {
+  const landing = await src("../app/page.tsx");
+  /* 설명 문구를 붙이기 시작하면 랜딩이 아니라 소개 페이지가 된다. 이 화면을
+     보는 사람은 읽으러 온 것이 아니라 다음 행동을 고르러 왔다. */
+  assert.match(landing, /지금 어떤 상황인가요\?/);
+  for (const [href, label] of [
+    ["/app", "일정이 틀어졌어요"],
+    [String.raw`/app\?view=discover`, "시간이 비었어요"],
+    ["/plan", "여행 일정을 등록할래요"],
+  ]) {
+    assert.match(landing, new RegExp(href));
+    assert.match(landing, new RegExp(label));
+  }
+  /* 앱 본체는 `/app`으로 옮겼다. `/`가 곧 앱이면 처음 온 사람이 이 앱이 뭘
+     해 주는지 알기 전에 일정 입력 폼부터 읽어야 한다. */
+  const appPage = await src("../app/app/page.tsx");
+  assert.match(appPage, /import \{ ProductApp \}/);
+  assert.ok(
+    !/ProductApp/.test(landing),
+    "랜딩이 다시 앱 본체를 띄운다",
+  );
+});
+
+test("일정 등록은 한 화면에 한 질문만 묻는다", async () => {
+  const wizard = await src("../app/plan/PlanWizard.tsx");
+  assert.match(wizard, /const STEPS: Step\[\] = \["date", "start", "appointment", "confirm"\];/);
+  /* 언제든 뒤로 갈 수 있어야 한다. 되돌릴 수 없는 마법사는 폼보다 나쁘다. */
+  assert.match(wizard, /const back = \(\) => \{/);
+  assert.match(wizard, /role="progressbar"/);
+  /* 저장 실패는 삼키지 않는다 — 서버가 실어 보낸 원인까지 보여 준다. */
+  assert.match(wizard, /payload\.error\?\.cause/);
+  /* 약속 시각은 30분 단위. 여행자는 분 단위로 계획하지 않는다. */
+  assert.match(wizard, /HALF_HOUR_TIMES/);
+});

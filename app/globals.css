@@ -6717,3 +6717,119 @@ body .option-footer-actions a:focus-visible {
   outline: 3px solid var(--brand);
   outline-offset: 2px;
 }
+
+/* 랜딩. 읽을 것을 최소로 두고 손가락이 닿을 것만 크게 둔다. */
+.landing {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px 40px;
+}
+
+.landing-inner {
+  width: 100%;
+  max-width: 460px;
+}
+
+.landing-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 40px;
+}
+
+.landing-mark {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.landing-brand h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.landing-brand p {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.landing-question {
+  margin: 0 0 18px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.landing-choices {
+  display: grid;
+  gap: 12px;
+}
+
+.landing-choice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 18px;
+  border: 1px solid #e5e8eb;
+  border-radius: 18px;
+  background: #fff;
+  color: inherit;
+  text-decoration: none;
+  transition: transform 120ms var(--ease-spring), border-color 120ms ease;
+}
+
+.landing-choice:hover {
+  border-color: var(--brand);
+  transform: translateY(-1px);
+}
+
+.landing-choice:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.landing-choice-emoji {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.landing-choice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.landing-choice-text strong {
+  font-size: 17px;
+  font-weight: 800;
+  word-break: keep-all;
+}
+
+.landing-choice-text em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--ink-soft);
+  word-break: keep-all;
+}
+
+.landing-choice-arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 18px;
+}

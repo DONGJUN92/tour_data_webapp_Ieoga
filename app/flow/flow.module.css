@@ -561,6 +561,15 @@ a.cta {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  /* 배지가 `flex: 0 0 auto`라 줄지 않는다. 좁은 화면에서 `약속까지 여유가
+     가장 많은 곳`처럼 긴 배지가 폭을 가져가면 제목 칸이 낱말 하나도 못 담을
+     만큼 좁아진다. 그때는 배지를 아랫줄로 내린다. */
+  flex-wrap: wrap;
+}
+
+.cardTop > div {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 .cardTitle {
@@ -569,6 +578,11 @@ a.cta {
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--ink);
+  /* 한국어는 기본값이면 글자 아무 데서나 끊어져 `평송청소년문화센 / 터`가
+     된다. `keep-all`은 낱말 안에서 끊지 않게 하고, 그래도 안 들어갈 때만
+     `break-word`가 마지막 수단으로 끊는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .cardAddr {
@@ -576,6 +590,8 @@ a.cta {
   font-size: 13px;
   color: var(--muted);
   line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .badge {

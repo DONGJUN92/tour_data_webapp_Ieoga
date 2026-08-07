@@ -2320,10 +2320,12 @@ function toOption(
     crowd:
       candidate.crowdRate === undefined
         ? {
+            /* 이 곳이 집중률 데이터셋에 없다는 뜻이다. 측정한 매칭률은 유형별로
+               관광지 25~36%, 음식점 0%다 — 없는 것이 흔하다. 우리 판정 과정을
+               설명하는 대신 사실만 짧게 적는다. */
             status: "unavailable",
-            note: "이 곳과 정확히 일치하는 집중률 예측을 찾지 못했습니다.",
-            noteEn:
-              "No visitor-concentration forecast matched this place exactly.",
+            note: "공식 정보 없음",
+            noteEn: "No official data",
           }
         : {
             status: "available",
@@ -2331,16 +2333,22 @@ function toOption(
             baseDate: candidate.crowdBaseDate,
             percentileOfSeries: candidate.crowdPercentile,
             seriesDays: candidate.crowdSeriesDays,
-            /* 실측 근거: 장소 간 변동과 장소 내 변동이 거의 같다(비율 1.02).
-               그래서 절대값과 백분위를 함께 싣는다. */
+            /* 카드에 쓰는 것은 세 단계뿐이다. `60번째 백분위`는 여행자가
+               "붐비나?"의 답을 직접 계산하게 만든다. 원문 수치는 위 필드에
+               그대로 남아 근거 확인에 쓸 수 있다. */
+            level: crowdLevelOf(candidate),
             note:
-              candidate.crowdPercentile === undefined
-                ? "앞으로의 붐빔 정도 예측값입니다. 사람 수가 아니고, 이 곳의 최근 분포와 비교할 만큼의 값이 없습니다."
-                : `앞으로의 붐빔 정도 예측값입니다. 사람 수가 아닙니다. 이 곳의 최근 ${candidate.crowdSeriesDays ?? 30}일 예측 중 ${candidate.crowdPercentile}번째 백분위입니다.`,
+              crowdLevelOf(candidate) === "easy"
+                ? "원활"
+                : crowdLevelOf(candidate) === "busy"
+                  ? "혼잡"
+                  : "보통",
             noteEn:
-              candidate.crowdPercentile === undefined
-                ? "A forward-looking crowding forecast, not a headcount. Too few values to compare against this place's own recent range."
-                : `A forward-looking crowding forecast, not a headcount. It sits at the ${candidate.crowdPercentile}th percentile of this place's last ${candidate.crowdSeriesDays ?? 30} daily forecasts.`,
+              crowdLevelOf(candidate) === "easy"
+                ? "Quiet"
+                : crowdLevelOf(candidate) === "busy"
+                  ? "Busy"
+                  : "Average",
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,

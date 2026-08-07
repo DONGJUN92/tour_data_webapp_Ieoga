@@ -396,6 +396,21 @@ function sortFlowOptions<T extends { distanceMeters?: number; crowd?: unknown }>
   return keyed.map((entry) => entry.option);
 }
 
+/* 붐빔은 아이콘 한 개와 단어 하나로. 색만으로 뜻을 나르지 않도록 단어를
+   항상 붙인다. 값이 없으면 그 사실을 그대로 적는다. */
+const CROWD_ICON: Record<string, string> = {
+  easy: "🟢",
+  normal: "🟡",
+  busy: "🔴",
+};
+
+function crowdBadgeText(value: unknown, language: "ko" | "en"): string {
+  const record = (value ?? {}) as { level?: string; note?: string; noteEn?: string };
+  const icon = record.level ? CROWD_ICON[record.level] : undefined;
+  const label = (language === "en" ? record.noteEn : record.note) ?? "";
+  return icon ? `${icon} ${label}` : label;
+}
+
 function navigationUrl(step: {
   title: string;
   latitude: number;
@@ -1990,15 +2005,22 @@ export default function FlowApp() {
                       { key: "availability", ko: "운영 정보", en: "Opening", value: option.availability },
                       { key: "indoor", ko: "실내 조건", en: "Indoor", value: option.indoorSuitability },
                       { key: "accessibility", ko: "접근성", en: "Accessibility", value: option.accessibility },
-                      { key: "crowd", ko: "혼잡 예측", en: "Crowd forecast", value: option.crowd },
+                      { key: "crowd", ko: "붐빔 정도", en: "Crowd", value: option.crowd },
                     ]
                       .map((fact) => ({
                         ...fact,
-                        text: evidenceText(fact.value, language),
+                        text:
+                          fact.key === "crowd"
+                            ? crowdBadgeText(fact.value, language)
+                            : evidenceText(fact.value, language),
                       }))
                       .filter((fact) => {
                         if (!fact.text) return false;
-                        /* 확인하지 못했다는 말만 있는 항목은 상자에서 뺀다. */
+                        /* 붐빔은 "공식 정보 없음"도 남긴다 — 데이터가 없다는
+                           사실 자체가 다른 후보와 비교할 때 쓰인다. 나머지는
+                           우리 요청 조건에 대한 설명이라 상자를 쓸 값어치가
+                           없다. */
+                        if (fact.key === "crowd") return true;
                         return !/(요청하지 않았|찾지 못했|확인하지 못했|필수 조건으로 쓰지 않았|not requested|could not|no .*available)/i.test(
                           fact.text,
                         );

@@ -53,6 +53,37 @@ function currentDateNumber(now = new Date()): number {
   );
 }
 
+/* 운영시간을 사람이 읽는 한 줄로.
+ *
+ * 예전 문구들은 우리 판정 과정을 설명했다 — "단일 명확 구간 안에 전체 체류시간이
+ * 포함됩니다". 여행자가 알고 싶은 것은 **몇 시에 여는가**이고, 그 값은 우리가
+ * 이미 들고 있다. 판정 결과는 짧은 앞말로 붙이고 본문은 원문을 그대로 쓴다.
+ *
+ * `상시 개방`처럼 시간이 아닌 표기는 그대로만 적는다 — "운영시간 상시 개방"은
+ * 군더더기다. 운영 요일·휴무가 적혀 있으면 함께 적는다. 그것이 여행자가 오늘
+ * 갈 수 있는지 판단하는 재료다. */
+const ALWAYS_OPEN = /(상시\s*개방|연중\s*무휴|24\s*시간|항시\s*개방)/u;
+
+function hoursLine(operatingHours: string, restDate: string): string {
+  const hours = operatingHours.replace(/\s+/gu, " ").trim();
+  const rest = restDate.replace(/\s+/gu, " ").trim();
+  const head = !hours
+    ? ""
+    : ALWAYS_OPEN.test(hours) && hours.length <= 12
+      ? hours
+      : `운영시간 ${hours}`;
+  const tail = rest ? `휴무 ${rest}` : "";
+  return [head, tail].filter(Boolean).join(" · ");
+}
+
+function hoursLineEn(operatingHours: string, restDate: string): string {
+  const hours = operatingHours.replace(/\s+/gu, " ").trim();
+  const rest = restDate.replace(/\s+/gu, " ").trim();
+  return [hours ? `Hours ${hours}` : "", rest ? `Closed ${rest}` : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function parseTimeRanges(value: string): Array<[number, number]> {
   const normalized = value
     .replace(/시\s*(\d{1,2})\s*분/g, ":$1")
@@ -196,12 +227,18 @@ export function evaluateAvailabilityItem(
       restDate: restDate || undefined,
       contact: contact || undefined,
       checkedAt,
-      note: intervalInside
-        ? "한국관광공사 운영시간의 단일 명확 구간 안에 대체 일정의 전체 체류시간이 포함됩니다."
-        : "대체 일정의 도착부터 체류 종료까지 전체 구간이 한국관광공사 운영시간 안에 들어오지 않습니다.",
-      noteEn: intervalInside
-        ? "Your whole stay fits inside one clearly stated opening interval in the official data."
-        : "Your arrival-to-departure window does not fit inside the official opening hours.",
+      note: [
+        intervalInside ? "도착 시각에 문을 엽니다." : "이 시간에는 닫혀 있습니다.",
+        hoursLine(operatingHours, restDate),
+      ]
+        .filter(Boolean)
+        .join(" "),
+      noteEn: [
+        intervalInside ? "Open when you arrive." : "Closed at that time.",
+        hoursLineEn(operatingHours, restDate),
+      ]
+        .filter(Boolean)
+        .join(" "),
       audit,
     };
   }
@@ -245,9 +282,14 @@ export function evaluateAvailabilityItem(
         restDate: restDate || undefined,
         contact: contact || undefined,
         checkedAt,
-        note: partial
-          ? `체류 시간의 일부만 한국관광공사 운영시간(${operatingHours})과 겹칩니다. 적힌 어느 구간으로 읽어도 도착부터 체류 종료까지 전체가 들어오지 않습니다.`
-          : `한국관광공사 운영시간(${operatingHours})에 적힌 모든 구간 밖의 시간입니다. 어느 요일 기준으로 읽어도 이 시간에는 이용할 수 없습니다.`,
+        note: [
+          partial
+            ? "체류 시간의 일부만 겹칩니다."
+            : "이 시간에는 닫혀 있습니다.",
+          hoursLine(operatingHours, restDate),
+        ]
+          .filter(Boolean)
+          .join(" "),
         noteEn: partial
           ? `Only part of your stay overlaps the official opening hours (${operatingHours}); no stated interval covers it end to end.`
           : `Your visit falls outside every interval stated in the official hours (${operatingHours}). It is closed under any reading.`,
@@ -273,26 +315,22 @@ export function evaluateAvailabilityItem(
          우리가 판정하지 못했다는 사실은 그대로 밝히되, 판단 재료는 넘긴다.
          휴무일과 연락처가 있으면 함께 준다 — 전화 한 통이 "확인해 주세요"보다
          실행 가능한 안내다. */
+      /* 원문을 앞세운다. 우리가 자동 대조를 못 했다는 사실은 뒤에 짧게 붙인다 —
+         여행자가 먼저 봐야 할 것은 몇 시에 여는가이지 우리 사정이 아니다. */
       note: [
-        operatingHours
-          ? `공식 운영시간은 "${operatingHours}"입니다.`
-          : "공식 운영시간 표기가 있습니다.",
-        restDate ? `휴무는 "${restDate}"로 적혀 있습니다.` : "",
-        "표기 형식이 여러 갈래라 이어가가 도착 시각과 자동으로 대조하지는 못했습니다.",
-        contact ? `확실히 하려면 ${contact}로 확인할 수 있습니다.` : "",
+        hoursLine(operatingHours, restDate),
+        "도착 시각과 자동으로 대조하지는 못했습니다.",
+        contact ? `확인: ${contact}` : "",
       ]
         .filter(Boolean)
-        .join(" "),
+        .join(" · "),
       noteEn: [
-        operatingHours
-          ? `Official hours are listed as "${operatingHours}".`
-          : "Official opening hours are listed.",
-        restDate ? `Closing days: "${restDate}".` : "",
-        "The format varies, so we could not match it against your arrival time automatically.",
-        contact ? `You can confirm on ${contact}.` : "",
+        hoursLineEn(operatingHours, restDate),
+        "We could not match this against your arrival time automatically.",
+        contact ? `Contact: ${contact}` : "",
       ]
         .filter(Boolean)
-        .join(" "),
+        .join(" · "),
       audit,
     };
   }

@@ -171,10 +171,29 @@
 }
 
 .route em {
-  display: block;
   font-style: normal;
   font-size: 13px;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 장소와 시각을 한 줄에 둔다. `display: block`으로 시각을 아래로 내렸더니
+   완료 화면(`text-align: center`)에서 이름과 시각이 위아래로 갈라져 두 줄이
+   됐다. 시각은 오른쪽 끝으로 밀어 눈이 한 번에 훑을 수 있게 한다. */
+.route li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+}
+
+.route li > strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
 }
 
 .error {

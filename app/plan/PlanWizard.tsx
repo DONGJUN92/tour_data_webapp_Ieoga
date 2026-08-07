@@ -39,18 +39,31 @@ export function PlanWizard() {
   const index = STEPS.indexOf(step);
   /* 뒤로 가면 **그 단계의 입력을 비운다.** 남겨 두었더니 다른 곳을 고르러
      돌아가도 이전 값이 그대로 보여, 무엇이 선택된 상태인지 알 수 없었다. */
+  /* 뒤로 가기는 **한 걸음씩** 되돌린다.
+   *
+   * 예전에는 단계 전체를 비웠다. 그래서 세 번째 여행지를 넣다가 뒤로 가면
+   * 출발지가 통째로 사라지고 담아 둔 목록만 남았다 — 화면에 1번이 없고 2번만
+   * 남은 것이 이 때문이다. 담는 중이던 것을 먼저 취소하고, 담은 것이 있으면
+   * 마지막 하나만 빼며, 둘 다 없을 때에만 이전 단계로 나간다. */
   const back = () => {
     setError("");
+    if (step === "appointment") {
+      if (pending) {
+        setPending(null);
+        setPendingLocked(true);
+        return;
+      }
+      if (plan.length) {
+        setPlan((previous) => previous.slice(0, -1));
+        return;
+      }
+    }
     if (index <= 0) return;
     const target = STEPS[index - 1];
     setPending(null);
     setPendingLocked(true);
+    /* 나가는 단계의 입력만 비운다. 앞 단계의 답은 건드리지 않는다. */
     if (target === "start") setStart(null);
-    if (target === "appointment") setPlan([]);
-    if (target === "date") {
-      setStart(null);
-      setPlan([]);
-    }
     setStep(target);
   };
   const forward = () => {
@@ -232,7 +245,10 @@ export function PlanWizard() {
           <h1>
             {plan.length === 0
               ? "꼭 지킬 약속이 있나요?"
-              : `${plan.length + 1}번째로 갈 곳이 있나요?`}
+              : /* 1번은 출발지이므로 `plan[0]`이 이미 2번이다. `+1`이면
+                   목록에 2번이 보이는데 제목은 `2번째로 갈 곳`이라고 물어
+                   화면 안에서 번호가 어긋났다. */
+                `${plan.length + 2}번째로 갈 곳이 있나요?`}
           </h1>
 
           {/* 고른 곳과 시각을 **검색창보다 위에** 둔다. 아래에 두었더니 장소를

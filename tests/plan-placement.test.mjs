@@ -176,14 +176,38 @@ test("여행지를 원하는 만큼 이어 붙일 수 있다", async () => {
   assert.match(wizard, /useState\(true\);/);
 });
 
-test("뒤로 가면 그 단계의 입력이 비워진다", async () => {
+test("뒤로 가기는 한 걸음씩 되돌린다", async () => {
   const wizard = await src("../app/plan/PlanWizard.tsx");
-  /* 남겨 두었더니 다른 곳을 고르러 돌아가도 이전 값이 그대로 보여, 무엇이
-     선택된 상태인지 알 수 없었다. 출발지도 마찬가지였다. */
+  /* 단계 전체를 비웠더니, 세 번째 여행지를 넣다가 뒤로 갔을 때 출발지가
+     통째로 사라지고 담아 둔 목록만 남았다 — 화면에 1번이 없고 2번만 남았다. */
+  assert.match(wizard, /setPlan\(\(previous\) => previous\.slice\(0, -1\)\);/);
+  assert.ok(
+    !/if \(target === "appointment"\) setPlan\(\[\]\);/.test(wizard),
+    "뒤로 가기가 다시 담은 목록을 통째로 비운다",
+  );
+  /* 담는 중이던 것이 먼저 취소된다. */
+  assert.match(wizard, /if \(pending\) \{[\s\S]{0,120}?return;/);
+  /* 나가는 단계의 입력만 비운다. 앞 단계의 답은 건드리지 않는다. */
   assert.match(wizard, /if \(target === "start"\) setStart\(null\);/);
-  assert.match(wizard, /if \(target === "appointment"\) setPlan\(\[\]\);/);
-  assert.match(wizard, /setPending\(null\);/);
-  assert.match(wizard, /setPendingLocked\(true\);/);
+});
+
+test("여행지 번호가 목록과 제목에서 어긋나지 않는다", async () => {
+  const wizard = await src("../app/plan/PlanWizard.tsx");
+  /* 1번은 출발지이므로 `plan[0]`이 이미 2번이다. `+1`이면 목록에 2번이
+     보이는데 제목은 `2번째로 갈 곳`이라고 물었다. */
+  assert.match(wizard, /\$\{plan\.length \+ 2\}번째로 갈 곳이 있나요\?/);
+  assert.match(wizard, /<span>\{entryIndex \+ 2\}<\/span>/);
+  assert.ok(
+    !/\$\{plan\.length \+ 1\}번째로/.test(wizard),
+    "제목 번호가 다시 목록보다 하나 작아졌다",
+  );
+
+  /* 실제 번호를 재현한다: 담은 것이 1개면 다음은 3번째다. */
+  const heading = (count) => count + 2;
+  const listNumber = (index) => index + 2;
+  assert.equal(listNumber(0), 2);
+  assert.equal(heading(1), 3, "2번을 담았으면 다음은 3번이다");
+  assert.equal(heading(0), 2);
 });
 
 test("화면에서 숨기는 텍스트가 실제로 숨겨진다", async () => {

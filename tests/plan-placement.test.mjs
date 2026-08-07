@@ -84,3 +84,33 @@ test("고른 결과가 화면에 보이게 만든다", async () => {
      돌아가지 않는다. */
   assert.match(app, /makeStop\(\{ type: "reservation", fixed: true \}\)/);
 });
+
+test("출발지 자리는 어느 경로로도 빼앗기지 않는다", async () => {
+  const app = await src("../app/ProductApp.tsx");
+  /* `[fresh(), ...stops]`로 넣었더니 고른 여행지가 1번을 차지하고 출발지가
+     뒤로 밀렸다. 1번은 출발지이고, 거기에 여행지가 들어가면 "지금 있는 곳에서
+     출발한다"는 전제가 깨져 이동 시간이 0으로 잡힌다. */
+  assert.ok(
+    !/\[fresh\(\), \.\.\.previous\.stops\]/.test(app),
+    "prepend가 다시 출발지보다 앞에 넣는다",
+  );
+  assert.match(app, /const afterOrigin = previous\.stops\.length \? 1 : 0;/);
+
+  /* 빈 초안에서도 1번은 현재 위치다. */
+  assert.match(app, /title: originLabel \|\| "지금 있는 곳"/);
+
+  /* "대신 넣기" 목록에서도 출발지는 빠진다. */
+  assert.match(app, /stops=\{journeyDraft\.stops\.slice\(1\)\.map/);
+  /* 다만 지역 판정에는 출발지도 넣는다 — 출발지가 대전이면 대전 대안은 같은
+     지역이다. */
+  assert.match(app, /areaStops=\{journeyDraft\.stops\.map/);
+
+  const insert = (stops, kind) => {
+    const next = [...stops];
+    next.splice(kind === "prepend" ? (stops.length ? 1 : 0) : next.length, 0, "고른곳");
+    return next;
+  };
+  assert.deepEqual(insert(["출발지", "약속"], "prepend"), ["출발지", "고른곳", "약속"]);
+  assert.deepEqual(insert(["출발지", "약속"], "append"), ["출발지", "약속", "고른곳"]);
+  assert.deepEqual(insert([], "prepend"), ["고른곳"]);
+});

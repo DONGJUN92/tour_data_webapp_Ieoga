@@ -86,7 +86,7 @@ export function PlanPlacementDialog({
           </p>
           <div className="plan-merge-actions">
             <button type="button" onClick={() => onChoose({ kind: "prepend" })}>
-              {tr("일정 맨 앞에 추가", "Add before the plan")}
+              {tr("출발지 다음에 추가", "Add right after the start")}
             </button>
             <button type="button" onClick={() => onChoose({ kind: "append" })}>
               {tr("일정 맨 뒤에 추가", "Add after the plan")}

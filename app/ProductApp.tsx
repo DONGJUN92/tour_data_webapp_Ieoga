@@ -801,13 +801,18 @@ export function ProductApp() {
           ),
         };
       }
-      return {
-        ...previous,
-        stops:
-          placement.kind === "prepend"
-            ? [fresh(), ...previous.stops]
-            : [...previous.stops, fresh()],
-      };
+      /* 1번 정류지는 **출발지**다. `prepend`는 "일정 맨 앞"이지 "출발지보다
+         앞"이 아니다. `[fresh(), ...stops]`로 넣었더니 고른 여행지가 1번을
+         차지하고 출발지가 뒤로 밀렸다 — 화면에서 확인된 증상이 이것이다.
+         출발지 다음, 즉 2번 자리에 넣는다. */
+      const afterOrigin = previous.stops.length ? 1 : 0;
+      const next = [...previous.stops];
+      next.splice(
+        placement.kind === "prepend" ? afterOrigin : next.length,
+        0,
+        fresh(),
+      );
+      return { ...previous, stops: next };
     });
     /* 편집기가 접혀 있으면 바뀐 일정이 보이지 않는다. 사용자가 방금 고른
        결과는 반드시 눈에 보여야 한다 — 이것이 "아무 일도 안 일어난다"의

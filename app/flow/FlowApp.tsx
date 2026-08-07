@@ -405,9 +405,18 @@ const CROWD_ICON: Record<string, string> = {
 };
 
 function crowdBadgeText(value: unknown, language: "ko" | "en"): string {
-  const record = (value ?? {}) as { level?: string; note?: string; noteEn?: string };
-  const icon = record.level ? CROWD_ICON[record.level] : undefined;
+  const record = (value ?? {}) as {
+    status?: string;
+    level?: string;
+    note?: string;
+    noteEn?: string;
+  };
   const label = (language === "en" ? record.noteEn : record.note) ?? "";
+  /* 인기 순위는 붐빔과 **다른 축**이라 같은 신호등 아이콘을 쓰면 안 된다.
+     초록을 보고 "지금 한산하다"로 읽는데, 실제로는 "이 지역에서 많이 찾는
+     곳"이라는 월 단위 집계다. 별표로 축을 갈라 놓는다. */
+  if (record.status === "popularity_rank") return label ? `⭐ ${label}` : "";
+  const icon = record.level ? CROWD_ICON[record.level] : undefined;
   return icon ? `${icon} ${label}` : label;
 }
 

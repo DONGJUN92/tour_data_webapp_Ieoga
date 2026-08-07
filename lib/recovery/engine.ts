@@ -112,6 +112,11 @@ type WorkingCandidate = {
      비교와 달리 단위 정의에 의존하지 않는다. */
   crowdPercentile?: number;
   crowdSeriesDays?: number;
+  /* 이 값이 **이 장소 자신의 것**인지, 주변 장소에서 빌려 온 것인지. 빌려 온
+     값을 직접 측정한 값과 같은 얼굴로 보여 주면 근거를 부풀리는 것이다. */
+  crowdBasis?: "place" | "nearby";
+  crowdNeighborCount?: number;
+  crowdNeighborMeters?: number;
   /* 이 후보에 **머무는 시간대**의 날씨. 출발지의 지금 하늘이 아니다. */
   stayWeather?: StayWeather;
   /* 이 후보 지점의 시점별 날씨(지금·1시간 후·2시간 후). 순위에는 쓰지 않고
@@ -557,6 +562,7 @@ function currentForecastByTitle(items: KtoItem[]): Map<
 function crowdComfortScore(candidate: {
   crowdRate?: number;
   crowdPercentile?: number;
+  crowdBasis?: "place" | "nearby";
 }): number {
   if (candidate.crowdRate === undefined) return 50;
   /* 단조 감소로 바꿨다. 예전에는 60·80을 경계로 한 3단 계단이어서 61과 79가
@@ -567,7 +573,78 @@ function crowdComfortScore(candidate: {
     if (candidate.crowdPercentile >= 85) score -= 12;
     else if (candidate.crowdPercentile <= 15) score += 8;
   }
+  /* 주변에서 빌려 온 값은 중립 쪽으로 줄인다. 같은 크기라도 이 장소를 직접
+     잰 값보다 확실하지 않으므로, 직접 잰 후보와 나란히 놓았을 때 그것을
+     이기고 올라가서는 안 된다. */
+  if (candidate.crowdBasis === "nearby") score = 50 + (score - 50) * 0.6;
   return Math.round(Math.min(100, Math.max(0, score)));
+}
+
+/* 집중률 데이터셋은 **관광지 전용**이다. 반경 5km 후보를 유형별로 세어 보면
+   음식점은 대전 중구 45곳·서울 종로구 86곳에서 매칭 0곳이고, 축제행사·숙박·
+   레포츠도 0%다. 관광지조차 26~27%에 그친다. 표본이 적어서가 아니라 대상에
+   없다.
+
+   그런데 우리는 이미 **시군구 전체 30일 시계열**을 받아 온다(종로 3,390행).
+   매칭된 곳에는 좌표가 있으므로, 값이 없는 후보는 가까운 이웃들의 값을 빌려
+   올 수 있다. 추가 호출이 한 건도 들지 않는다.
+
+   성심당 옆 골목 식당에 "이 일대가 오늘 얼마나 붐비는가"는 실제로 유효한
+   정보다. 다만 빌려 온 값임을 반드시 밝힌다 — 그 장소를 직접 잰 값과 같은
+   얼굴로 내보내면 근거를 부풀리는 것이다.
+
+   중앙값을 쓴다. 평균은 관광지 한 곳의 극단값이 골목 전체를 물들인다. */
+const CROWD_NEIGHBOR_RADIUS_METERS = 800;
+const CROWD_NEIGHBOR_MIN_SAMPLES = 2;
+
+function medianOf(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function withNeighborCrowd<
+  T extends {
+    latitude: number;
+    longitude: number;
+    crowdRate?: number;
+    crowdPercentile?: number;
+    crowdBaseDate?: string;
+    crowdBasis?: "place" | "nearby";
+    crowdNeighborCount?: number;
+    crowdNeighborMeters?: number;
+  },
+>(candidates: T[]): T[] {
+  const measured = candidates.filter(
+    (candidate) => candidate.crowdBasis === "place",
+  );
+  if (!measured.length) return candidates;
+  return candidates.map((candidate) => {
+    if (candidate.crowdBasis === "place") return candidate;
+    const near = measured
+      .map((other) => ({
+        other,
+        meters: haversineMeters(candidate, other),
+      }))
+      .filter((entry) => entry.meters <= CROWD_NEIGHBOR_RADIUS_METERS);
+    if (near.length < CROWD_NEIGHBOR_MIN_SAMPLES) return candidate;
+    const percentiles = near
+      .map((entry) => entry.other.crowdPercentile)
+      .filter((value): value is number => value !== undefined);
+    return {
+      ...candidate,
+      crowdRate: medianOf(near.map((entry) => entry.other.crowdRate ?? 0)),
+      crowdPercentile: percentiles.length ? medianOf(percentiles) : undefined,
+      crowdBaseDate: near[0].other.crowdBaseDate,
+      crowdBasis: "nearby" as const,
+      crowdNeighborCount: near.length,
+      crowdNeighborMeters: Math.round(
+        Math.min(...near.map((entry) => entry.meters)),
+      ),
+    };
+  });
 }
 
 /* 붐빔 정도를 세 단계로. **점수와 같은 함수에서 뽑는다** — 따로 계산하면
@@ -583,6 +660,7 @@ export type CrowdLevel = "easy" | "normal" | "busy";
 function crowdLevelOf(candidate: {
   crowdRate?: number;
   crowdPercentile?: number;
+  crowdBasis?: "place" | "nearby";
 }): CrowdLevel | undefined {
   if (candidate.crowdRate === undefined) return undefined;
   const score = crowdComfortScore(candidate);
@@ -2130,7 +2208,9 @@ function buildWhy(
           : "Forecast to be about average. A crowding forecast, not a live headcount.",
     );
   }
-  if (candidate.relatedRank !== undefined) {
+  /* 붐빔 칸이 비어 이 순위가 그 자리로 올라간 경우에는 불릿에 다시 적지
+     않는다. 같은 값을 한 카드에 두 번 적으면 카드만 길어진다. */
+  if (candidate.relatedRank !== undefined && candidate.crowdRate !== undefined) {
     push(
       `원래 일정과 함께 방문된 순위 ${candidate.relatedRank}위 기록이 있습니다.`,
       `Ranked #${candidate.relatedRank} among places visited together with your original stop.`,
@@ -2334,14 +2414,27 @@ function toOption(
     accessibility: candidate.accessibility,
     crowd:
       candidate.crowdRate === undefined
-        ? {
-            /* 이 곳이 집중률 데이터셋에 없다는 뜻이다. 측정한 매칭률은 유형별로
-               관광지 25~36%, 음식점 0%다 — 없는 것이 흔하다. 우리 판정 과정을
-               설명하는 대신 사실만 짧게 적는다. */
-            status: "unavailable",
-            note: "공식 정보 없음",
-            noteEn: "No official data",
-          }
+        ? candidate.relatedRank !== undefined
+          ? {
+              /* 붐빔은 못 구했지만 **다른 공사 API에 이 곳의 자리는 있다.**
+                 연관 관광지 순위는 집중률이 못 덮는 유형을 정확히 덮는다 —
+                 측정하면 음식점 16~35%, 쇼핑 17~60%, 축제행사 26%다.
+
+                 다만 이것은 붐빔이 아니라 **인기**다. 월 단위 집계라 요일도
+                 없다. 같은 단어로 부르면 없는 근거를 만드는 것이므로 축을
+                 갈라 놓고, 임의의 등급을 매기지 않고 순위 자체를 적는다. */
+              status: "popularity_rank",
+              relatedRank: candidate.relatedRank,
+              note: `인기 ${candidate.relatedRank}위`,
+              noteEn: `Popularity #${candidate.relatedRank}`,
+            }
+          : {
+              /* 세 축 어디에도 없다. 우리 판정 과정을 설명하는 대신 사실만
+                 짧게 적는다. */
+              status: "unavailable",
+              note: "공식 정보 없음",
+              noteEn: "No official data",
+            }
         : {
             status: "available",
             relativeRate: candidate.crowdRate,
@@ -2352,18 +2445,25 @@ function toOption(
                "붐비나?"의 답을 직접 계산하게 만든다. 원문 수치는 위 필드에
                그대로 남아 근거 확인에 쓸 수 있다. */
             level: crowdLevelOf(candidate),
-            note:
+            /* 빌려 온 값이면 반드시 밝힌다. 꼬리표 없이 내보내면 이 장소를
+               직접 잰 것처럼 읽힌다. */
+            basis: candidate.crowdBasis ?? "place",
+            neighborCount: candidate.crowdNeighborCount,
+            neighborMeters: candidate.crowdNeighborMeters,
+            note: `${
               crowdLevelOf(candidate) === "easy"
                 ? "원활"
                 : crowdLevelOf(candidate) === "busy"
                   ? "혼잡"
-                  : "보통",
-            noteEn:
+                  : "보통"
+            }${candidate.crowdBasis === "nearby" ? " (주변 기준)" : ""}`,
+            noteEn: `${
               crowdLevelOf(candidate) === "easy"
                 ? "Quiet"
                 : crowdLevelOf(candidate) === "busy"
                   ? "Busy"
-                  : "Average",
+                  : "Average"
+            }${candidate.crowdBasis === "nearby" ? " (nearby)" : ""}`,
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,
@@ -3251,6 +3351,7 @@ export async function recoverTrip(
         relatedRank,
       }),
       crowdRate: forecast?.rate,
+      crowdBasis: forecast ? ("place" as const) : undefined,
       crowdBaseDate: forecast?.baseDate,
       crowdPercentile: forecast?.percentileOfSeries,
       crowdSeriesDays: forecast?.seriesDays,
@@ -3265,6 +3366,16 @@ export async function recoverTrip(
       ...scoreCandidate(candidateWithoutScores, input),
     });
   }
+
+  /* 이웃 대체는 후보가 **모두 모인 뒤에** 해야 한다. 한 곳씩 처리하는
+     동안에는 주변에 무엇이 있는지 알 수 없다. 값이 바뀌었으므로 점수도 다시
+     매긴다 — 옛 점수로 정렬하면 대체값이 순위에 반영되지 않는다. */
+  const withNeighbors = withNeighborCrowd(preliminary).map((candidate) => ({
+    ...candidate,
+    ...scoreCandidate(candidate, input),
+  }));
+  preliminary.length = 0;
+  preliminary.push(...withNeighbors);
 
   preliminary.sort(
     (a, b) => b.baseScore - a.baseScore || a.distanceMeters - b.distanceMeters,

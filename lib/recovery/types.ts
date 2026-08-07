@@ -38,7 +38,11 @@ export type AccessibilityEvidence = {
 };
 
 export type CrowdEvidence = {
-  status: "available" | "unavailable";
+  /* 세 축이다. `available`은 집중률(직접 또는 주변 대체), `popularity_rank`는
+     연관 관광지 순위, `unavailable`은 어디에도 없음. 집중률 데이터셋은
+     관광지 전용이라 음식점·숙박·축제행사는 매칭률이 0%다 — 한 축만 두면 그
+     유형들은 영원히 빈칸이 된다. */
+  status: "available" | "popularity_rank" | "unavailable";
   relativeRate?: number;
   baseDate?: string;
   /* 오늘 값이 **그 장소 자신의** 최근 일별 분포에서 몇 번째 백분위인가(0~100).
@@ -48,6 +52,12 @@ export type CrowdEvidence = {
   seriesDays?: number;
   /* 카드에 쓰는 세 단계. 원문 수치는 근거 확인용으로 위에 그대로 남는다. */
   level?: "easy" | "normal" | "busy";
+  /* 이 값이 이 장소를 직접 잰 것인지, 반경 800m 이웃에서 빌려 온 것인지. */
+  basis?: "place" | "nearby";
+  neighborCount?: number;
+  neighborMeters?: number;
+  /* `popularity_rank`일 때의 연관 관광지 순위. 붐빔이 아니라 인기다. */
+  relatedRank?: number;
   note: string;
   noteEn?: string;
 };

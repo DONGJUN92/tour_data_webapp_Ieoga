@@ -2,6 +2,7 @@ import { getRuntimeSecret } from "@/lib/runtime-env";
 
 type KakaoDocument = {
   id?: string;
+  phone?: string;
   place_name?: string;
   address_name?: string;
   road_address_name?: string;
@@ -19,6 +20,10 @@ export type KakaoLocalPlace = {
   longitude: number;
   sourceLabel: "카카오 로컬";
   externalUrl?: string;
+  /* 카카오 로컬은 **영업시간을 주지 않는다**(반환 필드 실측: address·category·
+     phone·place_name·place_url·좌표). 하지만 전화번호는 준다. 공사 응답에
+     연락처가 없을 때 이 값이 "직접 확인하세요"를 실행 가능한 안내로 바꾼다. */
+  phone?: string;
   retention: "ephemeral";
 };
 
@@ -90,6 +95,7 @@ export async function searchKakaoLocal(params: {
         longitude,
         sourceLabel: "카카오 로컬",
         externalUrl: item.place_url?.trim() || undefined,
+        phone: (item.phone ?? "").trim() || undefined,
         retention: "ephemeral",
       },
     ];

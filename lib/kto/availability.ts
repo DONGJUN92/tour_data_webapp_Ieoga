@@ -263,10 +263,36 @@ export function evaluateAvailabilityItem(
       restDate: restDate || undefined,
       contact: contact || undefined,
       checkedAt,
-      note:
-        "한국관광공사 공식 운영시간은 있지만 자동으로 읽을 수 없는 형식입니다. 출발 전에 한 번 확인해 주세요.",
-      noteEn:
-        "Official opening hours exist but cannot be parsed automatically. Please confirm before you set out.",
+      /* **원문을 그대로 보여 준다.**
+         예전 문구는 "운영시간은 있지만 자동으로 읽을 수 없는 형식입니다.
+         출발 전에 한 번 확인해 주세요"였다. 우리가 그 시간을 **손에 들고
+         있으면서** 여행자에게 알아서 확인하라고 미룬 것이다. 기계가 못 읽는
+         것과 사람이 못 읽는 것은 다르다 — `[평일] 10:00~19:00 (입장 마감
+         18:00)`은 사람은 1초면 읽는다.
+
+         우리가 판정하지 못했다는 사실은 그대로 밝히되, 판단 재료는 넘긴다.
+         휴무일과 연락처가 있으면 함께 준다 — 전화 한 통이 "확인해 주세요"보다
+         실행 가능한 안내다. */
+      note: [
+        operatingHours
+          ? `공식 운영시간은 "${operatingHours}"입니다.`
+          : "공식 운영시간 표기가 있습니다.",
+        restDate ? `휴무는 "${restDate}"로 적혀 있습니다.` : "",
+        "표기 형식이 여러 갈래라 이어가가 도착 시각과 자동으로 대조하지는 못했습니다.",
+        contact ? `확실히 하려면 ${contact}로 확인할 수 있습니다.` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      noteEn: [
+        operatingHours
+          ? `Official hours are listed as "${operatingHours}".`
+          : "Official opening hours are listed.",
+        restDate ? `Closing days: "${restDate}".` : "",
+        "The format varies, so we could not match it against your arrival time automatically.",
+        contact ? `You can confirm on ${contact}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
       audit,
     };
   }
@@ -275,7 +301,10 @@ export function evaluateAvailabilityItem(
     status: "unknown",
     contact: contact || undefined,
     checkedAt,
-    note: "한국관광공사 응답에 운영시간 항목이 비어 있습니다. 출발 전에 확인해 주세요.",
+    /* 여기는 정말로 값이 없는 경우다. 그때도 연락처가 있으면 함께 준다. */
+    note: contact
+      ? `한국관광공사 응답에 운영시간 항목이 비어 있습니다. ${contact}로 확인할 수 있습니다.`
+      : "한국관광공사 응답에 운영시간 항목이 비어 있습니다.",
     noteEn:
       "The official response has no operating-hours field. Please confirm before you set out.",
     audit,

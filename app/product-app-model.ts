@@ -1016,11 +1016,30 @@ export function formatReferenceDate(value?: string): string {
   return formatDayOnly(value);
 }
 
-export function formatCrowd(value: unknown): string {
+/* 붐빔 정도를 아이콘 한 개와 단어 하나로.
+   `예측지수 39.0`은 여행자가 해석할 수 없는 숫자였다 — 39가 높은지 낮은지
+   알려면 다른 곳의 값과 비교해야 하는데 그 비교는 우리가 이미 했다.
+   색만으로 뜻을 나르지 않도록 아이콘 옆에 항상 단어를 붙인다. */
+const CROWD_LEVELS: Record<string, { icon: string; ko: string; en: string }> = {
+  easy: { icon: "🟢", ko: "원활", en: "Quiet" },
+  normal: { icon: "🟡", ko: "보통", en: "Average" },
+  busy: { icon: "🔴", ko: "혼잡", en: "Busy" },
+};
+
+export function crowdLevelBadge(
+  value: unknown,
+  language: "ko" | "en" = "ko",
+): { icon: string; label: string } | undefined {
   const record = asRecord(value);
-  if (typeof record?.relativeRate === "number") {
-    return `예측지수 ${(record.relativeRate as number).toFixed(1)}`;
-  }
+  const level = typeof record?.level === "string" ? record.level : undefined;
+  const entry = level ? CROWD_LEVELS[level] : undefined;
+  if (!entry) return undefined;
+  return { icon: entry.icon, label: language === "en" ? entry.en : entry.ko };
+}
+
+export function formatCrowd(value: unknown, language: "ko" | "en" = "ko"): string {
+  const badge = crowdLevelBadge(value, language);
+  if (badge) return `${badge.icon} ${badge.label}`;
   return compactValue(value);
 }
 

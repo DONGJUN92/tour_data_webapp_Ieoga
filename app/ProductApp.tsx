@@ -3387,8 +3387,8 @@ export function ProductApp() {
                                 <dd>{compactValue(option.accessibility)}</dd>
                               </dl>
                               <dl>
-                                <dt>집중 예측</dt>
-                                <dd>{formatCrowd(option.crowd)}</dd>
+                                <dt>붐빔 정도</dt>
+                                <dd>{formatCrowd(option.crowd, language)}</dd>
                               </dl>
                             </div>
                             {/* 이 후보 지점의 시점별 날씨. 위 기준 지점 줄과

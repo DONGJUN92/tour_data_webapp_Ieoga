@@ -46,6 +46,8 @@ export type CrowdEvidence = {
      못했다. 백분위는 단위가 무엇이든 잘 정의되므로 이쪽을 함께 싣는다. */
   percentileOfSeries?: number;
   seriesDays?: number;
+  /* 카드에 쓰는 세 단계. 원문 수치는 근거 확인용으로 위에 그대로 남는다. */
+  level?: "easy" | "normal" | "busy";
   note: string;
   noteEn?: string;
 };

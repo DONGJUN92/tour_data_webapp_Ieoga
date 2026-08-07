@@ -133,12 +133,23 @@ test("집중률을 사람 수로 말하지 않는다", async () => {
   const engine = await src("../lib/recovery/engine.ts");
   /* 실측에서 청와대(30일 평균 37.1)가 경운동민병옥가옥(81.5)보다 낮았다.
      이 값을 인원수로 읽으면 안 된다 — 좁은 곳은 적은 인원으로도 포화된다. */
-  assert.match(engine, /사람 수가 아니라 붐빔 정도에 대한 예측이며/);
+  assert.match(engine, /사람 수가 아니라 붐빔 정도 예측이며/);
   assert.match(engine, /A crowding forecast, not a live headcount\./);
-  /* 백분위 문구는 "이 곳 평소 대비"임을 밝혀야 한다. 다른 장소와 비교한
-     것으로 읽히면 안 된다. */
-  assert.match(engine, /이 곳 평소보다 유난히 붐비는 날입니다/);
-  assert.match(engine, /Unusually busy for this place\./);
+  /* 카드 문구는 세 단계로 줄였다. 숫자와 백분위를 늘어놓으면 "붐비나?"라는
+     질문의 답을 여행자가 직접 계산해야 한다. 원문 수치는 근거 확인용으로
+     남는다. */
+  assert.match(engine, /function crowdLevelOf\(candidate/);
+  assert.match(engine, /if \(score >= 70\) return "easy";/);
+  assert.match(engine, /if \(score >= 40\) return "normal";/);
+  assert.match(engine, /지금 예측으로는 붐비는 편입니다/);
+  /* 등급은 점수와 **같은 함수**에서 나와야 갈리지 않는다. */
+  assert.match(engine, /const score = crowdComfortScore\(candidate\);/);
+  /* 화면은 아이콘만으로 뜻을 나르지 않는다 — 색각 이상에서도 읽혀야 한다. */
+  const model = await src("../app/product-app-model.ts");
+  assert.match(model, /easy: \{ icon: "🟢", ko: "원활"/);
+  assert.match(model, /normal: \{ icon: "🟡", ko: "보통"/);
+  assert.match(model, /busy: \{ icon: "🔴", ko: "혼잡"/);
+  assert.match(model, /return `\$\{badge\.icon\} \$\{badge\.label\}`;/);
 });
 
 test("시간 단위 상승은 주장하지 않는다", async () => {

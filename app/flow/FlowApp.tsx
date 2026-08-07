@@ -118,36 +118,7 @@ class RequestError extends Error {
   }
 }
 
-/* The eight KTO services this product is built on. Judging distinguishes
-   official tourism data from supporting third-party providers, so the ledger
-   must not blur the two. */
-const KTO_SERVICES = new Set([
-  "KorService2",
-  "TarRlteTarService1",
-  "TatsCnctrRateService",
-  "KorWithService2",
-  "LocgoHubTarService1",
-  "AreaTarDemDsService",
-  "AreaTarResDemService",
-  "AreaTarDivService",
-]);
 
-/* Sources that actually changed this option's decision, split by origin. */
-function appliedSources(option: RecoveryOption): {
-  kto: string[];
-  external: string[];
-} {
-  const fromLedger = (option.dataContributions ?? [])
-    .filter((entry) => entry.status === "applied" && entry.source)
-    .map((entry) => entry.source as string);
-  const names = [
-    ...new Set((fromLedger.length ? fromLedger : (option.sources ?? [])).filter(Boolean)),
-  ];
-  return {
-    kto: names.filter((name) => KTO_SERVICES.has(name)),
-    external: names.filter((name) => !KTO_SERVICES.has(name)),
-  };
-}
 
 /* Engine reason codes rendered as something a traveller can act on.
 
@@ -2063,30 +2034,15 @@ export default function FlowApp() {
                     </ul>
                   )}
 
-                  {(() => {
-                    const { kto, external } = appliedSources(option);
-                    if (!kto.length && !external.length) return null;
-                    return (
-                      <div className={styles.ledger}>
-                        {kto.map((name) => (
-                          <span
-                            key={`${option.id}-${name}`}
-                            className={`${styles.ledgerChip} ${styles.ledgerChipKto}`}
-                          >
-                            {tr("관광공사", "KTO")} {name}
-                          </span>
-                        ))}
-                        {external.map((name) => (
-                          <span
-                            key={`${option.id}-${name}`}
-                            className={styles.ledgerChip}
-                          >
-                            {tr("보조", "Supporting")} {name}
-                          </span>
-                        ))}
-                      </div>
-                    );
-                  })()}
+                  {/* API 이름 칩을 뺐다. `관광공사 KorService2`·`보조 TMAP
+                      보행자 경로안내`는 여행자가 알 필요 없는 우리 쪽 사정이고,
+                      카드 한 장을 세로로 길게 만들면서 정작 읽어야 할 시간·거리·
+                      운영 정보를 아래로 밀어냈다.
+
+                      출처를 감추는 것은 아니다. 어떤 데이터로 판정했는지는
+                      `데이터 출처` 화면과 결과의 `sourceLedger`에 그대로 남아
+                      있고, 심사에서 확인할 수 있다. 카드는 결정을 돕는 자리이지
+                      계보를 밝히는 자리가 아니다. */}
 
                   <div className={styles.cardActions}>
                     <button

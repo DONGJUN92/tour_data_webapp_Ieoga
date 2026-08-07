@@ -570,6 +570,27 @@ function crowdComfortScore(candidate: {
   return Math.round(Math.min(100, Math.max(0, score)));
 }
 
+/* 붐빔 정도를 세 단계로. **점수와 같은 함수에서 뽑는다** — 따로 계산하면
+   갈라지고, 이 프로젝트는 그 갈림으로 라벨이 자기 카드의 수치와 반대가 된 적이
+   있다.
+
+   숫자를 그대로 보여 주던 문구("집중률 예측 39.04/100이고, 최근 30일 예측 중
+   60번째 백분위입니다")는 여행자가 묻지 않은 것을 답한다. 알고 싶은 것은
+   "붐비나?" 하나이고, 백분위는 그 답을 계산하라고 떠넘기는 것이다. 원문 수치는
+   근거 확인용으로 남겨 두고 카드에서는 세 단어로 말한다. */
+export type CrowdLevel = "easy" | "normal" | "busy";
+
+function crowdLevelOf(candidate: {
+  crowdRate?: number;
+  crowdPercentile?: number;
+}): CrowdLevel | undefined {
+  if (candidate.crowdRate === undefined) return undefined;
+  const score = crowdComfortScore(candidate);
+  if (score >= 70) return "easy";
+  if (score >= 40) return "normal";
+  return "busy";
+}
+
 /* 연관 관광지의 대분류를 후보의 콘텐츠 유형으로 옮긴다. 실데이터의 대분류는
    `음식`·`숙박`·`관광지` 셋뿐이어서(서울 종로·부산 해운대·제주 3,000여 행 확인)
    모호함 없이 매핑된다. */
@@ -1985,23 +2006,17 @@ function buildWhy(
       `You arrive at '${appointment.title}' with ${appointment.arrivalBufferMinutes} min to spare.`,
     );
   }
-  if (candidate.scheduleDiff.changedNodeCount === 1) {
-    const original =
-      candidate.scheduleDiff.originalNode?.title ?? "틀어진 일정";
-    push(
-      `'${original}' 한 곳만 바꾸고 나머지 일정은 그대로 둡니다.`,
-      `Only '${original}' changes. Every other stop stays as it was.`,
-    );
-  }
+  /* "한 곳만 바꾸고 나머지는 그대로 둡니다"를 뺐다. 이 앱이 하는 일이 그것
+     하나뿐이므로 모든 카드에 똑같이 붙었고, 모든 카드에 같은 문장이 있으면
+     카드를 고르는 데 아무 도움이 되지 않는다.
+
+     운영시간을 읽지 못했다는 문장도 뺐다. 같은 사실을 근거 항목이 **원문과
+     함께** 말하므로("공식 운영시간은 …입니다"), 여기서 한 번 더 적으면 원문
+     없는 쪽이 먼저 눈에 들어와 오히려 불친절하다. */
   if (candidate.availability.status === "confirmed_open") {
     push(
       "도착 시각에 문을 여는지 한국관광공사 공식 운영정보로 확인했습니다.",
       "Official operating data confirms it is open at your arrival time.",
-    );
-  } else if (candidate.availability.status === "official_hours_unstructured") {
-    push(
-      "공식 운영시간은 있지만 자동으로 읽을 수 없어 출발 전 확인이 필요합니다.",
-      "Official hours exist but cannot be parsed, so confirm before you set out.",
     );
   }
   if (candidate.indoor && indoorRequirement(input)) {
@@ -2085,28 +2100,19 @@ function buildWhy(
   }
   if (candidate.crowdRate !== undefined) {
     push(
-      /* 절대값 하나만 적으면 63이 높은지 낮은지 알 수 없다. 그 장소 자신의
-         최근 분포에서 어디인지를 함께 적어야 여행객이 쓸 수 있다. 두 값 다
-         **인원수가 아니다** — 실측에서 청와대(평균 37.1)가 경운동민병옥가옥
-         (81.5)보다 낮았다. 좁은 곳은 적은 인원으로도 포화된다. */
-      candidate.crowdPercentile === undefined
-        ? `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100입니다. 사람 수가 아니라 그 곳이 얼마나 붐빌지에 대한 예측이고, 이 곳의 최근 분포와 비교할 값이 부족합니다.`
-        : `집중률 예측 ${candidate.crowdRate.toFixed(2)}/100이고, 이 곳의 최근 ${candidate.crowdSeriesDays ?? 30}일 예측 중 ${candidate.crowdPercentile}번째 백분위인 날입니다. ${
-            candidate.crowdPercentile >= 85
-              ? "이 곳 평소보다 유난히 붐비는 날입니다."
-              : candidate.crowdPercentile <= 15
-                ? "이 곳 평소보다 유난히 한적한 날입니다."
-                : "이 곳 평소와 비슷한 수준입니다."
-          } 사람 수가 아니라 붐빔 정도에 대한 예측이며, 현장 실시간 인원수는 아닙니다.`,
-      candidate.crowdPercentile === undefined
-        ? `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100 — a crowding forecast rather than a headcount, and too few values to compare with this place's own range.`
-        : `Concentration forecast ${candidate.crowdRate.toFixed(2)}/100, at the ${candidate.crowdPercentile}th percentile of this place's last ${candidate.crowdSeriesDays ?? 30} daily forecasts. ${
-            candidate.crowdPercentile >= 85
-              ? "Unusually busy for this place."
-              : candidate.crowdPercentile <= 15
-                ? "Unusually quiet for this place."
-                : "About typical for this place."
-          } A crowding forecast, not a live headcount.`,
+      /* 여행자가 알고 싶은 것은 "붐비나?" 하나다. 숫자와 백분위를 늘어놓으면
+         그 답을 직접 계산하라고 떠넘기는 것이 된다. 원문 수치는 근거 화면에
+         남아 있으므로 "무엇을 근거로 그렇게 말했는가"는 여전히 답할 수 있다. */
+      crowdLevelOf(candidate) === "easy"
+        ? "지금 예측으로는 원활한 편입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
+        : crowdLevelOf(candidate) === "busy"
+          ? "지금 예측으로는 붐비는 편입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
+          : "지금 예측으로는 보통 수준입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다.",
+      crowdLevelOf(candidate) === "easy"
+        ? "Forecast to be quiet. A crowding forecast, not a live headcount."
+        : crowdLevelOf(candidate) === "busy"
+          ? "Forecast to be busy. A crowding forecast, not a live headcount."
+          : "Forecast to be about average. A crowding forecast, not a live headcount.",
     );
   }
   if (candidate.relatedRank !== undefined) {

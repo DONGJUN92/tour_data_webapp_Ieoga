@@ -22,19 +22,36 @@ export function PlanWizard() {
   const [date, setDate] = useState(todayInKorea());
   const [start, setStart] = useState<ManualPlace | null>(null);
   /* 약속은 하나로 끝나지 않는다. 여행자가 원하는 만큼 이어 붙인다. */
-  const [plan, setPlan] = useState<Array<{ place: ManualPlace; time: string }>>(
-    [],
-  );
+  const [plan, setPlan] = useState<
+    Array<{ place: ManualPlace; time: string; locked: boolean }>
+  >([]);
   const [pending, setPending] = useState<ManualPlace | null>(null);
   const [pendingTime, setPendingTime] = useState("14:00");
+  /* 잠금은 담을 때 고른다. 마지막을 자동으로 잠갔더니, 마지막 여행지가
+     예약이 아닌 경우에도 복구가 손댈 수 없는 곳이 되었다. 기본값은 켜 둔다 —
+     대개 마지막이 지켜야 할 약속이고, 잠긴 곳이 하나도 없으면 이 앱이 지킬
+     대상 자체가 사라진다. */
+  const [pendingLocked, setPendingLocked] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState("");
 
   const index = STEPS.indexOf(step);
+  /* 뒤로 가면 **그 단계의 입력을 비운다.** 남겨 두었더니 다른 곳을 고르러
+     돌아가도 이전 값이 그대로 보여, 무엇이 선택된 상태인지 알 수 없었다. */
   const back = () => {
     setError("");
-    if (index > 0) setStep(STEPS[index - 1]);
+    if (index <= 0) return;
+    const target = STEPS[index - 1];
+    setPending(null);
+    setPendingLocked(true);
+    if (target === "start") setStart(null);
+    if (target === "appointment") setPlan([]);
+    if (target === "date") {
+      setStart(null);
+      setPlan([]);
+    }
+    setStep(target);
   };
   const forward = () => {
     setError("");
@@ -68,15 +85,14 @@ export function PlanWizard() {
           },
         },
         ...plan.map((entry, entryIndex) => {
-          const last = entryIndex === plan.length - 1;
           return {
             id: `stop-${entryIndex + 1}`,
             sequence: entryIndex + 1,
-            type: last ? ("reservation" as const) : ("visit" as const),
+            type: entry.locked ? ("reservation" as const) : ("visit" as const),
             title: entry.place.title,
             startAt: `${date}T${entry.time}:00+09:00`,
-            locked: last,
-            reservation: last,
+            locked: entry.locked,
+            reservation: entry.locked,
             location: {
               latitude: entry.place.latitude,
               longitude: entry.place.longitude,
@@ -238,15 +254,27 @@ export function PlanWizard() {
                   </option>
                 ))}
               </select>
+              <label className={styles.lockRow}>
+                <input
+                  type="checkbox"
+                  checked={pendingLocked}
+                  onChange={(event) => setPendingLocked(event.target.checked)}
+                />
+                <span>
+                  <strong>이 일정은 못 바꿔요</strong>
+                  <em>예약·공연·교통편처럼 시간을 옮길 수 없는 곳</em>
+                </span>
+              </label>
               <button
                 type="button"
                 className={styles.primary}
                 onClick={() => {
                   setPlan((previous) => [
                     ...previous,
-                    { place: pending, time: pendingTime },
+                    { place: pending, time: pendingTime, locked: pendingLocked },
                   ]);
                   setPending(null);
+                  setPendingLocked(true);
                 }}
               >
                 이 곳을 일정에 담기
@@ -261,7 +289,10 @@ export function PlanWizard() {
                   <span>{entryIndex + 2}</span>
                   <div>
                     <strong>{entry.place.title}</strong>
-                    <em>{entry.time}</em>
+                    <em>
+                      {entry.time}
+                      {entry.locked ? " · 못 바꿈" : ""}
+                    </em>
                   </div>
                 </li>
               ))}
@@ -301,8 +332,11 @@ export function PlanWizard() {
               <li key={`${entry.place.title}-${entryIndex}`}>
                 <span>{entryIndex + 2}</span>
                 <div>
-                    <strong>{entry.place.title}</strong>
-                    <em>{entry.time}</em>
+                  <strong>{entry.place.title}</strong>
+                  <em>
+                    {entry.time}
+                    {entry.locked ? " · 못 바꿈" : ""}
+                  </em>
                 </div>
               </li>
             ))}

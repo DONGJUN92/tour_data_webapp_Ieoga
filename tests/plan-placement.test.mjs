@@ -153,7 +153,7 @@ test("일정 등록은 한 화면에 한 질문만 묻는다", async () => {
 test("여행지를 원하는 만큼 이어 붙일 수 있다", async () => {
   const wizard = await src("../app/plan/PlanWizard.tsx");
   /* 약속 하나로 끝나지 않는다. */
-  assert.match(wizard, /useState<Array<\{ place: ManualPlace; time: string \}>>/);
+  assert.match(wizard, /place: ManualPlace; time: string; locked: boolean/);
   assert.match(wizard, /더 이상 등록할 여행지가 없어요/);
   assert.match(wizard, /번째로 갈 곳이 있나요/);
 
@@ -164,10 +164,26 @@ test("여행지를 원하는 만큼 이어 붙일 수 있다", async () => {
     "시각 블록이 다시 검색창 아래로 내려갔다",
   );
 
-  /* 마지막 약속만 잠근다. 중간까지 잠그면 복구가 바꿀 수 있는 곳이 없어져
-     일정이 틀어져도 이 앱이 할 일이 사라진다. */
-  assert.match(wizard, /const last = entryIndex === plan\.length - 1;/);
-  assert.match(wizard, /locked: last,/);
+  /* 잠금은 담을 때 고른다. 마지막을 자동으로 잠갔더니 마지막 여행지가
+     예약이 아닌 경우에도 복구가 손댈 수 없는 곳이 되었다. */
+  assert.match(wizard, /locked: entry\.locked,/);
+  assert.match(wizard, /이 일정은 못 바꿔요/);
+  assert.ok(
+    !/const last = entryIndex === plan\.length - 1;/.test(wizard),
+    "마지막을 자동으로 잠그는 규칙이 되살아났다",
+  );
+  /* 기본값은 켜 둔다 — 잠긴 곳이 하나도 없으면 이 앱이 지킬 대상이 없다. */
+  assert.match(wizard, /useState\(true\);/);
+});
+
+test("뒤로 가면 그 단계의 입력이 비워진다", async () => {
+  const wizard = await src("../app/plan/PlanWizard.tsx");
+  /* 남겨 두었더니 다른 곳을 고르러 돌아가도 이전 값이 그대로 보여, 무엇이
+     선택된 상태인지 알 수 없었다. 출발지도 마찬가지였다. */
+  assert.match(wizard, /if \(target === "start"\) setStart\(null\);/);
+  assert.match(wizard, /if \(target === "appointment"\) setPlan\(\[\]\);/);
+  assert.match(wizard, /setPending\(null\);/);
+  assert.match(wizard, /setPendingLocked\(true\);/);
 });
 
 test("화면에서 숨기는 텍스트가 실제로 숨겨진다", async () => {

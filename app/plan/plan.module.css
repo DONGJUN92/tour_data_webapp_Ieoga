@@ -223,3 +223,38 @@
   flex-direction: column;
   gap: 10px;
 }
+
+/* 잠금은 담을 때 고른다. 체크박스는 손가락이 닿는 크기로 두고, 무엇을 뜻하는지
+   한 줄로 붙인다 — `잠금`이라는 말만으로는 무엇이 잠기는지 알 수 없다. */
+.lockRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.lockRow input {
+  width: 22px;
+  height: 22px;
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+}
+
+.lockRow span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lockRow strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.lockRow em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--ink-soft);
+  word-break: keep-all;
+}

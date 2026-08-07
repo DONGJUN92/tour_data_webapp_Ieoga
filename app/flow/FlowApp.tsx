@@ -1149,7 +1149,17 @@ export default function FlowApp() {
           ),
         );
       }
-      setExecution(nextExecution as unknown as JourneyExecution);
+      /* 도착 확인 단계를 생략한다. 실제로 도착했는지는 지도 앱과 여행자가
+         알지 우리가 아니고, 이미 길 위에 있는 사람에게 버튼을 두 번 더 눌러
+         달라고 하는 것은 도움이 아니다. 적용된 순간 바뀐 경로를 보여 준다.
+
+         맞바꾼 것: 구간별 도착 시각 기록이 남지 않는다. 그 기록은 사용자가
+         눌러 줘야만 생기던 값이라, 누르지 않고 떠난 대부분의 경우에는 어차피
+         없었다. */
+      setExecution({
+        ...(nextExecution as unknown as JourneyExecution),
+        status: "completed",
+      });
       /* 저장된 일정을 세 곳으로 다시 쓴다.
          `지금 있는 곳` → `고른 곳` → `약속`.
 
@@ -2197,12 +2207,24 @@ export default function FlowApp() {
                         </span>
                       ))}
                   </h1>
-                  <p className={styles.sub}>
-                    {tr(
-                      "복구 구간의 도착 기록이 저장됐습니다. 원래 일정은 변경하지 않고 다음 순서부터 계속됩니다.",
-                      "Arrivals in the recovery segment are saved. The original itinerary remains intact and continues from the next stop.",
-                    )}
-                  </p>
+                  {/* 설명 문장 대신 **바뀐 경로**를 보인다. 여행자가 이
+                      화면에서 알고 싶은 것은 "우리가 무엇을 저장했는가"가
+                      아니라 "그래서 내 오늘 동선이 어떻게 되는가"다. */}
+                  <ol className={styles.completedRoute}>
+                    {(execution.steps ?? []).map((step, index) => (
+                      <li key={step.id ?? `${step.title}-${index}`}>
+                        <span>{index + 1}</span>
+                        <div>
+                          <strong>{step.title}</strong>
+                          {step.estimatedArrivalAt && (
+                            <em>
+                              {formatKstTime(step.estimatedArrivalAt)}
+                            </em>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
                 </div>
                 <div className={styles.completionActions}>
                   <Link className={styles.ctaLink} href="/">

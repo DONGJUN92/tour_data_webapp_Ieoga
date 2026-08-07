@@ -1604,7 +1604,15 @@ export function ProductApp() {
             {placeToPlan && (
               <PlanPlacementDialog
                 place={placeToPlan}
-                stops={journeyDraft.stops.map((stop) => ({
+                /* 첫 정류지는 출발지다. "대신 넣기" 목록에서 뺀다 — 거기에
+                   여행지를 넣으면 "지금 있는 곳에서 출발한다"는 전제가 깨져
+                   이동 시간이 0으로 잡힌다. 지역 판정에는 그대로 쓴다. */
+                stops={journeyDraft.stops.slice(1).map((stop) => ({
+                  id: stop.id,
+                  title: stop.title,
+                  address: stop.address,
+                }))}
+                areaStops={journeyDraft.stops.map((stop) => ({
                   id: stop.id,
                   title: stop.title,
                   address: stop.address,
@@ -3819,8 +3827,30 @@ export function ProductApp() {
                   stop.title.trim(),
                 );
                 if (!filled.length) {
-                  /* 빈 초안이면 물어볼 것이 없다. */
-                  applyPlanPlacement(place, { kind: "prepend" });
+                  /* 빈 초안이면 물어볼 것이 없다. 다만 **첫 노드는 출발지다.**
+                     여기에 고른 여행지를 넣으면 "지금 있는 곳에서 출발한다"는
+                     전제가 깨져, 이동 시간이 0으로 잡힌다. 1번에 현재 위치를
+                     두고 고른 곳은 2번에 넣는다. */
+                  setJourneyDraft((previous) => {
+                    const rest = previous.stops.slice(1);
+                    return {
+                      ...previous,
+                      stops: [
+                        {
+                          ...previous.stops[0],
+                          title: originLabel || "지금 있는 곳",
+                          address: "",
+                        },
+                        makeStop({
+                          title: place.title,
+                          address: place.address,
+                          type: stopTypeFromTourismContent(place.contentTypeId),
+                        }),
+                        ...rest,
+                      ],
+                    };
+                  });
+                  setJourneyEditing(true);
                   return;
                 }
                 setPlaceToPlan(place);

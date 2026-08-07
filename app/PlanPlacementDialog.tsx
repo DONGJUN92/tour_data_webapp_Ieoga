@@ -31,7 +31,11 @@ export type PlanPlacement =
 
 type Props = {
   place: PlanCandidate;
+  /* "대신 넣기"로 고를 수 있는 정류지. 출발지는 빠진다. */
   stops: PlanTargetStop[];
+  /* 같은 지역인지 볼 때 쓰는 목록. 출발지도 포함한다 — 출발지가 대전인데
+     대안도 대전이면 그것은 같은 지역이다. */
+  areaStops?: PlanTargetStop[];
   language: "ko" | "en";
   onChoose: (placement: PlanPlacement) => void;
   onCancel: () => void;
@@ -41,6 +45,7 @@ type Props = {
 export function PlanPlacementDialog({
   place,
   stops,
+  areaStops,
   language,
   onChoose,
   onCancel,
@@ -50,11 +55,13 @@ export function PlanPlacementDialog({
   const filled = stops.filter((stop) => stop.title.trim());
   /* 시·군 단위로 본다. 구까지 따지면 같은 대전 안에서 서구와 유성구가 다른
      지역으로 갈려 "기존 일정을 지울까요"를 묻게 된다. */
-  const sameArea = filled.some((stop) =>
+  const areaPool = (areaStops ?? stops).filter((stop) => stop.title.trim());
+  const sameArea = areaPool.some((stop) =>
     sameAdministrativeArea(stop.address, place.address),
   );
   const placeUnit = administrativeUnit(place.address);
-  const planUnit = filled.map((stop) => administrativeUnit(stop.address)).find(Boolean) ?? "";
+  const planUnit =
+    areaPool.map((stop) => administrativeUnit(stop.address)).find(Boolean) ?? "";
 
   return (
     <section

@@ -1133,3 +1133,58 @@ a.cta {
   outline: 3px solid #0b6a69;
   outline-offset: 2px;
 }
+
+/* 완료 화면의 바뀐 경로. 설명 문장 대신 이것을 보인다 — 여행자가 알고 싶은
+   것은 우리가 무엇을 저장했는지가 아니라 오늘 동선이 어떻게 되는지다. */
+.completedRoute {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+
+.completedRoute li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #e5e8eb;
+  border-radius: var(--r-chip);
+  background: #ffffff;
+}
+
+.completedRoute li > span {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.completedRoute li > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.completedRoute strong {
+  font-size: 15px;
+  font-weight: 700;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.completedRoute em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--muted);
+}

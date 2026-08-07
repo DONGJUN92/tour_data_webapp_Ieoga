@@ -114,7 +114,7 @@ type WorkingCandidate = {
   crowdSeriesDays?: number;
   /* 이 값이 **이 장소 자신의 것**인지, 주변 장소에서 빌려 온 것인지. 빌려 온
      값을 직접 측정한 값과 같은 얼굴로 보여 주면 근거를 부풀리는 것이다. */
-  crowdBasis?: "place" | "nearby";
+  crowdBasis?: "place" | "nearby" | "district";
   crowdNeighborCount?: number;
   crowdNeighborMeters?: number;
   /* 이 후보에 **머무는 시간대**의 날씨. 출발지의 지금 하늘이 아니다. */
@@ -562,7 +562,7 @@ function currentForecastByTitle(items: KtoItem[]): Map<
 function crowdComfortScore(candidate: {
   crowdRate?: number;
   crowdPercentile?: number;
-  crowdBasis?: "place" | "nearby";
+  crowdBasis?: "place" | "nearby" | "district";
 }): number {
   if (candidate.crowdRate === undefined) return 50;
   /* 단조 감소로 바꿨다. 예전에는 60·80을 경계로 한 3단 계단이어서 61과 79가
@@ -577,7 +577,42 @@ function crowdComfortScore(candidate: {
      잰 값보다 확실하지 않으므로, 직접 잰 후보와 나란히 놓았을 때 그것을
      이기고 올라가서는 안 된다. */
   if (candidate.crowdBasis === "nearby") score = 50 + (score - 50) * 0.6;
+  /* 시군구 전체 값은 후보 사이를 가르지 못한다(모두 같은 값을 받는다). 순위에
+     끼어들지 못하도록 더 크게 줄인다 — 보여 줄 값이지 정렬할 값이 아니다. */
+  if (candidate.crowdBasis === "district") score = 50 + (score - 50) * 0.25;
   return Math.round(Math.min(100, Math.max(0, score)));
+}
+
+/* 붐빔 조회는 완전 일치만 봤다. 그래서 서울 종로에서 집중률 3,390행과
+   1,650행을 **정상으로 받고도** 대안 8건이 전부 "공식 정보 없음"이었다.
+   호출이 아니라 이름이 문제였다: 공사의 두 API가 같은 곳을 `성심당` /
+   `성심당본점`처럼 다르게 적는다.
+
+   연관 관광지 쪽에는 이미 앞뒤 부분 일치가 있었는데 이쪽에만 없었다. 같은
+   규칙을 준다. 접두·접미로만 맞추고 최소 길이를 두는 것은 `관`·`공원` 같은
+   짧은 조각이 아무 곳에나 붙는 것을 막기 위해서다. */
+const FORECAST_MIN_SHARED_LENGTH = 3;
+
+function findForecastMatch<T>(
+  forecasts: Map<string, T>,
+  title: string,
+): T | undefined {
+  const normalized = normalizeName(title);
+  if (!normalized) return undefined;
+  const exact = forecasts.get(normalized);
+  if (exact) return exact;
+  let best: T | undefined;
+  let bestLength = 0;
+  for (const [name, value] of forecasts) {
+    if (name.length < FORECAST_MIN_SHARED_LENGTH) continue;
+    if (!normalized.startsWith(name) && !normalized.endsWith(name)) continue;
+    /* 여러 개가 걸리면 가장 긴 것을 쓴다 — 더 구체적인 이름이 더 옳다. */
+    if (name.length > bestLength) {
+      best = value;
+      bestLength = name.length;
+    }
+  }
+  return best;
 }
 
 /* 집중률 데이터셋은 **관광지 전용**이다. 반경 5km 후보를 유형별로 세어 보면
@@ -594,6 +629,22 @@ function crowdComfortScore(candidate: {
    얼굴로 내보내면 근거를 부풀리는 것이다.
 
    중앙값을 쓴다. 평균은 관광지 한 곳의 극단값이 골목 전체를 물들인다. */
+function districtRatesFrom(items: KtoItem[]): number[] {
+  let latest = "";
+  for (const item of items) {
+    const date = stringValue(item.baseYmd);
+    if (date && date > latest) latest = date;
+  }
+  if (!latest) return [];
+  const rates: number[] = [];
+  for (const item of items) {
+    if (stringValue(item.baseYmd) !== latest) continue;
+    const rate = numberInRange(item.cnctrRate, 0, 100);
+    if (rate !== undefined) rates.push(rate);
+  }
+  return rates;
+}
+
 const CROWD_NEIGHBOR_RADIUS_METERS = 800;
 const CROWD_NEIGHBOR_MIN_SAMPLES = 2;
 
@@ -612,15 +663,22 @@ function withNeighborCrowd<
     crowdRate?: number;
     crowdPercentile?: number;
     crowdBaseDate?: string;
-    crowdBasis?: "place" | "nearby";
+    crowdBasis?: "place" | "nearby" | "district";
     crowdNeighborCount?: number;
     crowdNeighborMeters?: number;
   },
->(candidates: T[]): T[] {
+>(candidates: T[], districtRates: number[]): T[] {
   const measured = candidates.filter(
     (candidate) => candidate.crowdBasis === "place",
   );
-  if (!measured.length) return candidates;
+  /* 시군구 전체의 오늘 값. 이 지역에 집중률 데이터가 한 줄이라도 있으면
+     **모든 후보가 최소한 이 값은 받는다.** 그 장소를 잰 값이 아니므로 가장
+     약한 근거지만, 아무것도 못 주는 것보다는 낫다 — 여행자가 다른 지역과
+     견줄 때 쓸 수 있고, 무엇 기준인지 꼬리표로 밝힌다. */
+  const districtRate = districtRates.length
+    ? medianOf(districtRates)
+    : undefined;
+  if (!measured.length && districtRate === undefined) return candidates;
   return candidates.map((candidate) => {
     if (candidate.crowdBasis === "place") return candidate;
     const near = measured
@@ -629,7 +687,14 @@ function withNeighborCrowd<
         meters: haversineMeters(candidate, other),
       }))
       .filter((entry) => entry.meters <= CROWD_NEIGHBOR_RADIUS_METERS);
-    if (near.length < CROWD_NEIGHBOR_MIN_SAMPLES) return candidate;
+    if (near.length < CROWD_NEIGHBOR_MIN_SAMPLES) {
+      if (districtRate === undefined) return candidate;
+      return {
+        ...candidate,
+        crowdRate: districtRate,
+        crowdBasis: "district" as const,
+      };
+    }
     const percentiles = near
       .map((entry) => entry.other.crowdPercentile)
       .filter((value): value is number => value !== undefined);
@@ -660,7 +725,7 @@ export type CrowdLevel = "easy" | "normal" | "busy";
 function crowdLevelOf(candidate: {
   crowdRate?: number;
   crowdPercentile?: number;
-  crowdBasis?: "place" | "nearby";
+  crowdBasis?: "place" | "nearby" | "district";
 }): CrowdLevel | undefined {
   if (candidate.crowdRate === undefined) return undefined;
   const score = crowdComfortScore(candidate);
@@ -2456,14 +2521,26 @@ function toOption(
                 : crowdLevelOf(candidate) === "busy"
                   ? "혼잡"
                   : "보통"
-            }${candidate.crowdBasis === "nearby" ? " (주변 기준)" : ""}`,
+            }${
+              candidate.crowdBasis === "nearby"
+                ? " (주변 기준)"
+                : candidate.crowdBasis === "district"
+                  ? " (지역 기준)"
+                  : ""
+            }`,
             noteEn: `${
               crowdLevelOf(candidate) === "easy"
                 ? "Quiet"
                 : crowdLevelOf(candidate) === "busy"
                   ? "Busy"
                   : "Average"
-            }${candidate.crowdBasis === "nearby" ? " (nearby)" : ""}`,
+            }${
+              candidate.crowdBasis === "nearby"
+                ? " (nearby)"
+                : candidate.crowdBasis === "district"
+                  ? " (district)"
+                  : ""
+            }`,
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,
@@ -3292,7 +3369,7 @@ export async function recoverTrip(
       });
     }
 
-    const forecast = forecasts.get(normalizeName(title));
+    const forecast = findForecastMatch(forecasts, title);
     if (input.incident === "crowd" && !forecast) {
       evidenceGaps.push({
         code: "CONCENTRATION_UNVERIFIED",
@@ -3370,7 +3447,14 @@ export async function recoverTrip(
   /* 이웃 대체는 후보가 **모두 모인 뒤에** 해야 한다. 한 곳씩 처리하는
      동안에는 주변에 무엇이 있는지 알 수 없다. 값이 바뀌었으므로 점수도 다시
      매긴다 — 옛 점수로 정렬하면 대체값이 순위에 반영되지 않는다. */
-  const withNeighbors = withNeighborCrowd(preliminary).map((candidate) => ({
+  /* 지역 바닥값은 **원본 행**에서 뽑는다. `forecasts`는 오늘 값이 있는 곳만
+     담는데, 부산 해운대구는 570행을 정상으로 받고도 그 맵이 비어 8건 모두
+     빈칸이었다 — 시계열 창이 지역마다 다르다. 응답에 가장 최근으로 들어 있는
+     날짜를 쓰면 한 줄이라도 온 지역은 반드시 값을 얻는다. */
+  const withNeighbors = withNeighborCrowd(
+    preliminary,
+    districtRatesFrom(crowdItems),
+  ).map((candidate) => ({
     ...candidate,
     ...scoreCandidate(candidate, input),
   }));

@@ -52,8 +52,10 @@ export type CrowdEvidence = {
   seriesDays?: number;
   /* 카드에 쓰는 세 단계. 원문 수치는 근거 확인용으로 위에 그대로 남는다. */
   level?: "easy" | "normal" | "busy";
-  /* 이 값이 이 장소를 직접 잰 것인지, 반경 800m 이웃에서 빌려 온 것인지. */
-  basis?: "place" | "nearby";
+  /* 이 값이 이 장소를 직접 잰 것인지(`place`), 반경 800m 이웃에서 빌려 온
+     것인지(`nearby`), 시군구 전체 값인지(`district`). 뒤로 갈수록 근거가
+     약하므로 카드에 꼬리표로 밝히고 정렬 가중치도 줄인다. */
+  basis?: "place" | "nearby" | "district";
   neighborCount?: number;
   neighborMeters?: number;
   /* `popularity_rank`일 때의 연관 관광지 순위. 붐빔이 아니라 인기다. */

@@ -520,3 +520,45 @@ test("가까운 순 정렬은 거리로 줄 세우고 값 없는 후보를 지�
   );
   assert.deepEqual(sorted.unranked, []);
 });
+
+test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
+  const product = await src("../app/ProductApp.tsx");
+  /* 예전에는 모바일 하단 바가 `/flow`·`/policy`·`/sources` 세 라우트로 갔고
+     탭 바는 821px 미만에서 숨겨져 있었다. 그래서 휴대폰에서는 `지금 갈 곳
+     찾기`로 갈 방법이 아예 없었고, 여행자 화면에서 뺀 `지역 회복력`이 하단에
+     남아 있었다. 화면 크기에 따라 있는 기능이 달라지면 그건 다른 앱이다. */
+  const nav = product.slice(
+    product.indexOf('className="mobile-nav"'),
+    product.indexOf("<footer className=\"product-footer\">"),
+  );
+  assert.ok(nav.length > 0 && nav.length < 3000, "모바일 내비를 찾지 못했다");
+  /* 삭제한 탭이 하단에 남아 있으면 안 된다. */
+  assert.ok(
+    !/지역 회복력/.test(nav),
+    "여행자 화면에서 뺀 탭이 모바일 하단 바에 남아 있다",
+  );
+  /* 라우트 링크가 아니라 탭 전환이어야 한다. */
+  assert.ok(!/<a href="\/policy">/.test(nav), "모바일 내비가 라우트로 나간다");
+  for (const testid of [
+    "mobile-nav-recover",
+    "mobile-nav-discover",
+    "mobile-nav-transparency",
+  ]) {
+    assert.match(nav, new RegExp(`data-testid="${testid}"`), `${testid} 없음`);
+  }
+  assert.match(nav, /지금 갈 곳 찾기/);
+  assert.match(nav, /changeTab\("discover"\)/);
+  /* 지금 어느 탭인지 하단 바에도 드러나야 한다. */
+  assert.match(nav, /activeTab === "discover" \? "is-active" : ""/);
+  assert.match(nav, /aria-current=\{activeTab === "recover" \? "page" : undefined\}/);
+
+  /* 두 내비의 항목이 정확히 같아야 한다. */
+  const tabBar = product.slice(
+    product.indexOf('className="desktop-nav"'),
+    product.indexOf('<div className="header-actions">'),
+  );
+  for (const label of ["여행 복구", "지금 갈 곳 찾기", "데이터 투명성"]) {
+    assert.ok(tabBar.includes(label), `데스크톱 탭에 ${label} 없음`);
+    assert.ok(nav.includes(label), `모바일 내비에 ${label} 없음`);
+  }
+});

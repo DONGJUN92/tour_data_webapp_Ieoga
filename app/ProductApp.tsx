@@ -4165,25 +4165,49 @@ export function ProductApp() {
         )}
       </main>
 
-      {/* Mobile navigation points at the scenario routes rather than the
-          in-page tabs. Each of those is a sequence of single-decision screens;
-          the tab panels below remain as the detailed desktop view. */}
+      {/* 모바일 내비게이션은 **데스크톱 탭과 같은 것**을 가리킨다.
+          예전에는 여기서 `/flow`·`/policy`·`/sources` 세 라우트로 보냈고,
+          탭 바(`.desktop-nav`)는 821px 미만에서 숨겨져 있었다. 그래서 휴대폰
+          사용자는 `지금 갈 곳 찾기`로 갈 방법이 아예 없었고, 대신 여행자 화면에서
+          뺀 `지역 회복력`이 하단에 남아 있었다. 화면 크기에 따라 있는 기능이
+          달라지면 그건 다른 앱이다.
+
+          하단 고정 바라는 형태는 유지한다 — 엄지로 닿는 위치가 휴대폰에서
+          맞다. 바뀌는 것은 무엇을 가리키느냐뿐이다. */}
       <nav
         className="mobile-nav"
-        aria-label={language === "en" ? "Mobile navigation" : "모바일 주요 메뉴"}
+        aria-label={language === "en" ? "Main menu" : "주요 메뉴"}
       >
-        <a href="/flow">
+        <button
+          type="button"
+          className={activeTab === "recover" ? "is-active" : ""}
+          aria-current={activeTab === "recover" ? "page" : undefined}
+          onClick={() => changeTab("recover")}
+          data-testid="mobile-nav-recover"
+        >
           <span aria-hidden="true">↗</span>
           {language === "en" ? "Recovery" : "여행 복구"}
-        </a>
-        <a href="/policy">
-          <span aria-hidden="true">▦</span>
-          {language === "en" ? "Resilience" : "지역 회복력"}
-        </a>
-        <a href="/sources">
+        </button>
+        <button
+          type="button"
+          className={activeTab === "discover" ? "is-active" : ""}
+          aria-current={activeTab === "discover" ? "page" : undefined}
+          onClick={() => changeTab("discover")}
+          data-testid="mobile-nav-discover"
+        >
+          <span aria-hidden="true">◷</span>
+          {language === "en" ? "Free time now" : "지금 갈 곳 찾기"}
+        </button>
+        <button
+          type="button"
+          className={activeTab === "transparency" ? "is-active" : ""}
+          aria-current={activeTab === "transparency" ? "page" : undefined}
+          onClick={() => changeTab("transparency")}
+          data-testid="mobile-nav-transparency"
+        >
           <span aria-hidden="true">◎</span>
-          {language === "en" ? "Sources" : "데이터 출처"}
-        </a>
+          {language === "en" ? "Data transparency" : "데이터 투명성"}
+        </button>
       </nav>
 
       <footer className="product-footer">

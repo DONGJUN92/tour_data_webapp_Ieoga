@@ -21,8 +21,12 @@ export function PlanWizard() {
   const [step, setStep] = useState<Step>("date");
   const [date, setDate] = useState(todayInKorea());
   const [start, setStart] = useState<ManualPlace | null>(null);
-  const [appointment, setAppointment] = useState<ManualPlace | null>(null);
-  const [appointmentTime, setAppointmentTime] = useState("14:00");
+  /* 약속은 하나로 끝나지 않는다. 여행자가 원하는 만큼 이어 붙인다. */
+  const [plan, setPlan] = useState<Array<{ place: ManualPlace; time: string }>>(
+    [],
+  );
+  const [pending, setPending] = useState<ManualPlace | null>(null);
+  const [pendingTime, setPendingTime] = useState("14:00");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState("");
@@ -42,10 +46,45 @@ export function PlanWizard() {
   const times = useMemo(() => HALF_HOUR_TIMES, []);
 
   async function save() {
-    if (!start || !appointment) return;
+    if (!start || !plan.length) return;
     setSaving(true);
     setError("");
     try {
+      /* 마지막 약속만 잠근다. 중간 정류지까지 잠그면 복구가 바꿀 수 있는 곳이
+         하나도 남지 않아, 일정이 틀어져도 이 앱이 할 수 있는 일이 없어진다. */
+      const nodes = [
+        {
+          id: "start",
+          sequence: 0,
+          type: "visit" as const,
+          title: start.title,
+          startAt: `${date}T09:00:00+09:00`,
+          locked: false,
+          reservation: false,
+          location: {
+            latitude: start.latitude,
+            longitude: start.longitude,
+            label: start.title,
+          },
+        },
+        ...plan.map((entry, entryIndex) => {
+          const last = entryIndex === plan.length - 1;
+          return {
+            id: `stop-${entryIndex + 1}`,
+            sequence: entryIndex + 1,
+            type: last ? ("reservation" as const) : ("visit" as const),
+            title: entry.place.title,
+            startAt: `${date}T${entry.time}:00+09:00`,
+            locked: last,
+            reservation: last,
+            location: {
+              latitude: entry.place.latitude,
+              longitude: entry.place.longitude,
+              label: entry.place.title,
+            },
+          };
+        }),
+      ];
       const response = await fetch("/api/v1/itineraries", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -54,36 +93,7 @@ export function PlanWizard() {
             title: "오늘의 여행",
             timezone: "Asia/Seoul",
             audience: "general",
-            nodes: [
-              {
-                id: "start",
-                sequence: 0,
-                type: "visit",
-                title: start.title,
-                startAt: `${date}T09:00:00+09:00`,
-                locked: false,
-                reservation: false,
-                location: {
-                  latitude: start.latitude,
-                  longitude: start.longitude,
-                  label: start.title,
-                },
-              },
-              {
-                id: "appointment",
-                sequence: 1,
-                type: "reservation",
-                title: appointment.title,
-                startAt: `${date}T${appointmentTime}:00+09:00`,
-                locked: true,
-                reservation: true,
-                location: {
-                  latitude: appointment.latitude,
-                  longitude: appointment.longitude,
-                  label: appointment.title,
-                },
-              },
-            ],
+            nodes,
           },
         }),
       });
@@ -120,13 +130,15 @@ export function PlanWizard() {
             <span>1</span>
             <strong>{start?.title}</strong>
           </li>
-          <li>
-            <span>2</span>
-            <div>
-              <strong>{appointment?.title}</strong>
-              <em>{appointmentTime}</em>
-            </div>
-          </li>
+          {plan.map((entry, entryIndex) => (
+            <li key={`${entry.place.title}-${entryIndex}`}>
+              <span>{entryIndex + 2}</span>
+              <div>
+                <strong>{entry.place.title}</strong>
+                <em>{entry.time}</em>
+              </div>
+            </li>
+          ))}
         </ol>
         <Link className={styles.primary} href="/app">
           일정이 틀어지면 여기서 복구하기
@@ -199,22 +211,26 @@ export function PlanWizard() {
 
       {step === "appointment" && (
         <section className={styles.step}>
-          <h1>꼭 지킬 약속이 있나요?</h1>
-          <ManualLocationPicker
-            language="ko"
-            onPick={(place) => setAppointment(place)}
-          />
-          {appointment && (
-            <>
-              <p className={styles.picked}>{appointment.title}</p>
+          <h1>
+            {plan.length === 0
+              ? "꼭 지킬 약속이 있나요?"
+              : `${plan.length + 1}번째로 갈 곳이 있나요?`}
+          </h1>
+
+          {/* 고른 곳과 시각을 **검색창보다 위에** 둔다. 아래에 두었더니 장소를
+              고른 뒤에도 화면 끝에 가려 다음에 무엇을 해야 하는지 보이지
+              않았다. */}
+          {pending && (
+            <div className={styles.pendingBlock}>
+              <p className={styles.picked}>{pending.title}</p>
               <label className={styles.label} htmlFor="plan-appointment-time">
                 몇 시 약속인가요?
               </label>
               <select
                 id="plan-appointment-time"
                 className={styles.field}
-                value={appointmentTime}
-                onChange={(event) => setAppointmentTime(event.target.value)}
+                value={pendingTime}
+                onChange={(event) => setPendingTime(event.target.value)}
               >
                 {times.map((time) => (
                   <option key={time.value} value={time.value}>
@@ -222,10 +238,53 @@ export function PlanWizard() {
                   </option>
                 ))}
               </select>
-              <button type="button" className={styles.primary} onClick={forward}>
-                다음
+              <button
+                type="button"
+                className={styles.primary}
+                onClick={() => {
+                  setPlan((previous) => [
+                    ...previous,
+                    { place: pending, time: pendingTime },
+                  ]);
+                  setPending(null);
+                }}
+              >
+                이 곳을 일정에 담기
               </button>
-            </>
+            </div>
+          )}
+
+          {plan.length > 0 && (
+            <ol className={styles.route}>
+              {plan.map((entry, entryIndex) => (
+                <li key={`${entry.place.title}-${entryIndex}`}>
+                  <span>{entryIndex + 2}</span>
+                  <div>
+                    <strong>{entry.place.title}</strong>
+                    <em>{entry.time}</em>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {!pending && (
+            <ManualLocationPicker
+              language="ko"
+              onPick={(place) => setPending(place)}
+            />
+          )}
+
+          {plan.length > 0 && !pending && (
+            <div className={styles.stepActions}>
+              <button
+                type="button"
+                className={styles.primary}
+                onClick={forward}
+              >
+                더 이상 등록할 여행지가 없어요
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -238,13 +297,15 @@ export function PlanWizard() {
               <span>1</span>
               <strong>{start?.title}</strong>
             </li>
-            <li>
-              <span>2</span>
-              <div>
-                <strong>{appointment?.title}</strong>
-                <em>{appointmentTime}</em>
-              </div>
-            </li>
+            {plan.map((entry, entryIndex) => (
+              <li key={`${entry.place.title}-${entryIndex}`}>
+                <span>{entryIndex + 2}</span>
+                <div>
+                    <strong>{entry.place.title}</strong>
+                    <em>{entry.time}</em>
+                </div>
+              </li>
+            ))}
           </ol>
           {error && (
             <p className={styles.error} role="alert">
@@ -255,7 +316,7 @@ export function PlanWizard() {
             type="button"
             className={styles.primary}
             onClick={save}
-            disabled={saving || !start || !appointment}
+            disabled={saving || !start || !plan.length}
           >
             {saving ? "등록하는 중…" : "이 일정으로 등록"}
           </button>

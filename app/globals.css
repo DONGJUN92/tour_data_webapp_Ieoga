@@ -6833,3 +6833,18 @@ body .option-footer-actions a:focus-visible {
   color: var(--muted);
   font-size: 18px;
 }
+
+/* 화면에서는 숨기고 보조기술에는 읽히는 텍스트. 이 클래스가 없어서 뒤로가기
+   버튼의 `처음으로`가 44px 원 안에 그대로 그려졌고, 글자가 세로로 한 줄씩
+   흘러 화면이 깨졌다. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

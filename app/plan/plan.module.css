@@ -205,3 +205,21 @@
   color: var(--brand-deep);
   font-size: 34px;
 }
+
+/* 고른 곳과 시각은 검색창보다 위에 둔다. 아래에 두었더니 장소를 고른 뒤에도
+   화면 끝에 가려 다음에 무엇을 해야 하는지 보이지 않았다. */
+.pendingBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 2px solid var(--brand);
+  border-radius: 16px;
+  background: var(--brand-tint, #eef7f6);
+}
+
+.stepActions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

@@ -53,7 +53,8 @@ async function workerFetch(pathname = "/", headers = { accept: "text/html" }) {
 }
 
 async function renderHome() {
-  return workerFetch("/");
+  /* 앱 본체는 `/app`으로 옮겼다. `/`는 로고와 버튼 셋만 있는 랜딩이다. */
+  return workerFetch("/app");
 }
 
 function ktoEnvelope(items) {

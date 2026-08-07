@@ -149,3 +149,30 @@ test("일정 등록은 한 화면에 한 질문만 묻는다", async () => {
   /* 약속 시각은 30분 단위. 여행자는 분 단위로 계획하지 않는다. */
   assert.match(wizard, /HALF_HOUR_TIMES/);
 });
+
+test("여행지를 원하는 만큼 이어 붙일 수 있다", async () => {
+  const wizard = await src("../app/plan/PlanWizard.tsx");
+  /* 약속 하나로 끝나지 않는다. */
+  assert.match(wizard, /useState<Array<\{ place: ManualPlace; time: string \}>>/);
+  assert.match(wizard, /더 이상 등록할 여행지가 없어요/);
+  assert.match(wizard, /번째로 갈 곳이 있나요/);
+
+  /* 고른 곳과 시각은 **검색창보다 위에** 둔다. 아래에 두었더니 장소를 고른
+     뒤에도 화면 끝에 가려 다음에 무엇을 할지 보이지 않았다. */
+  assert.ok(
+    wizard.indexOf("몇 시 약속인가요") < wizard.indexOf("onPick={(place) => setPending(place)}"),
+    "시각 블록이 다시 검색창 아래로 내려갔다",
+  );
+
+  /* 마지막 약속만 잠근다. 중간까지 잠그면 복구가 바꿀 수 있는 곳이 없어져
+     일정이 틀어져도 이 앱이 할 일이 사라진다. */
+  assert.match(wizard, /const last = entryIndex === plan\.length - 1;/);
+  assert.match(wizard, /locked: last,/);
+});
+
+test("화면에서 숨기는 텍스트가 실제로 숨겨진다", async () => {
+  const css = await src("../app/globals.css");
+  /* 이 클래스가 없어서 뒤로가기 버튼의 `처음으로`가 44px 원 안에 그대로
+     그려졌고, 글자가 세로로 한 줄씩 흘러 화면이 깨졌다. */
+  assert.match(css, /\.sr-only \{[\s\S]*?clip: rect\(0, 0, 0, 0\);/);
+});

@@ -20,7 +20,6 @@ import { PolicyMissionPanel } from "./PolicyMissionPanel";
 import { SimulationGuide } from "./SimulationGuide";
 
 import {
-  AUDIENCES,
   AUDIENCES_EN,
   Audience,
   Counterfactual,
@@ -175,7 +174,9 @@ export function ProductApp() {
   const [appliedOptionId, setAppliedOptionId] = useState("");
   const [recoveryOutcome, setRecoveryOutcome] = useState<RecoveryOutcome>("idle");
   const [outcomeMessage, setOutcomeMessage] = useState("");
-  const [showAllOptions, setShowAllOptions] = useState(false);
+  /* 기본값을 전체 노출로 둔다. 대안을 폭넓게 보여 주기로 한 뒤에도 첫 장
+     외에는 접혀 있어서, 넓힌 후보가 사실상 보이지 않았다. */
+  const [showAllOptions, setShowAllOptions] = useState(true);
   const [activeExecution, setActiveExecution] =
     useState<JourneyExecution | null>(null);
   const [executionState, setExecutionState] =
@@ -2503,22 +2504,33 @@ export function ProductApp() {
                   <details className="recovery-preferences">
                     <summary>이동 배려·실내 조건이 필요해요</summary>
                     <div className="recovery-preferences-body">
-                      <label>
-                        <span>이동·접근성 조건</span>
-                        <select
-                          value={audience}
+                      {/* 켜고 끄는 하나다. 두 항목뿐인 드롭다운은 여는 동작이
+                          하나 더 붙을 뿐 고르는 일을 쉽게 만들지 않는다. 아래
+                          실내 조건과 같은 모양으로 맞춰 한 덩어리로 읽힌다. */}
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={audience !== "general"}
                           onChange={(event) =>
-                            setAudience(event.target.value as Audience)
+                            setAudience(
+                              (event.target.checked
+                                ? "assisted"
+                                : "general") as Audience,
+                            )
                           }
-                        >
-                          {AUDIENCES.map((item) => (
-                            <option key={item.value} value={item.value}>
-                              {language === "en"
-                                ? AUDIENCES_EN[item.value]
-                                : item.label}
-                            </option>
-                          ))}
-                        </select>
+                        />
+                        <span>
+                          <strong>
+                            {language === "en"
+                              ? AUDIENCES_EN.assisted
+                              : "이동 도움이 필요해요"}
+                          </strong>
+                          <small>
+                            계단 없는 동선이 필요한 경우입니다. 공식
+                            무장애여행정보에서 출입 동선과 내부 이동을
+                            확인합니다.
+                          </small>
+                        </span>
                       </label>
                       <label className="check-row">
                         <input
@@ -3426,36 +3438,14 @@ export function ProductApp() {
                                 강수 여부는 이어가가 원자료에서 판정
                               </p>
                             )}
-                            {option.scheduleDiff && (
-                              <div className="option-continuity-summary">
-                                <span>
-                                  변경 일정{" "}
-                                  <b>
-                                    {option.scheduleDiff.changedNodeCount ??
-                                      option.scheduleDiff.changedNodeIds?.length ??
-                                      1}
-                                    개
-                                  </b>
-                                </span>
-                                <span>
-                                  잠금 보존{" "}
-                                  <b>
-                                    {option.scheduleDiff.preservedLockedNodeIds?.length ??
-                                      (option.scheduleDiff.nextFixedAppointmentPreserved
-                                        ? "확인"
-                                        : "재확인")}
-                                  </b>
-                                </span>
-                                <span>
-                                  다음 예약{" "}
-                                  <b>
-                                    {option.scheduleDiff.nextFixedAppointmentPreserved === false
-                                      ? "미보존"
-                                      : "보존"}
-                                  </b>
-                                </span>
-                              </div>
-                            )}
+                            {/* `변경 일정 1개 / 잠금 보존 1 / 다음 예약 보존`
+                                줄을 지웠다. 같은 사실을 바로 아래 `why` 문장이
+                                이미 문장으로 말한다 — "다음 예약 '한빛탑'에
+                                101분 여유를 두고 도착합니다", "'지금 있는 곳'
+                                한 곳만 바꾸고 나머지 일정은 그대로 둡니다".
+                                숫자만 적힌 줄은 그 문장을 요약하지 못하면서
+                                자리만 차지하고, `잠금 보존 1`처럼 무엇의 1인지
+                                알 수 없는 표기가 섞인다. */}
                             {option.scheduleDiff?.preservedWaypoints &&
                               option.scheduleDiff.preservedWaypoints.length >
                                 0 && (

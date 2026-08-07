@@ -1052,3 +1052,46 @@
   outline-offset: 4px;
   border-radius: 6px;
 }
+
+/* 여행이 끝난 뒤 다음에 할 수 있는 일. 도착 확인 버튼이 사라진 자리를
+   비워 두면 막다른 길이 된다. */
+.actions {
+  display: grid;
+  gap: 10px;
+}
+
+/* 검증 결과 정렬 축. 누르면 순서가 눈앞에서 바뀌는 것이 이 줄의 요점이다. */
+.sortRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.sortChip,
+.sortActive {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sortChip {
+  border: 1px solid #d7dee6;
+  background: #ffffff;
+  color: #333d4b;
+}
+
+.sortActive {
+  border: 1px solid #0b6a69;
+  background: #0b6a69;
+  color: #ffffff;
+}
+
+.sortChip:focus-visible,
+.sortActive:focus-visible {
+  outline: 3px solid #0b6a69;
+  outline-offset: 2px;
+}

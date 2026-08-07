@@ -48,6 +48,24 @@ function navigationUrl(step: JourneyExecutionStep): string {
   return `https://map.kakao.com/link/to/${encodeURIComponent(step.title)},${step.latitude},${step.longitude}`;
 }
 
+/* 출발지를 **지금 서 있는 곳**으로 채운 길찾기 주소.
+ *
+ * `link/to/`는 목적지만 넣는다. 그래서 지도 앱이 열리면 출발지가 비어 있거나
+ * 지난번에 쓰던 곳으로 남아, 사용자가 거기서 자기 위치를 다시 잡아야 했다.
+ * 복구안을 받아 들고 움직이려는 순간에 그 한 단계가 붙는다.
+ *
+ * 앱에 등록해 둔 위치를 쓰지 않는 이유: 그 값은 복구안을 만들 때의 기준점이고,
+ * 지금은 이미 걷고 있을 수 있다. 길찾기의 출발지는 **지금** 있는 곳이어야
+ * 한다. */
+function navigationUrlFrom(
+  step: JourneyExecutionStep,
+  from: { latitude: number; longitude: number } | undefined,
+  fromLabel: string,
+): string {
+  if (!from) return navigationUrl(step);
+  return `https://map.kakao.com/link/from/${encodeURIComponent(fromLabel)},${from.latitude},${from.longitude}/to/${encodeURIComponent(step.title)},${step.latitude},${step.longitude}`;
+}
+
 export function ActiveJourneyCockpit({
   execution,
   onChange,
@@ -226,13 +244,43 @@ export function ActiveJourneyCockpit({
         </div>
 
         <div className="cockpit-actions">
+          {/* 새 창은 **클릭 그 순간에** 열어야 한다. 위치를 먼저 기다렸다가
+              열면 브라우저가 사용자 동작과 무관한 팝업으로 보고 막는다.
+              그래서 빈 창을 먼저 열고, 위치가 오면 주소만 채운다. 위치를 못
+              얻으면 목적지만 있는 주소로 그대로 진행한다 — 길찾기 자체를
+              막지는 않는다. */}
           <a
             className="cockpit-primary"
             href={navigationUrl(current)}
             target="_blank"
             rel="noreferrer"
+            onClick={(event) => {
+              if (!navigator.geolocation) return;
+              event.preventDefault();
+              const opened = window.open("", "_blank", "noopener,noreferrer");
+              if (!opened) return;
+              const fallback = navigationUrl(current);
+              navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  opened.location.href = navigationUrlFrom(
+                    current,
+                    {
+                      /* 좌표는 소수점 다섯 자리로 줄여 넘긴다. 이 앱이 좌표를
+                         다루는 다른 곳과 같은 기준이다. */
+                      latitude: Number(position.coords.latitude.toFixed(5)),
+                      longitude: Number(position.coords.longitude.toFixed(5)),
+                    },
+                    tr("현재 위치", "My location"),
+                  );
+                },
+                () => {
+                  opened.location.href = fallback;
+                },
+                { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
+              );
+            }}
           >
-            {tr("다음 장소 길찾기", "Directions to the next stop")}
+            {tr("현재 위치에서 길찾기", "Directions from where I am")}
             <span aria-hidden="true">→</span>
           </a>
           <button

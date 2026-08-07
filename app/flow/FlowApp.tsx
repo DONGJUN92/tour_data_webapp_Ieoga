@@ -390,6 +390,41 @@ function formatKstTime(value?: string): string {
   }).format(date);
 }
 
+/* 검증 결과 정렬. 값이 없는 후보는 뒤로 보내되 **지우지 않는다** — 이 화면의
+   원칙은 폭넓게 보여 주고 고르는 것은 여행자가 하는 것이다. */
+function sortFlowOptions<T extends { distanceMeters?: number; crowd?: unknown }>(
+  options: T[],
+  sort: "recommended" | "nearest_first" | "quiet_first" | "busy_first",
+): T[] {
+  if (sort === "recommended") return options;
+  const rate = (option: T) => {
+    const crowd = option.crowd as { relativeRate?: number } | undefined;
+    return typeof crowd?.relativeRate === "number"
+      ? crowd.relativeRate
+      : undefined;
+  };
+  const keyed = options.map((option, index) => ({ option, index }));
+  if (sort === "nearest_first") {
+    keyed.sort(
+      (a, b) =>
+        (a.option.distanceMeters ?? Number.POSITIVE_INFINITY) -
+          (b.option.distanceMeters ?? Number.POSITIVE_INFINITY) ||
+        a.index - b.index,
+    );
+    return keyed.map((entry) => entry.option);
+  }
+  const direction = sort === "quiet_first" ? 1 : -1;
+  keyed.sort((a, b) => {
+    const left = rate(a.option);
+    const right = rate(b.option);
+    if (left === undefined && right === undefined) return a.index - b.index;
+    if (left === undefined) return 1;
+    if (right === undefined) return -1;
+    return (left - right) * direction || a.index - b.index;
+  });
+  return keyed.map((entry) => entry.option);
+}
+
 function navigationUrl(step: {
   title: string;
   latitude: number;
@@ -462,6 +497,12 @@ export default function FlowApp() {
   const [recoveryPersisted, setRecoveryPersisted] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState("");
   const [execution, setExecution] = useState<JourneyExecution | null>(null);
+  /* 검증 결과에도 정렬 축을 둔다. 후보를 넓게 보여 주기로 한 뒤에도 이
+     화면은 한 순서로만 보여 줘서, 여행자가 "가까운 곳부터" 같은 기준으로 다시
+     볼 방법이 없었다. */
+  const [optionSort, setOptionSort] = useState<
+    "recommended" | "nearest_first" | "quiet_first" | "busy_first"
+  >("recommended");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [shareMessage, setShareMessage] = useState("");
@@ -1830,8 +1871,30 @@ export default function FlowApp() {
                 }`,
               )}
             </p>
+            {options.length > 1 && (
+              <div className={styles.sortRow} role="group" aria-label={tr("정렬 기준", "Sort by")}>
+                {(
+                  [
+                    ["recommended", "추천순", "Recommended"],
+                    ["nearest_first", "가까운 순", "Nearest"],
+                    ["quiet_first", "한적한 순", "Quietest"],
+                    ["busy_first", "붐비는 순", "Busiest"],
+                  ] as const
+                ).map(([value, ko, en]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={optionSort === value ? styles.sortActive : styles.sortChip}
+                    aria-pressed={optionSort === value}
+                    onClick={() => setOptionSort(value)}
+                  >
+                    {tr(ko, en)}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className={styles.body}>
-              {options.map((option, optionIndex) => {
+              {sortFlowOptions(options, optionSort).map((option, optionIndex) => {
                 const requiresConfirmation =
                   option.confirmationRequired ||
                   (option.evidenceGaps?.length ?? 0) > 0;
@@ -1945,24 +2008,42 @@ export default function FlowApp() {
                     </div>
                   </div>
 
-                  <div className={styles.guideFacts}>
-                    <dl>
-                      <dt>{tr("운영 정보", "Opening")}</dt>
-                      <dd>{evidenceText(option.availability, language)}</dd>
-                    </dl>
-                    <dl>
-                      <dt>{tr("실내 조건", "Indoor")}</dt>
-                      <dd>{evidenceText(option.indoorSuitability, language)}</dd>
-                    </dl>
-                    <dl>
-                      <dt>{tr("접근성", "Accessibility")}</dt>
-                      <dd>{evidenceText(option.accessibility, language)}</dd>
-                    </dl>
-                    <dl>
-                      <dt>{tr("혼잡 예측", "Crowd forecast")}</dt>
-                      <dd>{evidenceText(option.crowd, language)}</dd>
-                    </dl>
-                  </div>
+                  {/* 값이 없는 항목은 상자를 만들지 않는다.
+                      "요청하지 않았습니다"·"찾지 못했습니다"만 적힌 상자를 네
+                      개 늘어놓으면, 화면의 절반이 **없다는 말**로 채워져
+                      정작 확인한 근거가 묻힌다. 확인한 것만 보여 주고,
+                      확인하지 못해서 **결정에 영향을 주는 것**은 이미 카드
+                      상단의 경고와 아래 `why` 문장이 따로 말한다. */}
+                  {(() => {
+                    const facts = [
+                      { key: "availability", ko: "운영 정보", en: "Opening", value: option.availability },
+                      { key: "indoor", ko: "실내 조건", en: "Indoor", value: option.indoorSuitability },
+                      { key: "accessibility", ko: "접근성", en: "Accessibility", value: option.accessibility },
+                      { key: "crowd", ko: "혼잡 예측", en: "Crowd forecast", value: option.crowd },
+                    ]
+                      .map((fact) => ({
+                        ...fact,
+                        text: evidenceText(fact.value, language),
+                      }))
+                      .filter((fact) => {
+                        if (!fact.text) return false;
+                        /* 확인하지 못했다는 말만 있는 항목은 상자에서 뺀다. */
+                        return !/(요청하지 않았|찾지 못했|확인하지 못했|필수 조건으로 쓰지 않았|not requested|could not|no .*available)/i.test(
+                          fact.text,
+                        );
+                      });
+                    if (!facts.length) return null;
+                    return (
+                      <div className={styles.guideFacts}>
+                        {facts.map((fact) => (
+                          <dl key={fact.key}>
+                            <dt>{tr(fact.ko, fact.en)}</dt>
+                            <dd>{fact.text}</dd>
+                          </dl>
+                        ))}
+                      </div>
+                    );
+                  })()}
 
                   {option.purposePreservation?.statement && (
                     <p className={styles.cardAddr} style={{ marginTop: 14 }}>
@@ -2513,6 +2594,24 @@ export default function FlowApp() {
                     "I have actually arrived here",
                   )}
             </button>
+          )}
+
+        {/* 여행이 끝나면 버튼이 하나도 남지 않아 막다른 길이었다. 도착 확인이
+            사라진 자리에 다음에 할 수 있는 일을 둔다.
+            새로 찾기는 `/flow`로 다시 들어가 상태를 통째로 비운다 — 끝난
+            여행의 입력이 다음 요청에 섞이지 않아야 한다. */}
+        {step === "active" &&
+          execution &&
+          (execution.status === "completed" ||
+            execution.status === "contract_met") && (
+            <div className={styles.actions}>
+              <a className={styles.cta} href="/flow">
+                {tr("처음부터 다시 찾기", "Start over")}
+              </a>
+              <Link className={styles.ctaLink} href="/">
+                {tr("이어가 홈으로", "Back to IEOGA home")}
+              </Link>
+            </div>
           )}
       </div>
     </div>

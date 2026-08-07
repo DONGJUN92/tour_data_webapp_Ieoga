@@ -6539,3 +6539,90 @@ body .hero-promise {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* 카드 하단 버튼 줄을 한 벌로 맞춘다.
+   `이 일정으로 이어가기`만 큰 채움 버튼이고 `결과 공유`·`지도 보기`는 작은
+   글자여서, 같은 줄에 있는데 서로 다른 물건처럼 보였다. 게다가 폭이 좁아
+   두 글자씩 줄바꿈됐다. 셋을 같은 높이의 형제로 두고 줄바꿈을 막는다. */
+body .option-footer-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+body .option-footer-actions button:not(.apply-option-button),
+body .option-footer-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #d7dee6;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+  /* 줄바꿈이 이 문제의 절반이었다. */
+  white-space: nowrap;
+}
+
+body .option-footer-actions a::after {
+  content: " ↗";
+  font-size: 12px;
+}
+
+body .option-footer-actions button:not(.apply-option-button):hover,
+body .option-footer-actions a:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+body .option-footer-actions button:not(.apply-option-button):focus-visible,
+body .option-footer-actions a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* `이동 배려·실내 조건이 필요해요` 안의 두 항목을 같은 모양으로 붙여 둔다.
+   드롭다운 하나가 체크박스로 바뀌면서 라벨 자리와 여백이 남아 두 줄이 서로
+   다른 물건처럼 떨어져 보였다. */
+.recovery-preferences-body {
+  display: grid;
+  gap: 10px;
+}
+
+.recovery-preferences-body > .check-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #d7dee6;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.recovery-preferences-body > .check-row input {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.recovery-preferences-body > .check-row strong {
+  display: block;
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.recovery-preferences-body > .check-row small {
+  display: block;
+  margin-top: 3px;
+  color: #4e5968;
+  font-size: 12px;
+  line-height: 1.6;
+}

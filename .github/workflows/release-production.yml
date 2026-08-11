@@ -88,7 +88,6 @@ jobs:
           npx --no-install wrangler d1 migrations apply site-creator-d1
           --remote
           --config wrangler.jsonc
-          --yes
 
       - name: Deploy the exact no-bundle artifact at 100 percent
         shell: bash

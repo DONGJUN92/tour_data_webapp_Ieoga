@@ -803,6 +803,8 @@ test("production release workflow builds once and deploys that artifact without 
     /npx --no-install playwright install --with-deps chromium/,
     /npm run test:e2e/,
     /node scripts\/release-identity\.mjs prepare/,
+    /wrangler d1 migrations apply site-creator-d1/,
+    /--remote/,
     /npx --no-install wrangler deploy dist\/server\/index\.js/,
     /--no-bundle/,
     /--assets dist\/client/,
@@ -823,7 +825,7 @@ test("production release workflow builds once and deploys that artifact without 
   const cloudflareSecretReferences = [
     ...workflow.matchAll(/CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/g),
   ];
-  assert.equal(cloudflareSecretReferences.length, 2);
+  assert.equal(cloudflareSecretReferences.length, 3);
   assert.equal(
     cloudflareSecretReferences.every(
       (match) =>
@@ -843,6 +845,12 @@ test("production release workflow builds once and deploys that artifact without 
       `${command} must run after the single build and before deployment`,
     );
   }
+  assert.ok(
+    workflow.indexOf("wrangler d1 migrations apply") >
+      workflow.indexOf("Canonically hash the exact worker") &&
+      workflow.indexOf("wrangler d1 migrations apply") < deployIndex,
+    "remote D1 migrations must run only after verification and before worker deployment",
+  );
   for (const viewport of ["mobile-360", "mobile-390", "tablet-768", "desktop-1280"]) {
     assert.match(playwrightConfig, new RegExp(`name: ["']${viewport}["']`));
   }

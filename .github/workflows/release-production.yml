@@ -80,6 +80,16 @@ jobs:
           --bundle-manifest outputs/release/worker-bundle-manifest.json
           --asset-manifest outputs/release/static-asset-manifest.json
 
+      - name: Apply additive production D1 migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          npx --no-install wrangler d1 migrations apply site-creator-d1
+          --remote
+          --config wrangler.jsonc
+          --yes
+
       - name: Deploy the exact no-bundle artifact at 100 percent
         shell: bash
         env:

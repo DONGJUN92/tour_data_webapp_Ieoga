@@ -20,7 +20,6 @@ export type Audience =
   | "senior";
 export type LoadState = "idle" | "loading" | "success" | "error";
 export type LocationMode = "unselected" | "automatic" | "manual";
-export type RecoveryOutcome = "idle" | "applied" | "arrived" | "not_arrived";
 export type Language = "ko" | "en";
 
 export const GUIDE_STORAGE_KEY = "ieoga-simulation-guide-seen-v1";
@@ -56,7 +55,11 @@ export type OpenWindowProof = {
   plannedStayMinutes?: number;
   appliedStayMinutes: number;
   returnMinutes: number;
-  returnBasis: "next_place_route" | "same_route_reversed";
+  returnBasis: "next_place_route" | "origin_return_route";
+  returnProvider?: string;
+  returnDistanceMeters?: number;
+  returnCalculatedAt?: string;
+  requiredBufferMinutes: number;
   leftoverMinutes: number;
   status?: "fits" | "at_risk";
 };
@@ -247,6 +250,7 @@ export type RecoveryResponse = {
   originWeatherGlance?: RecoveryOption["weatherGlance"];
   originWeatherLabel?: string;
   rejectedCount?: number;
+  rejectionSummary?: Array<{ reasonCode: string; count: number }>;
   sourceLedger?: unknown[];
   warnings?: string[];
   generatedAt?: string;
@@ -401,14 +405,62 @@ export const AUDIENCES_EN: Record<Audience, string> = {
 };
 
 export const OPEN_APIS = [
-  { id: "KorService2", label: "국문 관광정보", use: "전국 관광지·좌표·상세정보" },
-  { id: "TarRlteTarService1", label: "관광지 연관관계", use: "원래 여행 의도와 가까운 대안" },
-  { id: "TatsCnctrRateService", label: "관광지 집중률", use: "혼잡·집중 위험 보조 판단" },
-  { id: "KorWithService2", label: "무장애 관광정보", use: "접근성 조건 검증" },
-  { id: "LocgoHubTarService1", label: "지역 관광 허브", use: "지역 내 대체 거점 탐색" },
-  { id: "AreaTarDemDsService", label: "지역별 관광 수요", use: "지역 수요 구조 진단" },
-  { id: "AreaTarResDemService", label: "지역별 관광 자원 수요", use: "관광 자원 수요 공백 진단" },
-  { id: "AreaTarDivService", label: "지역 관광 다양성", use: "콘텐츠 편중·공백 진단" },
+  {
+    id: "KorService2",
+    label: "국문 관광정보",
+    labelEn: "Korean tourism information",
+    use: "전국 관광지·좌표·상세정보",
+    useEn: "Nationwide attractions, coordinates and official details",
+  },
+  {
+    id: "TarRlteTarService1",
+    label: "관광지 연관관계",
+    labelEn: "Related-attraction data",
+    use: "원래 여행 의도와 가까운 대안",
+    useEn: "Alternatives that preserve the original travel intent",
+  },
+  {
+    id: "TatsCnctrRateService",
+    label: "관광지 집중률",
+    labelEn: "Attraction concentration rate",
+    use: "혼잡·집중 위험 보조 판단",
+    useEn: "Supporting evidence for crowd concentration risk",
+  },
+  {
+    id: "KorWithService2",
+    label: "무장애 관광정보",
+    labelEn: "Accessible-tourism information",
+    use: "접근성 조건 검증",
+    useEn: "Verification of requested accessibility conditions",
+  },
+  {
+    id: "LocgoHubTarService1",
+    label: "지역 관광 허브",
+    labelEn: "Local tourism hubs",
+    use: "지역 내 대체 거점 탐색",
+    useEn: "Finding alternative hubs within a region",
+  },
+  {
+    id: "AreaTarDemDsService",
+    label: "지역별 관광 수요",
+    labelEn: "Regional tourism demand",
+    use: "지역 수요 구조 진단",
+    useEn: "Diagnosing the structure of regional demand",
+  },
+  {
+    id: "AreaTarResDemService",
+    label: "지역별 관광 자원 수요",
+    labelEn: "Regional tourism-resource demand",
+    use: "관광 자원 수요 공백 진단",
+    useEn: "Identifying gaps in tourism-resource demand",
+  },
+  {
+    id: "AreaTarDivService",
+    label: "지역 관광 다양성",
+    labelEn: "Regional tourism diversity",
+    use: "콘텐츠 편중·공백 진단",
+    useEn: "Identifying content concentration and gaps",
+  },
 ];
 
 export const POLICY_APIS = OPEN_APIS.slice(4);
@@ -668,11 +720,16 @@ export function inferRecoveryContext(plan: JourneyPlan): {
   };
 }
 
-export function formatIsoTime(value?: string): string {
-  if (!value) return "도착 시각 확인";
+export function formatIsoTime(
+  value?: string,
+  language: "ko" | "en" = "ko",
+): string {
+  if (!value) {
+    return language === "en" ? "Arrival time unavailable" : "도착 시각 확인";
+  }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
     timeZone: "Asia/Seoul",
     hour: "numeric",
     minute: "2-digit",
@@ -788,10 +845,70 @@ export function normalizeJourneyExecution(payload: unknown): JourneyExecution | 
     asRecord(root?.execution) ??
     asRecord(asRecord(root?.data)?.execution) ??
     root;
+  const statuses = new Set([
+    "active",
+    "contract_met",
+    "contract_missed",
+    "completed",
+    "abandoned",
+    "superseded",
+  ]);
+  const stepRoles = new Set([
+    "replacement",
+    "preserved",
+    "next_fixed",
+    "remaining_original",
+  ]);
+  const stepStatuses = new Set(["pending", "current", "arrived", "skipped"]);
   if (
     !execution ||
-    typeof execution.id !== "string" ||
-    !Array.isArray(execution.steps)
+    !readText(execution, ["id"]) ||
+    !readText(execution, ["baseItineraryId"]) ||
+    !readText(execution, ["sourceRunId"]) ||
+    !readText(execution, ["sourceOptionId"]) ||
+    !statuses.has(readText(execution, ["status"])) ||
+    typeof execution.currentStepSequence !== "number" ||
+    !Number.isInteger(execution.currentStepSequence) ||
+    typeof execution.nextFixedStepSequence !== "number" ||
+    !Number.isInteger(execution.nextFixedStepSequence) ||
+    !Array.isArray(execution.steps) ||
+    execution.steps.length === 0
+  ) {
+    return null;
+  }
+
+  const sequences = new Set<number>();
+  const validSteps = execution.steps.every((entry) => {
+    const step = asRecord(entry);
+    const sequence = step?.sequence;
+    const latitude = step?.latitude;
+    const longitude = step?.longitude;
+    if (
+      !step ||
+      !readText(step, ["id"]) ||
+      !readText(step, ["title"]) ||
+      !stepRoles.has(readText(step, ["role"])) ||
+      !stepStatuses.has(readText(step, ["status"])) ||
+      typeof sequence !== "number" ||
+      !Number.isInteger(sequence) ||
+      sequence < 0 ||
+      sequences.has(sequence) ||
+      typeof latitude !== "number" ||
+      !Number.isFinite(latitude) ||
+      typeof longitude !== "number" ||
+      !Number.isFinite(longitude) ||
+      typeof step.locked !== "boolean" ||
+      typeof step.reservation !== "boolean"
+    ) {
+      return false;
+    }
+    sequences.add(sequence);
+    return true;
+  });
+  if (
+    !validSteps ||
+    !sequences.has(execution.currentStepSequence) ||
+    !sequences.has(execution.nextFixedStepSequence)
   ) {
     return null;
   }
@@ -1011,11 +1128,16 @@ export function formatCoverage(value: unknown): string {
 /* 화면 전체가 같은 날짜 표기를 쓰도록 여기 한 곳에서만 만든다. 예전에는
    `2026-08-03`, `2026. 8. 3. 오전 10:48`, `202606`, `2026년 06월 기준`이
    같은 화면에 섞여 나왔다. */
-export function formatDate(value?: string): string {
-  if (!value) return "기준일 미제공";
+export function formatDate(
+  value?: string,
+  language: "ko" | "en" = "ko",
+): string {
+  if (!value) {
+    return language === "en" ? "Reference date unavailable" : "기준일 미제공";
+  }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
     timeZone: "Asia/Seoul",
     year: "numeric",
     month: "long",
@@ -1165,8 +1287,10 @@ export const OPTION_SORTS = [
     value: "recommended",
     ko: "추천순",
     en: "Recommended",
-    hint: "검증 결과를 종합한 기본 순서입니다.",
-    hintEn: "The default order from all verified evidence.",
+    hint:
+      "안전 조건을 통과한 뒤 최소 변경·편안함·지역 발견을 대표하는 안을 먼저 배치합니다. 카드의 기초 적합도 점수순과 다를 수 있습니다.",
+    hintEn:
+      "After safety checks, representative options for minimal change, comfort and local discovery come first. This may differ from the Base fit score order.",
   },
   {
     value: "quiet_first",

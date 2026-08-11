@@ -59,7 +59,7 @@ import type {
   TravelPurposeProof,
 } from "./types";
 
-export const RECOVERY_RULE_VERSION = "2026.07-continuity-v2";
+export const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
 
 type ItineraryNode = NonNullable<
   RecoveryRequest["itinerary"]
@@ -454,6 +454,39 @@ function unknownAvailability(
   };
 }
 
+function operatingStatusRejection(params: {
+  candidate: Pick<
+    WorkingCandidate,
+    "contentId" | "title" | "distanceMeters"
+  >;
+  availability: PublicAvailabilityEvidence;
+  lookupFailed: boolean;
+  changedNodeCount: number;
+}): RejectedCandidate | undefined {
+  if (params.availability.status === "confirmed_open") return undefined;
+  const reasonCode: RejectionReasonCode =
+    params.availability.status === "confirmed_closed"
+      ? "OFFICIALLY_CLOSED"
+      : params.lookupFailed
+        ? "OPERATING_STATUS_UPSTREAM_UNAVAILABLE"
+        : "OPERATING_STATUS_UNCONFIRMED";
+  const reason =
+    reasonCode === "OFFICIALLY_CLOSED"
+      ? "공식 운영정보상 제안된 방문 구간에 운영하지 않아 제외했습니다."
+      : reasonCode === "OPERATING_STATUS_UPSTREAM_UNAVAILABLE"
+        ? "공식 운영정보 제공자에 연결하지 못해 방문 가능 여부를 검증할 수 없어 제외했습니다. 잠시 후 다시 시도할 수 있습니다."
+        : "공식 응답은 받았지만 제안된 체류 구간 전체가 운영 중임을 확인할 수 없어 제외했습니다.";
+  return {
+    contentId: params.candidate.contentId,
+    title: params.candidate.title,
+    reasonCode,
+    reason,
+    distanceMeters: params.candidate.distanceMeters,
+    changedNodeCount: params.changedNodeCount,
+    verificationDepth: "route_verified",
+  };
+}
+
 /* 집중률 예측의 오늘 값과, 그 값이 **그 장소 자신의 최근 분포에서 어디인지.**
  *
  * 이 API는 시군구당 관광지 x 30일 시계열을 준다. 예전에는 오늘 하루치만 쓰고
@@ -839,7 +872,12 @@ function candidatePurpose(contentTypeId: string): {
     string,
     { key: string; label: string; tier: "sightseeing" | "shopping" | "meal" | "stay" }
   > = {
-    "12": { key: "nature", label: "자연 관광", tier: "sightseeing" },
+    /* TourAPI content type 12 means the broad official "관광지" class. It
+       does not prove that a place is nature tourism: streets, food alleys and
+       media installations can legitimately use the same content type.
+       Calling every item "자연 관광" invents a narrower classification and
+       makes otherwise correct official data look broken to the traveller. */
+    "12": { key: "attraction", label: "관광 명소", tier: "sightseeing" },
     "14": { key: "culture", label: "문화·전시 관람", tier: "sightseeing" },
     "15": { key: "festival", label: "축제·공연 관람", tier: "sightseeing" },
     "25": { key: "course", label: "여행 코스 체험", tier: "sightseeing" },
@@ -1479,11 +1517,20 @@ function itineraryScheduleDiff(params: {
     title: string;
   };
   route: Extract<WalkingRouteEvidence, { status: "routed" }>;
+  /* Required for an open window without a next appointment. It is a real
+     candidate→origin request, never an outbound-duration estimate. */
+  returnRoute?: Extract<WalkingRouteEvidence, { status: "routed" }>;
   stayMinutes: number;
   safetyBufferMinutes: number;
 }): ScheduleDiff {
-  const { context, candidate, route, stayMinutes, safetyBufferMinutes } =
-    params;
+  const {
+    context,
+    candidate,
+    route,
+    returnRoute,
+    stayMinutes,
+    safetyBufferMinutes,
+  } = params;
   const toCandidateMinutes =
     route.legs[0]?.durationMinutes ?? route.durationMinutes;
   const startAt = new Date(
@@ -1568,7 +1615,9 @@ function itineraryScheduleDiff(params: {
         arriveAt: startAt,
         leaveAt: endAt,
         route,
+        returnRoute,
         nextFixedAppointment,
+        requiredBufferMinutes: safetyBufferMinutes,
       })
     : undefined;
 
@@ -1602,7 +1651,7 @@ function itineraryScheduleDiff(params: {
       safetyBufferMinutes,
       note: nextFixedAppointment
         ? `비어 있는 시간에 한 곳을 더 넣고, 알려 주신 다음 장소 도착까지 실제 ${routeModeLabel(route.provider)} 경로로 검증했습니다.`
-        : `비어 있는 시간에 한 곳을 더 넣고, 같은 ${routeModeLabel(route.provider)} 경로로 되돌아오는 시간까지 남은 시간 안에 들어가는지 검증했습니다.`,
+        : `비어 있는 시간에 한 곳을 더 넣고, 후보지에서 출발지로 돌아오는 실제 역방향 ${routeModeLabel(returnRoute?.provider ?? route.provider)} 경로를 별도로 조회해 왕복 시간이 남은 시간 안에 들어가는지 검증했습니다.`,
       replacementNode,
       preservedWaypoints,
       nextFixedAppointment,
@@ -1690,7 +1739,9 @@ function openWindowProof(params: {
   arriveAt: Date;
   leaveAt: Date;
   route: Extract<WalkingRouteEvidence, { status: "routed" }>;
+  returnRoute?: Extract<WalkingRouteEvidence, { status: "routed" }>;
   nextFixedAppointment?: ScheduleDiff["nextFixedAppointment"];
+  requiredBufferMinutes: number;
 }): OpenWindowProof | undefined {
   const window = params.context.openWindow;
   if (!window) return undefined;
@@ -1700,12 +1751,24 @@ function openWindowProof(params: {
       (window.endAt.getTime() - params.windowStartAt.getTime()) / 60_000,
     ),
   );
+  const nextPlaceLeg = params.route.legs[1];
+  const returnRoute = params.returnRoute;
+  if (!params.nextFixedAppointment && !returnRoute) return undefined;
   const returnMinutes = params.nextFixedAppointment
-    ? (params.route.legs[1]?.durationMinutes ?? 0)
-    : params.travelToMinutes;
+    ? (nextPlaceLeg?.durationMinutes ?? 0)
+    : (returnRoute?.durationMinutes ?? 0);
   const returnBasis = params.nextFixedAppointment
     ? ("next_place_route" as const)
-    : ("same_route_reversed" as const);
+    : ("origin_return_route" as const);
+  const returnProvider = params.nextFixedAppointment
+    ? params.route.provider
+    : (returnRoute?.provider ?? params.route.provider);
+  const returnDistanceMeters = params.nextFixedAppointment
+    ? (nextPlaceLeg?.distanceMeters ?? 0)
+    : (returnRoute?.distanceMeters ?? 0);
+  const returnCalculatedAt = params.nextFixedAppointment
+    ? params.route.calculatedAt
+    : (returnRoute?.calculatedAt ?? params.route.calculatedAt);
   const backAtMs = params.leaveAt.getTime() + returnMinutes * 60_000;
   const leftoverMinutes = Math.floor(
     (window.endAt.getTime() - backAtMs) / 60_000,
@@ -1719,8 +1782,13 @@ function openWindowProof(params: {
     appliedStayMinutes: params.appliedStayMinutes,
     returnMinutes,
     returnBasis,
+    returnProvider,
+    returnDistanceMeters,
+    returnCalculatedAt,
+    requiredBufferMinutes: params.requiredBufferMinutes,
     leftoverMinutes,
-    status: leftoverMinutes >= 0 ? "fits" : "at_risk",
+    status:
+      leftoverMinutes >= params.requiredBufferMinutes ? "fits" : "at_risk",
   };
 }
 
@@ -1748,6 +1816,7 @@ async function enrichForContinuity(params: {
   let routeEvidence = candidate.routeEvidence;
   let scheduleDiff = candidate.scheduleDiff;
   let availability = candidate.availability;
+  let availabilityLookupFailed = false;
 
   if (context) {
     const routePoints = [
@@ -1758,10 +1827,30 @@ async function enrichForContinuity(params: {
         longitude: node.location!.longitude,
       })),
     ];
-    const route = await getRoute(routePoints, {
-      signal,
-      mode: input.travelMode,
-    });
+    const requiresOriginReturn = Boolean(
+      context.openWindow && !context.nextFixed,
+    );
+    /* A round trip is direction-sensitive. Query the return leg separately
+       and concurrently; copying the outbound duration is unsafe for one-way
+       roads, slopes, traffic and schedule-dependent transit. */
+    const [route, rawReturnRoute] = await Promise.all([
+      getRoute(routePoints, {
+        signal,
+        mode: input.travelMode,
+      }),
+      requiresOriginReturn
+        ? getRoute(
+            [
+              {
+                latitude: candidate.latitude,
+                longitude: candidate.longitude,
+              },
+              input.origin,
+            ],
+            { signal, mode: input.travelMode },
+          )
+        : Promise.resolve(undefined),
+    ]);
     if (
       route.status !== "routed" ||
       route.legs.length < routePoints.length - 1
@@ -1777,6 +1866,23 @@ async function enrichForContinuity(params: {
       });
       return null;
     }
+    if (
+      requiresOriginReturn &&
+      (!rawReturnRoute || rawReturnRoute.status !== "routed")
+    ) {
+      rejected.push({
+        contentId: candidate.contentId,
+        title: candidate.title,
+        reasonCode: "ROUTE_UNAVAILABLE",
+        reason:
+          "후보지에서 출발지로 돌아오는 실제 역방향 경로를 검증하지 못해 왕복 추천에서 제외했습니다.",
+        distanceMeters: candidate.distanceMeters,
+        changedNodeCount: 0,
+      });
+      return null;
+    }
+    const returnRoute =
+      rawReturnRoute?.status === "routed" ? rawReturnRoute : undefined;
 
     const firstLeg = route.legs[0];
     const routedDistance =
@@ -1791,6 +1897,7 @@ async function enrichForContinuity(params: {
       context,
       candidate,
       route,
+      returnRoute,
       stayMinutes,
       safetyBufferMinutes: safetyBuffer,
     });
@@ -1816,6 +1923,7 @@ async function enrichForContinuity(params: {
           context,
           candidate,
           route,
+          returnRoute,
           stayMinutes,
           safetyBufferMinutes: safetyBuffer,
         });
@@ -1842,6 +1950,7 @@ async function enrichForContinuity(params: {
         sourceLedger.push(evidence.audit);
         availability = publicAvailability(evidence);
       } catch (error) {
+        availabilityLookupFailed = true;
         sourceLedger.push(
           auditFromFailure("KorService2", "detailIntro2", error),
         );
@@ -1852,6 +1961,13 @@ async function enrichForContinuity(params: {
     }
 
     const violations: RejectedCandidate[] = [];
+    const operatingViolation = operatingStatusRejection({
+      candidate,
+      availability,
+      lookupFailed: availabilityLookupFailed,
+      changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+    });
+    if (operatingViolation) violations.push(operatingViolation);
     if (routedDistance > input.maxDistanceMeters) {
       const amount = Math.ceil(
         routedDistance - input.maxDistanceMeters,
@@ -1906,13 +2022,21 @@ async function enrichForContinuity(params: {
         ),
       );
       const firstRisk = atRisk[0];
-      const minimumStayAfterRelaxation = minimumStay - shortfall;
-      const safetyAfterRelaxation = safetyBuffer - shortfall;
+      /* A counterfactual is used in a later request, after time has already
+         advanced. Suggesting the exact mathematical boundary can therefore
+         fail again seconds later. Round the stay reduction up to a five-minute
+         step and reserve an additional execution margin. Never suggest
+         weakening the declared safety buffer: it is a safety contract, not a
+         ranking preference. */
+      const counterfactualReduction =
+        Math.ceil((shortfall + 2) / 5) * 5;
+      const minimumStayAfterRelaxation =
+        minimumStay - counterfactualReduction;
       const requiredRelaxation =
         minimumStayAfterRelaxation >= 10
           ? {
               constraint: "minimum_stay" as const,
-              amount: shortfall,
+              amount: counterfactualReduction,
               unit: "minutes" as const,
               currentLimit: minimumStay,
               requiredLimit: minimumStayAfterRelaxation,
@@ -1920,21 +2044,7 @@ async function enrichForContinuity(params: {
               preservesLockedNodes: true as const,
               preservesNextFixedAppointment: true as const,
             }
-          : atRisk.every(
-                (waypoint) =>
-                  waypoint.requiredBufferMinutes === safetyBuffer,
-              ) && safetyAfterRelaxation >= 5
-            ? {
-                constraint: "safety_buffer" as const,
-                amount: shortfall,
-                unit: "minutes" as const,
-                currentLimit: safetyBuffer,
-                requiredLimit: safetyAfterRelaxation,
-                description: `도착 안전여유 ${safetyBuffer}분 → ${safetyAfterRelaxation}분`,
-                preservesLockedNodes: true as const,
-                preservesNextFixedAppointment: true as const,
-              }
-            : undefined;
+          : undefined;
       violations.push({
         contentId: candidate.contentId,
         title: candidate.title,
@@ -1956,7 +2066,10 @@ async function enrichForContinuity(params: {
        입력받으므로 조정 제안도 30분 단위로 내린다. */
     const windowProof = scheduleDiff.openWindow;
     if (windowProof && windowProof.status === "at_risk") {
-      const shortfall = Math.abs(windowProof.leftoverMinutes);
+      const shortfall = Math.max(
+        0,
+        windowProof.requiredBufferMinutes - windowProof.leftoverMinutes,
+      );
       const reducedStay =
         Math.floor((windowProof.appliedStayMinutes - shortfall) / 30) * 30;
       violations.push({
@@ -1965,8 +2078,8 @@ async function enrichForContinuity(params: {
         reasonCode: "OPEN_WINDOW_OVERFLOW",
         reason:
           windowProof.returnBasis === "next_place_route"
-            ? `다녀오면 다음 장소 도착이 ${shortfall}분 늦습니다.`
-            : `다녀오면 남은 시간을 ${shortfall}분 넘깁니다.`,
+            ? `다녀오면 다음 장소에 필요한 ${windowProof.requiredBufferMinutes}분 안전여유가 ${shortfall}분 부족합니다.`
+            : `다녀오면 복귀 뒤 필요한 ${windowProof.requiredBufferMinutes}분 안전여유가 ${shortfall}분 부족합니다.`,
         distanceMeters: routedDistance,
         changedNodeCount: 0,
         requiredRelaxation:
@@ -1984,14 +2097,10 @@ async function enrichForContinuity(params: {
             : undefined,
       });
     }
-    /* 운영시간이 맞지 않는 곳을 **목록에서 지우지 않는다.**
-       실측에서 이 탈락 하나 때문에 대전 국립중앙과학관 주변 후보 3곳이 전부
-       사라져 대안이 0건이 됐다. 여행자는 "지금은 닫혀 있지만 30분 뒤에 열리는
-       곳"이나 "오늘은 닫혔지만 근처에 있어 알고는 있어야 하는 곳"을 스스로
-       판단할 수 있다. 우리가 대신 지우면 그 판단 기회를 없앤다.
-
-       대신 카드에 닫혔다는 사실을 크게 적고 순위를 뒤로 보낸다. 여행에 정답은
-       없고, 너무 멀지 않으면 폭넓게 보여 주는 쪽이 맞다. */
+    /* 운영시간은 소프트 순위 조건이 아니다. 제안한 체류 구간 전체가 공식
+       정보로 열려 있다고 확인된 후보만 실행 가능한 옵션이 된다. 휴무·데이터
+       부족·제공자 장애는 서로 다른 사유로 원장에 남겨, 여행자에게는 헛걸음을
+       막고 운영자에게는 재시도 가능한 장애인지 구분해 준다. */
 
     if (violations.length) {
       const [primary] = violations;
@@ -2015,12 +2124,26 @@ async function enrichForContinuity(params: {
       sourceLedger.push(evidence.audit);
       availability = publicAvailability(evidence);
     } catch (error) {
+      availabilityLookupFailed = true;
       sourceLedger.push(
         auditFromFailure("KorService2", "detailIntro2", error),
       );
       availability = unknownAvailability(
         "한국관광공사 상세 운영정보 호출에 실패해 운영 여부를 확정하지 못했습니다.",
       );
+    }
+  }
+
+  if (!context) {
+    const operatingViolation = operatingStatusRejection({
+      candidate,
+      availability,
+      lookupFailed: availabilityLookupFailed,
+      changedNodeCount: 0,
+    });
+    if (operatingViolation) {
+      rejected.push(operatingViolation);
+      return null;
     }
   }
 
@@ -2116,19 +2239,24 @@ function buildWhy(
     );
     if (typeof candidate.routeEvidence.taxiFareKrw === "number") {
       push(
-        `TMAP 예상 택시요금 ${candidate.routeEvidence.taxiFareKrw.toLocaleString("ko-KR")}원입니다. 자차 유류비·주차비는 포함하지 않습니다.`,
-        `TMAP estimates a ${candidate.routeEvidence.taxiFareKrw.toLocaleString("en-US")} KRW taxi fare. Fuel and parking for your own car are not included.`,
+        "TMAP 자동차 경로가 반환한 택시요금은 자차 유류비·통행료·주차비와 다른 값이므로 자차 비용으로 표시하지 않습니다.",
+        "The taxi estimate returned with the TMAP car route is not shown as a driving cost because it is not fuel, toll or parking expense.",
       );
     }
-    if (typeof candidate.routeEvidence.fareKrw === "number") {
-      const transfers = candidate.routeEvidence.transfers;
+    const transitFare = candidate.routeEvidence.fareKrw;
+    const transfers = candidate.routeEvidence.transfers;
+    if (typeof transitFare === "number" || typeof transfers === "number") {
       push(
-        `카카오맵 기준 대중교통 요금 ${candidate.routeEvidence.fareKrw.toLocaleString("ko-KR")}원${
-          typeof transfers === "number" ? `, 환승 ${transfers}회` : ""
-        }입니다.`,
-        `KakaoMap estimates a ${candidate.routeEvidence.fareKrw.toLocaleString("en-US")} KRW fare${
-          typeof transfers === "number" ? ` with ${transfers} transfer(s)` : ""
-        }.`,
+        `복구 전체 대중교통 경로 기준 요금 ${
+          typeof transitFare === "number"
+            ? `${transitFare.toLocaleString("ko-KR")}원`
+            : "미확인"
+        }, 환승 ${typeof transfers === "number" ? `${transfers}회` : "횟수 미확인"}입니다.`,
+        `For the whole recovered transit route, the fare is ${
+          typeof transitFare === "number"
+            ? `${transitFare.toLocaleString("en-US")} KRW`
+            : "unavailable"
+        } and transfers are ${typeof transfers === "number" ? transfers : "unavailable"}.`,
       );
     }
     /* 배차를 모르는 값이므로 확정 도착 시각처럼 제시하지 않는다. 도보·자차와
@@ -2856,7 +2984,7 @@ export async function recoverTrip(
           ? [
               context.openWindow?.nextPlaceLabel
                 ? `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 검증했습니다.`
-                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 같은 ${travelModeLabel(input.travelMode)} 경로로 되돌아오는 시간을 복귀로 계산했으며, 목적 유지 여부는 판단하지 않았습니다.`,
+                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 후보지에서 출발지로 돌아오는 실제 역방향 ${travelModeLabel(input.travelMode)} 경로를 별도로 조회했으며, 목적 유지 여부는 판단하지 않았습니다.`,
             ]
           : []),
       ]
@@ -3644,18 +3772,27 @@ export async function recoverTrip(
       (input.incident === "rain" &&
         option.continuityProof.weatherEvidence?.status !== "available"),
   );
+  const availabilityProviderBlocked = rejected.some(
+    (candidate) =>
+      candidate.reasonCode ===
+      "OPERATING_STATUS_UPSTREAM_UNAVAILABLE",
+  );
   const status =
     options.length === 0
-      ? "no_valid_candidate"
+      ? availabilityProviderBlocked
+        ? "upstream_unavailable"
+        : "no_valid_candidate"
       : hasSourceFailure || hasConditionalEvidence
         ? "degraded"
         : "verified";
 
   if (!options.length) {
     warnings.push(
-      context?.nextFixed
-        ? "다음 고정 일정의 도착 안전여유와 모든 필수 조건을 함께 만족하는 복구안을 찾지 못했습니다. 잠금 일정을 임의로 변경하지 않았습니다."
-        : "현재 조건을 모두 만족하는 공식 관광지 후보를 찾지 못했습니다. 존재하지 않는 장소를 만들어 추천하지 않았습니다.",
+      availabilityProviderBlocked
+        ? "공식 운영정보 제공자 장애로 후보의 실제 운영 여부를 확인하지 못했습니다. 데이터가 없다고 간주하지 않았으며, 검증 없이 장소를 추천하지 않습니다. 잠시 후 다시 시도해 주세요."
+        : context?.nextFixed
+          ? "다음 고정 일정의 도착 안전여유와 모든 필수 조건을 함께 만족하는 복구안을 찾지 못했습니다. 잠금 일정을 임의로 변경하지 않았습니다."
+          : "현재 조건을 모두 만족하는 공식 관광지 후보를 찾지 못했습니다. 존재하지 않는 장소를 만들어 추천하지 않았습니다.",
     );
   }
 

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { register } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+register(new URL("./alias-loader.mjs", import.meta.url));
 
 async function source(relativePath) {
   return readFile(path.join(ROOT, relativePath), "utf8");
@@ -66,10 +68,11 @@ function rootTokens(css) {
 }
 
 test("PWA metadata names square PNG icons and an offline-safe service worker", async () => {
-  const [manifestSource, sw, registration] = await Promise.all([
+  const [manifestSource, sw, registration, privacy] = await Promise.all([
     source("public/manifest.webmanifest"),
     source("public/sw.js"),
     source("app/ServiceWorkerRegistration.tsx"),
+    source("app/privacy/page.tsx"),
   ]);
   const manifest = JSON.parse(manifestSource);
 
@@ -79,7 +82,16 @@ test("PWA metadata names square PNG icons and an offline-safe service worker", a
   assert.match(registration, /navigator\.serviceWorker\.register\("\/sw\.js"/);
   assert.match(sw, /request\.method\s*!==\s*"GET"/);
   assert.match(sw, /url\.pathname\.startsWith\("\/api\/"\)/);
-  assert.match(sw, /caches\.match\("\/offline"\)/);
+  assert.match(sw, /fetch\(request\)\.catch\(\(\) => offlineDocument\(\)\)/);
+  assert.match(sw, /Content-Security-Policy/);
+  assert.match(sw, /escapeHtml\(entry\.title\)/);
+  assert.match(sw, /SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(sw, /coordinates, addresses, identifiers and source payload are excluded/);
+  assert.match(sw, /url\.pathname === "\/api\/v1\/privacy\/session"/);
+  assert.match(sw, /clearSnapshot\(\)/);
+  assert.doesNotMatch(sw, /latitude:\s*step\.|longitude:\s*step\.|locationLabel:/);
+  assert.match(privacy, /오프라인 사본/);
+  assert.match(privacy, /최대 24시간/);
 
   for (const [file, size] of [
     ["public/icon-192.png", 192],
@@ -92,11 +104,13 @@ test("PWA metadata names square PNG icons and an offline-safe service worker", a
 });
 
 test("SEO metadata uses the deployed host and publishes every public route", async () => {
-  const [layout, siteConfig, sitemap, robots] = await Promise.all([
+  const [layout, siteConfig, sitemap, robots, appPage, planPage] = await Promise.all([
     source("app/layout.tsx"),
     source("app/site-config.ts"),
     source("app/sitemap.ts"),
     source("app/robots.ts"),
+    source("app/app/page.tsx"),
+    source("app/plan/page.tsx"),
   ]);
 
   assert.doesNotMatch(`${layout}\n${siteConfig}`, /https:\/\/ieoga\.kr/);
@@ -113,6 +127,8 @@ test("SEO metadata uses the deployed host and publishes every public route", asy
   );
 
   for (const route of [
+    "/app",
+    "/plan",
     "/flow",
     "/policy",
     "/sources",
@@ -122,6 +138,9 @@ test("SEO metadata uses the deployed host and publishes every public route", asy
   ]) {
     assert.ok(sitemap.includes(`"${route}"`), `sitemap omits ${route}`);
   }
+  assert.match(appPage, /alternates:\s*\{ canonical: "\/app" \}/);
+  assert.match(planPage, /alternates:\s*\{ canonical: "\/plan" \}/);
+  assert.doesNotMatch(sitemap, /lastModified:\s*new Date|const now = new Date/);
   assert.match(robots, /disallow:\s*\["\/api\/",\s*"\/offline"\]/);
   assert.match(robots, /sitemap:\s*`\$\{SITE_URL\}\/sitemap\.xml`/);
 });
@@ -281,6 +300,11 @@ test("security headers and secret scan cover the production PWA contract", async
   }
   assert.match(worker, /Service-Worker-Allowed", "\/"/);
   assert.match(worker, /Cache-Control", "no-cache, no-store, must-revalidate"/);
+  assert.match(worker, /EMBED_ALLOWED_ORIGINS\?: string/);
+  assert.match(worker, /isEmbedRecover/);
+  assert.match(worker, /headers\.delete\("X-Frame-Options"\)/);
+  assert.match(worker, /frame-ancestors \$\{parseEmbedAllowedOrigins/);
+  assert.match(worker, /isEmbedDemo \? "frame-src 'self>'"|isEmbedDemo \? "frame-src 'self'"/);
   for (const name of [
     "KMA_SERVICE_KEY",
     "SESSION_SIGNING_KEY",
@@ -289,6 +313,68 @@ test("security headers and secret scan cover the production PWA contract", async
     assert.ok(sanitizer.includes(`"${name}"`), `secret scan omits ${name}`);
     assert.ok(worker.includes(`${name}?: string`), `worker Env omits ${name}`);
   }
+});
+
+test("embed sessions and database errors keep narrowly separated security boundaries", async () => {
+  const [http, session, bootstrap, widget, recover, repository, itineraries] =
+    await Promise.all([
+      source("lib/http.ts"),
+      source("lib/session-cookie.ts"),
+      source("app/api/v1/embed/session/route.ts"),
+      source("app/embed/recover/EmbedRecoverWidget.tsx"),
+      source("app/api/v1/recover/route.ts"),
+      source("lib/db/repository.ts"),
+      source("app/api/v1/itineraries/route.ts"),
+    ]);
+  assert.match(http, /sameSite: "lax"/);
+  assert.doesNotMatch(http, /ieoga_embed_session|partitioned: true|sameSite: "none"/);
+  assert.doesNotMatch(session, /getOperationalSecret\("OPS_API_KEY"\)/);
+  assert.match(session, /EMBED_SESSION_TTL_SECONDS = 10 \* 60/);
+  assert.match(session, /recover:open-window/);
+  assert.match(bootstrap, /origin !== expectedOrigin/);
+  assert.match(bootstrap, /x-ieoga-embed-bootstrap/);
+  assert.match(bootstrap, /createEmbedSessionToken/);
+  assert.match(widget, /X-IEOGA-Embed-Session/);
+  assert.match(widget, /credentials: "omit"/);
+  assert.match(recover, /verifyEmbedSessionToken/);
+  assert.match(recover, /EMBED_SESSION_SCOPE_VIOLATION/);
+  assert.match(repository, /logRepositoryFailure\("save_itinerary"/);
+  assert.doesNotMatch(repository, /cause:\s*String\(/);
+  assert.doesNotMatch(itineraries, /cause:\s*"cause" in saved/);
+  assert.match(itineraries, /attachRequestId/);
+});
+
+test("embed origin policy accepts exact origins and rejects wildcard or path scopes", async () => {
+  const { parseEmbedAllowedOrigins } = await import(
+    `../lib/embed-policy.ts?embed-policy-test=${Date.now()}`
+  );
+  assert.deepEqual(
+    parseEmbedAllowedOrigins(
+      "https://partner.example.org, https://partner.example.org/, https://*.evil.example, https://other.example/path, http://partner.example.org",
+      { includeSelf: true },
+    ),
+    ["'self'", "https://partner.example.org"],
+  );
+  assert.deepEqual(
+    parseEmbedAllowedOrigins("http://localhost:4173", {
+      allowLocalDevelopment: true,
+    }),
+    ["http://localhost:4173"],
+  );
+});
+
+test("release version is public but fail-closed without a full deployment SHA", async () => {
+  const [version, route, readiness, releaseEvidence] = await Promise.all([
+    source("lib/release/version.ts"),
+    source("app/api/v1/release/version/route.ts"),
+    source("app/api/v1/health/ready/route.ts"),
+    source("app/api/v1/release/evidence/route.ts"),
+  ]);
+  assert.match(version, /\^\[a-f0-9\]\{40\}\$/i);
+  assert.match(route, /releaseBuild: deployment\.releaseReady/);
+  assert.match(route, /status: deployment\.releaseReady \? 200 : 503/);
+  assert.match(readiness, /!deploymentVersion\.releaseReady/);
+  assert.match(releaseEvidence, /deploymentVersionReady:/);
 });
 
 test("quality gates cover required viewports, keyboard paths, axe, and coverage floors", async () => {

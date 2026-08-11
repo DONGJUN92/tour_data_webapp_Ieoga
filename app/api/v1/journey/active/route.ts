@@ -6,6 +6,7 @@ import {
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
@@ -42,6 +43,8 @@ export async function GET(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) return unsafeMutation;
   const sessionId = readSessionId(request);
   if (!sessionId) {
     return jsonResponse(

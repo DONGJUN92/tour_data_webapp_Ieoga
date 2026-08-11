@@ -85,6 +85,7 @@ export default function EmbedDemoPage() {
             src="/embed/recover?lat=35.15866&lng=129.1604&area=26&sigungu=26350&label=%ED%98%84%EC%9E%AC%20%EC%88%99%EC%86%8C%20%EC%A3%BC%EB%B3%80&host=%ED%95%B4%EC%9A%B4%EB%8C%80%20%EB%B8%94%EB%A3%A8%EC%8A%A4%ED%85%8C%EC%9D%B4"
             title="이어가 복구 위젯"
             loading="lazy"
+            allow="geolocation"
           />
           <details className={styles.snippet}>
             <summary>삽입 코드</summary>
@@ -92,6 +93,7 @@ export default function EmbedDemoPage() {
   src="https://ieoga-national-travel-resilience.sans5-poems-5045.workers.dev/embed/recover?lat=35.15866&lng=129.1604&area=26&sigungu=26350&host=파트너명"
   title="이어가 복구 위젯"
   width="420" height="720" loading="lazy"
+  allow="geolocation"
   style="border:1px solid #e5e8eb;border-radius:16px"></iframe>`}</pre>
             <p>
               좌표를 넘기지 않으면 위젯이 방문자에게 위치 권한을 직접 요청합니다.

@@ -36,7 +36,6 @@ import {
 } from "@/lib/privacy";
 import type { KtoAudit } from "@/lib/kto/types";
 import { hasExactKtoHealthSourceSet } from "@/lib/kto/health-snapshot";
-import { getTourismCommonDetail } from "@/lib/kto/adapters";
 import type {
   ItineraryRegistration,
   JourneyExecutionActionInput,
@@ -49,9 +48,12 @@ import type {
   JourneyExecutionStepRole,
 } from "@/lib/recovery/execution";
 import {
+  APPLICATION_SAFETY_CONTRACT_VERSION,
+  createItineraryImpactSnapshot,
   decryptApplicationSnapshot,
   encryptApplicationSnapshot,
 } from "@/lib/recovery/application-snapshot";
+import { RECOVERY_RULE_VERSION } from "@/lib/recovery/engine";
 import {
   koreaLatitude,
   koreaLongitude,
@@ -78,6 +80,13 @@ type D1WriteBatch = [
   BatchItem<"sqlite">,
   ...BatchItem<"sqlite">[],
 ];
+
+function isJourneyStateGuardFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /NOT NULL constraint failed:\s*journey_(?:executions|execution_steps)\.id/i.test(
+    message,
+  );
+}
 
 function privacySafeJson(
   value: unknown,
@@ -195,23 +204,97 @@ export async function persistRecovery(params: {
         : Promise.resolve([]),
     ]);
     const bestOption = params.result.options[0];
+    const recoveryItinerary = params.input.itinerary;
+    const disruptedNodeId =
+      params.result.itinerarySummary?.disruptedNodeId ??
+      recoveryItinerary?.disruptedNodeId;
+    const nextFixedNodeId =
+      params.result.itinerarySummary?.nextFixedNodeId ??
+      recoveryItinerary?.nextFixedNodeId;
+    const itineraryImpact =
+      params.result.recoveryMode === "registered_itinerary" &&
+      recoveryItinerary?.id &&
+      disruptedNodeId &&
+      nextFixedNodeId
+        ? await createItineraryImpactSnapshot({
+            itineraryId: recoveryItinerary.id,
+            disruptedNodeId,
+            nextFixedNodeId,
+            nodes: recoveryItinerary.nodes,
+          })
+        : undefined;
+    if (
+      params.result.options.length > 0 &&
+      params.result.recoveryMode === "registered_itinerary" &&
+      !itineraryImpact
+    ) {
+      return {
+        persisted: false,
+        reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
+      };
+    }
     const applicationSnapshots = new Map(
       await Promise.all(
-        params.result.options.map(async (option) => [
-          option.id,
-          await encryptApplicationSnapshot(
-            {
-              contentId: option.contentId,
-              title: option.title,
-              address: option.address || option.title,
-              latitude: option.latitude,
-              longitude: option.longitude,
-              generatedAt: params.result.generatedAt,
-            },
-            params.result.requestId,
+        params.result.options.map(async (option) => {
+          const nextFixed = option.scheduleDiff.nextFixedAppointment;
+          const openWindow = option.scheduleDiff.openWindow;
+          return [
             option.id,
-          ),
-        ] as const),
+            await encryptApplicationSnapshot(
+              {
+                contentId: option.contentId,
+                title: option.title,
+                address: option.address || option.title,
+                latitude: option.latitude,
+                longitude: option.longitude,
+                generatedAt: params.result.generatedAt,
+                contractVersion: APPLICATION_SAFETY_CONTRACT_VERSION,
+                ruleVersion: params.result.ruleVersion,
+                recoveryMode: params.result.recoveryMode,
+                availability: {
+                  status: option.availability.status as "confirmed_open",
+                  checkedAt: option.availability.checkedAt,
+                },
+                confirmationRequired:
+                  option.confirmationRequired as false,
+                evidenceGapCodes: option.evidenceGaps.map(
+                  (gap) => gap.code,
+                ) as [],
+                visitStartAt: option.scheduleDiff.replacementNode.startAt,
+                visitEndAt: option.scheduleDiff.replacementNode.endAt,
+                nextFixed:
+                  nextFixed?.estimatedArrivalAt
+                    ? {
+                        nodeId: nextFixed.nodeId,
+                        scheduledAt: nextFixed.scheduledAt,
+                        estimatedArrivalAt:
+                          nextFixed.estimatedArrivalAt,
+                        status: nextFixed.status as "preserved",
+                      }
+                    : undefined,
+                openWindow: openWindow
+                  ? {
+                      windowStartAt: openWindow.windowStartAt,
+                      windowEndAt: openWindow.windowEndAt,
+                      status: openWindow.status as "fits",
+                      returnMinutes: openWindow.returnMinutes,
+                      returnBasis: openWindow.returnBasis,
+                      returnProvider: openWindow.returnProvider,
+                      returnDistanceMeters:
+                        openWindow.returnDistanceMeters,
+                      returnCalculatedAt: openWindow.returnCalculatedAt,
+                      requiredBufferMinutes:
+                        openWindow.requiredBufferMinutes,
+                      leftoverMinutes: openWindow.leftoverMinutes,
+                    }
+                  : undefined,
+                itineraryImpact,
+              },
+              params.result.requestId,
+              option.id,
+            ),
+          ] as const;
+        }),
       ),
     );
     if (
@@ -269,6 +352,7 @@ export async function persistRecovery(params: {
         decisionProofJson: bestOption
           ? privacySafeJson(bestOption.continuityProof, "continuity")
           : null,
+        itineraryImpactHash: itineraryImpact?.hash ?? null,
         counterfactualJson: params.result.counterfactual
           ? privacySafeJson(params.result.counterfactual)
           : null,
@@ -316,6 +400,13 @@ export async function persistRecovery(params: {
           ),
           applicationSnapshotJson:
             applicationSnapshots.get(option.id) ?? null,
+          safetyContractVersion: APPLICATION_SAFETY_CONTRACT_VERSION,
+          availabilityStatus: option.availability.status,
+          availabilityCheckedAt: option.availability.checkedAt,
+          visitStartAt: option.scheduleDiff.replacementNode.startAt,
+          visitEndAt: option.scheduleDiff.replacementNode.endAt,
+          confirmationRequired: option.confirmationRequired,
+          evidenceGapCount: option.evidenceGaps.length,
         }),
       );
     }
@@ -388,16 +479,35 @@ export type StoredItinerary = ItineraryRegistration & {
 
 export const MAX_ACTIVE_ITINERARIES_PER_SESSION = 10;
 
+function logRepositoryFailure(
+  operation: string,
+  requestId: string | undefined,
+  error: unknown,
+): void {
+  const candidate = error as { name?: unknown; code?: unknown } | null;
+  console.error("[db] operation_failed", {
+    operation,
+    requestId: requestId ?? "unavailable",
+    errorName:
+      typeof candidate?.name === "string" ? candidate.name : "UnknownError",
+    errorCode:
+      typeof candidate?.code === "string" ||
+      typeof candidate?.code === "number"
+        ? String(candidate.code).slice(0, 80)
+        : "unavailable",
+  });
+}
+
 export async function saveItinerary(params: {
   sessionId: string;
   itinerary: ItineraryRegistration;
   analyticsConsent?: boolean;
   ephemeralLocationNodeIds?: string[];
+  requestId?: string;
 }): Promise<
   | { saved: true; itinerary: StoredItinerary }
   | {
       saved: false;
-      cause?: string;
       reason:
         | "NOT_FOUND"
         | "INVALID_EPHEMERAL_LOCATION_NODE"
@@ -586,19 +696,14 @@ export async function saveItinerary(params: {
       },
     };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
-    /* 로그를 볼 수 없는 환경에서도 원인이 드러나야 한다. D1이 준 문구를
-       그대로 짧게 실어 보낸다 — 값이나 자격 증명이 아니라 제약·컬럼 이름이
-       담기는 자리다. */
+    // Never return D1 text to the browser: it can contain schema, query, or
+    // bound-value details. Operators correlate this bounded server log with
+    // the public request id instead.
+    logRepositoryFailure("save_itinerary", params.requestId, error);
     return {
       saved: false,
       reason: "DB_UNAVAILABLE",
-      cause: String(
-        (error as { message?: string } | undefined)?.message ?? error,
-      ).slice(0, 200), };
+    };
   }
 }
 
@@ -788,10 +893,7 @@ export async function getOwnedSessionItinerary(params: {
       },
     };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("get_owned_session_itinerary", undefined, error);
     return { found: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -807,6 +909,7 @@ type JourneyExecutionHeader = {
   activatedAt: string;
   outcomePromptAt: string;
   contractMetAt: string | null;
+  contractMissedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
   expiresAt: string;
@@ -856,6 +959,7 @@ async function loadJourneyExecution(params: {
       activatedAt: journeyExecutions.activatedAt,
       outcomePromptAt: journeyExecutions.outcomePromptAt,
       contractMetAt: journeyExecutions.contractMetAt,
+      contractMissedAt: journeyExecutions.contractMissedAt,
       completedAt: journeyExecutions.completedAt,
       updatedAt: journeyExecutions.updatedAt,
       expiresAt: journeyExecutions.expiresAt,
@@ -903,6 +1007,7 @@ async function loadJourneyExecution(params: {
     activatedAt: header.activatedAt,
     outcomePromptAt: header.outcomePromptAt,
     contractMetAt: header.contractMetAt ?? undefined,
+    contractMissedAt: header.contractMissedAt ?? undefined,
     completedAt: header.completedAt ?? undefined,
     updatedAt: header.updatedAt,
     expiresAt: header.expiresAt,
@@ -978,7 +1083,12 @@ export async function activateRecoveryExecution(params: {
     const now = new Date().toISOString();
     const versionKey = `${params.runId}:${params.optionId}`;
     const existing = await db
-      .select({ id: journeyExecutions.id })
+      .select({
+        id: journeyExecutions.id,
+        status: journeyExecutions.status,
+        activeSessionKey: journeyExecutions.activeSessionKey,
+        expiresAt: journeyExecutions.expiresAt,
+      })
       .from(journeyExecutions)
       .where(
         and(
@@ -988,10 +1098,18 @@ export async function activateRecoveryExecution(params: {
       )
       .limit(1);
     if (existing[0]) {
+      if (
+        existing[0].status !== "active" ||
+        existing[0].activeSessionKey !== params.sessionId ||
+        Date.parse(existing[0].expiresAt) <= Date.parse(now)
+      ) {
+        return { activated: false, reason: "INVALID_STATE" };
+      }
       const execution = await loadJourneyExecution({
         db,
         sessionId: params.sessionId,
         executionId: existing[0].id,
+        activeOnly: true,
       });
       return execution
         ? { activated: true, execution }
@@ -1006,6 +1124,10 @@ export async function activateRecoveryExecution(params: {
         nextFixedNodeId: recoveryRuns.nextFixedNodeId,
         recoveryMode: recoveryRuns.recoveryMode,
         audience: recoveryRuns.audience,
+        status: recoveryRuns.status,
+        ruleVersion: recoveryRuns.ruleVersion,
+        itineraryImpactHash: recoveryRuns.itineraryImpactHash,
+        completedAt: recoveryRuns.completedAt,
         expiresAt: recoveryRuns.expiresAt,
       })
       .from(recoveryRuns)
@@ -1020,6 +1142,16 @@ export async function activateRecoveryExecution(params: {
       .limit(1);
     const run = runRows[0];
     if (!run) return { activated: false, reason: "NOT_FOUND" };
+    if (
+      (run.status !== "verified" && run.status !== "degraded") ||
+      run.ruleVersion !== RECOVERY_RULE_VERSION ||
+      !run.completedAt ||
+      !Number.isFinite(Date.parse(run.completedAt)) ||
+      !Number.isFinite(Date.parse(run.expiresAt)) ||
+      Date.parse(run.expiresAt) <= Date.parse(now)
+    ) {
+      return { activated: false, reason: "INVALID_STATE" };
+    }
     /* 빈 시간 추천에는 교체할 일정이 구조상 없다. 예전에는 이 세 값이 없다는
        이유로 INVALID_STATE를 돌려줘, 화면이 동의 체크박스와 적용 버튼을 정상
        노출한 뒤 마지막 클릭에서 반드시 409로 끝났다. 가상 페르소나 조사에서
@@ -1040,10 +1172,21 @@ export async function activateRecoveryExecution(params: {
         id: recoveryOptions.id,
         contentId: recoveryOptions.contentId,
         title: recoveryOptions.title,
+        status: recoveryOptions.status,
         scheduleDiffJson: recoveryOptions.scheduleDiffJson,
         changedNodeCount: recoveryOptions.changedNodeCount,
         applicationSnapshotJson:
           recoveryOptions.applicationSnapshotJson,
+        safetyContractVersion:
+          recoveryOptions.safetyContractVersion,
+        availabilityStatus: recoveryOptions.availabilityStatus,
+        availabilityCheckedAt:
+          recoveryOptions.availabilityCheckedAt,
+        visitStartAt: recoveryOptions.visitStartAt,
+        visitEndAt: recoveryOptions.visitEndAt,
+        confirmationRequired:
+          recoveryOptions.confirmationRequired,
+        evidenceGapCount: recoveryOptions.evidenceGapCount,
       })
       .from(recoveryOptions)
       .where(
@@ -1055,7 +1198,7 @@ export async function activateRecoveryExecution(params: {
       .limit(1);
     const option = optionRows[0];
     if (!option) return { activated: false, reason: "NOT_FOUND" };
-    if (!option.contentId) {
+    if (!option.contentId || option.status !== "applicable") {
       return { activated: false, reason: "INVALID_STATE" };
     }
     const applicationSnapshot = await decryptApplicationSnapshot(
@@ -1064,44 +1207,54 @@ export async function activateRecoveryExecution(params: {
       params.optionId,
       { contentId: option.contentId, title: option.title },
     );
-    if (option.applicationSnapshotJson && !applicationSnapshot) {
-      /* A present but unverifiable envelope is corruption/tampering, not a
-         legacy row. Do not bypass its integrity failure with a live lookup. */
+    if (!applicationSnapshot) {
+      /* Missing/legacy/tampered contracts are all unsafe. A fresh recovery
+         must be generated; mutable upstream data is never used as a bypass. */
       return { activated: false, reason: "INVALID_STATE" };
     }
-    let optionLatitude = applicationSnapshot?.latitude;
-    let optionLongitude = applicationSnapshot?.longitude;
-    let optionAddress = applicationSnapshot?.address;
+    const optionLatitude = applicationSnapshot.latitude;
+    const optionLongitude = applicationSnapshot.longitude;
+    const optionAddress = applicationSnapshot.address;
+    const nowMs = Date.parse(now);
+    const checkedAtMs = Date.parse(applicationSnapshot.availability.checkedAt);
+    const visitStartMs = Date.parse(applicationSnapshot.visitStartAt);
+    const visitEndMs = Date.parse(applicationSnapshot.visitEndAt);
+    const scheduleDiff = parseJsonRecord(option.scheduleDiffJson);
+    const replacement =
+      scheduleDiff.replacementNode &&
+      typeof scheduleDiff.replacementNode === "object" &&
+      !Array.isArray(scheduleDiff.replacementNode)
+        ? (scheduleDiff.replacementNode as Record<string, unknown>)
+        : {};
+    const SAFETY_EVIDENCE_MAX_AGE_MS = 15 * 60_000;
     if (
-      optionLatitude === undefined ||
-      optionLongitude === undefined ||
-      !optionAddress
+      option.safetyContractVersion !==
+        APPLICATION_SAFETY_CONTRACT_VERSION ||
+      option.availabilityStatus !== "confirmed_open" ||
+      option.availabilityCheckedAt !==
+        applicationSnapshot.availability.checkedAt ||
+      option.visitStartAt !== applicationSnapshot.visitStartAt ||
+      option.visitEndAt !== applicationSnapshot.visitEndAt ||
+      option.confirmationRequired !== false ||
+      option.evidenceGapCount !== 0 ||
+      applicationSnapshot.contractVersion !==
+        APPLICATION_SAFETY_CONTRACT_VERSION ||
+      applicationSnapshot.ruleVersion !== RECOVERY_RULE_VERSION ||
+      applicationSnapshot.recoveryMode !== run.recoveryMode ||
+      applicationSnapshot.confirmationRequired !== false ||
+      applicationSnapshot.evidenceGapCodes.length !== 0 ||
+      applicationSnapshot.availability.status !== "confirmed_open" ||
+      !Number.isFinite(checkedAtMs) ||
+      checkedAtMs > nowMs + 60_000 ||
+      nowMs - checkedAtMs > SAFETY_EVIDENCE_MAX_AGE_MS ||
+      !Number.isFinite(visitStartMs) ||
+      !Number.isFinite(visitEndMs) ||
+      visitStartMs < nowMs ||
+      visitEndMs <= visitStartMs ||
+      replacement.startAt !== applicationSnapshot.visitStartAt ||
+      replacement.endAt !== applicationSnapshot.visitEndAt
     ) {
-      let officialPlace: Record<string, unknown> | undefined;
-      try {
-        officialPlace = (
-          await getTourismCommonDetail(option.contentId, {
-            timeoutMs: 8_000,
-            retry: true,
-          })
-        ).items[0];
-      } catch {
-        return {
-          activated: false,
-          reason: "UPSTREAM_UNAVAILABLE",
-        };
-      }
-      optionLatitude = koreaLatitude(officialPlace?.mapy);
-      optionLongitude = koreaLongitude(officialPlace?.mapx);
-      if (
-        !officialPlace ||
-        optionLatitude === undefined ||
-        optionLongitude === undefined
-      ) {
-        return { activated: false, reason: "INVALID_STATE" };
-      }
-      optionAddress =
-        String(officialPlace.addr1 ?? "").trim() || option.title;
+      return { activated: false, reason: "INVALID_STATE" };
     }
 
     const itineraryRows = await db
@@ -1127,12 +1280,15 @@ export async function activateRecoveryExecution(params: {
         type: itineraryNodes.type,
         title: itineraryNodes.title,
         startAt: itineraryNodes.startAt,
+        endAt: itineraryNodes.endAt,
         durationMinutes: itineraryNodes.durationMinutes,
         locked: itineraryNodes.locked,
         reservation: itineraryNodes.reservation,
         locationLabel: itineraryNodes.locationLabel,
         latitude: itineraryNodes.latitude,
         longitude: itineraryNodes.longitude,
+        regionCode: itineraryNodes.regionCode,
+        districtCode: itineraryNodes.districtCode,
       })
       .from(itineraryNodes)
       .where(eq(itineraryNodes.itineraryId, run.itineraryId ?? ""))
@@ -1143,10 +1299,17 @@ export async function activateRecoveryExecution(params: {
     const nextFixedIndex = insertOnly
       ? -1
       : nodeRows.findIndex((node) => node.id === run.nextFixedNodeId);
+    const originalNextFixed = insertOnly
+      ? undefined
+      : nodeRows[nextFixedIndex];
     if (
       !insertOnly &&
       (disruptedIndex < 0 ||
         nextFixedIndex <= disruptedIndex ||
+        !originalNextFixed ||
+        (!originalNextFixed.locked && !originalNextFixed.reservation) ||
+        !originalNextFixed.startAt ||
+        !Number.isFinite(Date.parse(originalNextFixed.startAt)) ||
         nodeRows.slice(disruptedIndex + 1).some(
           (node) =>
             koreaLatitude(node.latitude) === undefined ||
@@ -1156,13 +1319,141 @@ export async function activateRecoveryExecution(params: {
       return { activated: false, reason: "INVALID_STATE" };
     }
 
-    const scheduleDiff = parseJsonRecord(option.scheduleDiffJson);
-    const replacement =
-      scheduleDiff.replacementNode &&
-      typeof scheduleDiff.replacementNode === "object" &&
-      !Array.isArray(scheduleDiff.replacementNode)
-        ? (scheduleDiff.replacementNode as Record<string, unknown>)
-        : {};
+    if (!insertOnly) {
+      const expectedImpact = applicationSnapshot.itineraryImpact;
+      const currentImpact =
+        run.itineraryId && run.disruptedNodeId && run.nextFixedNodeId
+          ? await createItineraryImpactSnapshot({
+              itineraryId: run.itineraryId,
+              disruptedNodeId: run.disruptedNodeId,
+              nextFixedNodeId: run.nextFixedNodeId,
+              nodes: nodeRows.map((node) => ({
+                id: node.id,
+                sequence: node.sequence,
+                type: node.type as ItineraryRegistration["nodes"][number]["type"],
+                title: node.title,
+                startAt: node.startAt ?? undefined,
+                endAt: node.endAt ?? undefined,
+                durationMinutes: node.durationMinutes ?? undefined,
+                locked: node.locked,
+                reservation: node.reservation,
+                location:
+                  node.locationLabel &&
+                  node.latitude !== null &&
+                  node.longitude !== null
+                    ? {
+                        label: node.locationLabel,
+                        latitude: node.latitude,
+                        longitude: node.longitude,
+                        areaCode: node.regionCode ?? undefined,
+                        sigunguCode: node.districtCode ?? undefined,
+                      }
+                    : undefined,
+              })),
+            })
+          : undefined;
+      if (
+        !expectedImpact ||
+        !currentImpact ||
+        run.itineraryImpactHash !== expectedImpact.hash ||
+        currentImpact.hash !== expectedImpact.hash ||
+        JSON.stringify(currentImpact.nodes) !==
+          JSON.stringify(expectedImpact.nodes)
+      ) {
+        return { activated: false, reason: "INVALID_STATE" };
+      }
+    }
+
+    const nextFixedProof =
+      scheduleDiff.nextFixedAppointment &&
+      typeof scheduleDiff.nextFixedAppointment === "object" &&
+      !Array.isArray(scheduleDiff.nextFixedAppointment)
+        ? (scheduleDiff.nextFixedAppointment as Record<string, unknown>)
+        : undefined;
+    /* Applying a recommendation must never turn its estimated arrival into
+       the appointment itself. The persisted proof is checked against the
+       authoritative itinerary before any write. A stale or tampered option
+       fails closed and the original locked node remains untouched. */
+    if (
+      !insertOnly &&
+      (!originalNextFixed ||
+        !nextFixedProof ||
+        nextFixedProof.nodeId !== originalNextFixed.id ||
+        nextFixedProof.title !== originalNextFixed.title ||
+        nextFixedProof.status !== "preserved" ||
+        typeof nextFixedProof.scheduledAt !== "string" ||
+        typeof nextFixedProof.estimatedArrivalAt !== "string" ||
+        Date.parse(nextFixedProof.scheduledAt) !==
+          Date.parse(originalNextFixed.startAt as string) ||
+        !applicationSnapshot.nextFixed ||
+        applicationSnapshot.nextFixed.nodeId !== nextFixedProof.nodeId ||
+        applicationSnapshot.nextFixed.scheduledAt !==
+          nextFixedProof.scheduledAt ||
+        applicationSnapshot.nextFixed.estimatedArrivalAt !==
+          nextFixedProof.estimatedArrivalAt ||
+        applicationSnapshot.nextFixed.status !== "preserved" ||
+        Date.parse(applicationSnapshot.nextFixed.scheduledAt) <= nowMs ||
+        Date.parse(applicationSnapshot.nextFixed.estimatedArrivalAt) >
+          Date.parse(applicationSnapshot.nextFixed.scheduledAt))
+    ) {
+      return { activated: false, reason: "INVALID_STATE" };
+    }
+    if (insertOnly) {
+      const openWindowProof =
+        scheduleDiff.openWindow &&
+        typeof scheduleDiff.openWindow === "object" &&
+        !Array.isArray(scheduleDiff.openWindow)
+          ? (scheduleDiff.openWindow as Record<string, unknown>)
+          : undefined;
+      const protectedWindow = applicationSnapshot.openWindow;
+      const windowStartMs = Date.parse(
+        protectedWindow?.windowStartAt ?? "",
+      );
+      const windowEndMs = Date.parse(protectedWindow?.windowEndAt ?? "");
+      const returnCalculatedAtMs = Date.parse(
+        protectedWindow?.returnCalculatedAt ?? "",
+      );
+      if (
+        !openWindowProof ||
+        !protectedWindow ||
+        openWindowProof.status !== "fits" ||
+        openWindowProof.windowStartAt !== protectedWindow.windowStartAt ||
+        openWindowProof.windowEndAt !== protectedWindow.windowEndAt ||
+        openWindowProof.returnMinutes !== protectedWindow.returnMinutes ||
+        openWindowProof.returnBasis !== protectedWindow.returnBasis ||
+        openWindowProof.returnProvider !== protectedWindow.returnProvider ||
+        openWindowProof.returnDistanceMeters !==
+          protectedWindow.returnDistanceMeters ||
+        openWindowProof.returnCalculatedAt !==
+          protectedWindow.returnCalculatedAt ||
+        openWindowProof.requiredBufferMinutes !==
+          protectedWindow.requiredBufferMinutes ||
+        openWindowProof.leftoverMinutes !==
+          protectedWindow.leftoverMinutes ||
+        !Number.isFinite(windowStartMs) ||
+        !Number.isFinite(windowEndMs) ||
+        !Number.isFinite(returnCalculatedAtMs) ||
+        nowMs < windowStartMs - 60_000 ||
+        nowMs >= windowEndMs ||
+        nowMs - returnCalculatedAtMs > SAFETY_EVIDENCE_MAX_AGE_MS ||
+        returnCalculatedAtMs > nowMs + 60_000 ||
+        visitStartMs < windowStartMs ||
+        protectedWindow.leftoverMinutes <
+          protectedWindow.requiredBufferMinutes ||
+        Math.floor(
+          (windowEndMs -
+            (visitEndMs + protectedWindow.returnMinutes * 60_000)) /
+            60_000,
+        ) !== protectedWindow.leftoverMinutes ||
+        visitEndMs +
+            (protectedWindow.returnMinutes +
+              protectedWindow.requiredBufferMinutes) *
+              60_000 >
+          windowEndMs
+      ) {
+        return { activated: false, reason: "INVALID_STATE" };
+      }
+    }
     const waypointRows = Array.isArray(scheduleDiff.preservedWaypoints)
       ? scheduleDiff.preservedWaypoints.flatMap((entry) =>
           entry && typeof entry === "object" && !Array.isArray(entry)
@@ -1250,12 +1541,23 @@ export async function activateRecoveryExecution(params: {
     if (!nextFixedStep) {
       return { activated: false, reason: "INVALID_STATE" };
     }
+    if (
+      !insertOnly &&
+      (!originalNextFixed ||
+        nextFixedStep.role !== "next_fixed" ||
+        nextFixedStep.originalNodeId !== originalNextFixed.id ||
+        nextFixedStep.scheduledAt !== originalNextFixed.startAt ||
+        nextFixedStep.locked !== originalNextFixed.locked ||
+        nextFixedStep.reservation !== originalNextFixed.reservation ||
+        nextFixedStep.locationLabel !==
+          (originalNextFixed.locationLabel ?? originalNextFixed.title) ||
+        nextFixedStep.latitude !== koreaLatitude(originalNextFixed.latitude) ||
+        nextFixedStep.longitude !== koreaLongitude(originalNextFixed.longitude))
+    ) {
+      return { activated: false, reason: "INVALID_STATE" };
+    }
     const openWindowNextArrival =
-      scheduleDiff.nextFixedAppointment &&
-      typeof scheduleDiff.nextFixedAppointment === "object" &&
-      !Array.isArray(scheduleDiff.nextFixedAppointment)
-        ? (scheduleDiff.nextFixedAppointment as Record<string, unknown>)
-        : undefined;
+      nextFixedProof;
     const promptBasis = insertOnly
       ? (typeof openWindowNextArrival?.scheduledAt === "string"
           ? openWindowNextArrival.scheduledAt
@@ -1407,10 +1709,7 @@ export async function activateRecoveryExecution(params: {
       ? { activated: true, execution }
       : { activated: false, reason: "INVALID_STATE" };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("activate_recovery_execution", undefined, error);
     return { activated: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1446,17 +1745,34 @@ export async function updateActiveJourneyExecution(params: {
     }
 
     const now = new Date().toISOString();
+    const executionGuard = db
+      .update(journeyExecutions)
+      .set({
+        id: sql<string>`CASE
+          WHEN ${journeyExecutions.status} = ${execution.status}
+            AND ${journeyExecutions.currentStepSequence} = ${execution.currentStepSequence}
+            AND ${journeyExecutions.activeSessionKey} = ${params.sessionId}
+            AND ${journeyExecutions.expiresAt} > ${now}
+          THEN ${journeyExecutions.id}
+          ELSE NULL
+        END`,
+      })
+      .where(eq(journeyExecutions.id, execution.id));
     if (params.action.action === "abandon") {
       const current = execution.steps.find(
         (step) => step.sequence === execution.currentStepSequence,
       );
       const writes: D1WriteBatch = [
+        executionGuard,
         db
           .update(journeyExecutions)
           .set({
+            /* Contract outcome and journey termination are separate facts.
+               Keep met/missed timestamps, but never describe a traveler who
+               stopped the remaining route as having completed it. */
             status: "abandoned",
             activeSessionKey: null,
-            completedAt: now,
+            completedAt: null,
             updatedAt: now,
           })
           .where(eq(journeyExecutions.id, execution.id)),
@@ -1469,26 +1785,25 @@ export async function updateActiveJourneyExecution(params: {
             .where(eq(journeyExecutionSteps.id, current.id)),
         );
       }
-      if (execution.status !== "contract_met") {
-        writes.push(
-          db
-            .insert(recoveryOutcomes)
-            .values({
-              id: `${execution.sourceRunId}:final`,
-              runId: execution.sourceRunId,
-              optionId: execution.sourceOptionId,
-              sessionId: params.sessionId,
-              event: "abandoned",
-              occurredAt: now,
-              reasonCode: params.action.reasonCode,
-              changedNodeCount: 1,
-              metadataJson: JSON.stringify({
-                executionId: execution.id,
-              }),
-            })
-            .onConflictDoNothing({ target: recoveryOutcomes.id }),
-        );
-      }
+      writes.push(
+        db
+          .insert(recoveryOutcomes)
+          .values({
+            id: `${execution.sourceRunId}:${execution.id}:abandoned`,
+            runId: execution.sourceRunId,
+            optionId: execution.sourceOptionId,
+            sessionId: params.sessionId,
+            event: "abandoned",
+            occurredAt: now,
+            reasonCode: params.action.reasonCode,
+            changedNodeCount: 1,
+            metadataJson: JSON.stringify({
+              executionId: execution.id,
+              contractStatusBeforeTermination: execution.status,
+            }),
+          })
+          .onConflictDoNothing({ target: recoveryOutcomes.id }),
+      );
       await db.batch(writes);
       const updated = await loadJourneyExecution({
         db,
@@ -1506,9 +1821,20 @@ export async function updateActiveJourneyExecution(params: {
     if (!current || current.id !== params.action.stepId) {
       return { updated: false, reason: "INVALID_STATE" };
     }
+    const currentStepGuard = db
+      .update(journeyExecutionSteps)
+      .set({
+        id: sql<string>`CASE
+          WHEN ${journeyExecutionSteps.status} = 'current'
+          THEN ${journeyExecutionSteps.id}
+          ELSE NULL
+        END`,
+      })
+      .where(eq(journeyExecutionSteps.id, current.id));
     const isLast =
       current.sequence === execution.steps.length - 1;
     const isNextFixed =
+      current.role === "next_fixed" &&
       current.sequence === execution.nextFixedStepSequence;
     const next = isLast
       ? undefined
@@ -1518,12 +1844,29 @@ export async function updateActiveJourneyExecution(params: {
     if (!isLast && !next) {
       return { updated: false, reason: "INVALID_STATE" };
     }
-    const nextStatus = isLast
-      ? "completed"
-      : isNextFixed
-        ? "contract_met"
+    const scheduledAt = isNextFixed && current.scheduledAt
+      ? Date.parse(current.scheduledAt)
+      : Number.NaN;
+    if (isNextFixed && !Number.isFinite(scheduledAt)) {
+      return { updated: false, reason: "INVALID_STATE" };
+    }
+    const arrivedOnTime = isNextFixed
+      ? Date.parse(now) <= scheduledAt
+      : undefined;
+    const nextStatus: JourneyExecution["status"] = isNextFixed
+      ? arrivedOnTime
+        ? isLast
+          ? "completed"
+          : "contract_met"
+        : "contract_missed"
+      : isLast
+        ? execution.status === "contract_missed"
+          ? "contract_missed"
+          : "completed"
         : execution.status;
     const writes: D1WriteBatch = [
+      executionGuard,
+      currentStepGuard,
       db
         .update(journeyExecutionSteps)
         .set({ status: "arrived", arrivedAt: now })
@@ -1544,16 +1887,20 @@ export async function updateActiveJourneyExecution(params: {
           status: nextStatus,
           currentStepSequence: next?.sequence ?? current.sequence,
           activeSessionKey: isLast ? null : params.sessionId,
-          contractMetAt: isNextFixed ? now : execution.contractMetAt ?? null,
+          contractMetAt:
+            isNextFixed && arrivedOnTime
+              ? now
+              : execution.contractMetAt ?? null,
+          contractMissedAt:
+            isNextFixed && !arrivedOnTime
+              ? now
+              : execution.contractMissedAt ?? null,
           completedAt: isLast ? now : null,
           updatedAt: now,
         })
         .where(eq(journeyExecutions.id, execution.id)),
     );
     if (isNextFixed) {
-      const scheduledAt = current.scheduledAt
-        ? Date.parse(current.scheduledAt)
-        : Number.NaN;
       writes.push(
         db
           .insert(recoveryOutcomes)
@@ -1565,9 +1912,7 @@ export async function updateActiveJourneyExecution(params: {
             event: "arrived",
             occurredAt: now,
             actualArrivalAt: now,
-            arrivedOnTime: Number.isFinite(scheduledAt)
-              ? Date.parse(now) <= scheduledAt
-              : null,
+            arrivedOnTime,
             changedNodeCount: 1,
             metadataJson: JSON.stringify({
               executionId: execution.id,
@@ -1587,8 +1932,13 @@ export async function updateActiveJourneyExecution(params: {
     return updated
       ? { updated: true, execution: updated }
       : { updated: false, reason: "INVALID_STATE" };
-  } catch {
-    return { updated: false, reason: "DB_UNAVAILABLE" };
+  } catch (error) {
+    return {
+      updated: false,
+      reason: isJourneyStateGuardFailure(error)
+        ? "INVALID_STATE"
+        : "DB_UNAVAILABLE",
+    };
   }
 }
 
@@ -1618,12 +1968,17 @@ export async function recordRecoveryOutcome(params: {
         | "DB_UNAVAILABLE";
     }
 > {
+  if (params.outcome.event !== "selected") {
+    return { recorded: false, reason: "INVALID_STATE" };
+  }
   try {
     const db = getDb();
     const now = new Date().toISOString();
     const ownedRun = await db
       .select({
         id: recoveryRuns.id,
+        status: recoveryRuns.status,
+        ruleVersion: recoveryRuns.ruleVersion,
       })
       .from(recoveryRuns)
       .where(
@@ -1636,11 +1991,18 @@ export async function recordRecoveryOutcome(params: {
       )
       .limit(1);
     if (!ownedRun[0]) return { recorded: false, reason: "NOT_FOUND" };
+    if (
+      (ownedRun[0].status !== "verified" &&
+        ownedRun[0].status !== "degraded") ||
+      ownedRun[0].ruleVersion !== RECOVERY_RULE_VERSION
+    ) {
+      return { recorded: false, reason: "INVALID_STATE" };
+    }
 
     const options = await db
       .select({
         id: recoveryOptions.id,
-        scheduleDiffJson: recoveryOptions.scheduleDiffJson,
+        status: recoveryOptions.status,
         changedNodeCount: recoveryOptions.changedNodeCount,
       })
       .from(recoveryOptions)
@@ -1653,55 +2015,10 @@ export async function recordRecoveryOutcome(params: {
       .limit(1);
     const option = options[0];
     if (!option) return { recorded: false, reason: "NOT_FOUND" };
-
-    const priorOutcomes = await db
-      .select({
-        event: recoveryOutcomes.event,
-        optionId: recoveryOutcomes.optionId,
-      })
-      .from(recoveryOutcomes)
-      .where(eq(recoveryOutcomes.runId, params.runId))
-      .orderBy(desc(recoveryOutcomes.occurredAt))
-      .limit(30);
-    const finalEvents = new Set([
-      "arrived",
-      "continued",
-      "abandoned",
-    ]);
-    const isFinal = finalEvents.has(params.outcome.event);
-    if (priorOutcomes.some((outcome) => finalEvents.has(outcome.event))) {
-      return { recorded: false, reason: "ALREADY_FINALIZED" };
-    }
-    if (
-      isFinal &&
-      !priorOutcomes.some(
-        (outcome) =>
-          outcome.event === "applied" &&
-          outcome.optionId === params.outcome.optionId,
-      )
-    ) {
+    if (option.status !== "applicable") {
       return { recorded: false, reason: "INVALID_STATE" };
     }
-
-    let arrivedOnTime: boolean | undefined;
-    if (
-      params.outcome.event === "arrived" &&
-      option?.scheduleDiffJson
-    ) {
-      const scheduleDiff = JSON.parse(option.scheduleDiffJson) as {
-        nextFixedAppointment?: { scheduledAt?: string };
-      };
-      const scheduledAt =
-        scheduleDiff.nextFixedAppointment?.scheduledAt;
-      if (scheduledAt) {
-        arrivedOnTime =
-          Date.parse(now) <= Date.parse(scheduledAt);
-      }
-    }
-
-    const id = isFinal
-      ? `${params.runId}:final`
-      : crypto.randomUUID();
+    const id = crypto.randomUUID();
     const values = {
       id,
       runId: params.runId,
@@ -1709,30 +2026,13 @@ export async function recordRecoveryOutcome(params: {
       sessionId: params.sessionId,
       event: params.outcome.event,
       occurredAt: now,
-      actualArrivalAt:
-        params.outcome.event === "arrived" ? now : null,
-      arrivedOnTime: arrivedOnTime ?? null,
-      reasonCode: params.outcome.reasonCode ?? null,
-      changedNodeCount: option?.changedNodeCount ?? null,
-      metadataJson: JSON.stringify({
-        arrivalEvidence:
-          params.outcome.event === "arrived"
-            ? "self_reported"
-            : "not_applicable",
-      }),
+      actualArrivalAt: null,
+      arrivedOnTime: null,
+      reasonCode: null,
+      changedNodeCount: option.changedNodeCount ?? null,
+      metadataJson: JSON.stringify({ telemetry: "selection" }),
     };
-    if (isFinal) {
-      const inserted = await db
-        .insert(recoveryOutcomes)
-        .values(values)
-        .onConflictDoNothing({ target: recoveryOutcomes.id })
-        .returning({ id: recoveryOutcomes.id });
-      if (!inserted[0]) {
-        return { recorded: false, reason: "ALREADY_FINALIZED" };
-      }
-    } else {
-      await db.insert(recoveryOutcomes).values(values);
-    }
+    await db.insert(recoveryOutcomes).values(values);
 
     return {
       recorded: true,
@@ -1742,9 +2042,6 @@ export async function recordRecoveryOutcome(params: {
         optionId: params.outcome.optionId,
         event: params.outcome.event,
         occurredAt: now,
-        actualArrivalAt:
-          params.outcome.event === "arrived" ? now : undefined,
-        arrivedOnTime,
       },
     };
   } catch {
@@ -1792,10 +2089,7 @@ export async function persistHealth(
     await db.batch(writes);
     return { persisted: true };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("persist_health_snapshot", undefined, error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1955,10 +2249,7 @@ export async function persistPolicySnapshot(params: {
       });
     return { persisted: true };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("persist_mission_evidence", undefined, error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -1991,10 +2282,7 @@ export async function persistRegionPackMetadata(params: {
     });
     return { persisted: true };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("persist_region_pack_metadata", undefined, error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -2007,10 +2295,7 @@ export async function deleteSessionData(
     await db.delete(sessions).where(eq(sessions.id, sessionId));
     return { persisted: true };
   } catch (error) {
-    /* 원인을 버리면 진단이 불가능해진다. 운영에서 "현재 일정을 저장하지
-       못했습니다"(503)가 났는데 같은 요청이 재현되지 않았고, 이 `catch`가
-       D1 오류를 통째로 삼켜 무엇이 실패했는지 알 방법이 없었다. */
-    console.error("[db] DB_UNAVAILABLE", error);
+    logRepositoryFailure("delete_session_data", undefined, error);
     return { persisted: false, reason: "DB_UNAVAILABLE" };
   }
 }
@@ -2026,10 +2311,15 @@ export async function createProofShare(params: {
       expiresAt: string;
       proof: Record<string, unknown>;
     }
-  | { created: false; reason: "NOT_FOUND" | "DB_UNAVAILABLE" }
+  | {
+      created: false;
+      reason: "NOT_FOUND" | "INVALID_STATE" | "DB_UNAVAILABLE";
+    }
 > {
   try {
     const db = getDb();
+    const now = new Date().toISOString();
+    const nowMs = Date.parse(now);
     const rows = await db
       .select({
         runId: recoveryRuns.id,
@@ -2039,10 +2329,13 @@ export async function createProofShare(params: {
         districtCode: recoveryRuns.districtCode,
         status: recoveryRuns.status,
         recoveryMode: recoveryRuns.recoveryMode,
+        itineraryId: recoveryRuns.itineraryId,
         disruptedNodeId: recoveryRuns.disruptedNodeId,
         nextFixedNodeId: recoveryRuns.nextFixedNodeId,
         ruleVersion: recoveryRuns.ruleVersion,
+        itineraryImpactHash: recoveryRuns.itineraryImpactHash,
         completedAt: recoveryRuns.completedAt,
+        expiresAt: recoveryRuns.expiresAt,
         counterfactualJson: recoveryRuns.counterfactualJson,
         optionId: recoveryOptions.id,
         rank: recoveryOptions.rank,
@@ -2057,6 +2350,19 @@ export async function createProofShare(params: {
         sourceNamesJson: recoveryOptions.sourceNamesJson,
         scheduleDiffJson: recoveryOptions.scheduleDiffJson,
         continuityProofJson: recoveryOptions.continuityProofJson,
+        optionStatus: recoveryOptions.status,
+        applicationSnapshotJson:
+          recoveryOptions.applicationSnapshotJson,
+        safetyContractVersion:
+          recoveryOptions.safetyContractVersion,
+        availabilityStatus: recoveryOptions.availabilityStatus,
+        availabilityCheckedAt:
+          recoveryOptions.availabilityCheckedAt,
+        visitStartAt: recoveryOptions.visitStartAt,
+        visitEndAt: recoveryOptions.visitEndAt,
+        confirmationRequired:
+          recoveryOptions.confirmationRequired,
+        evidenceGapCount: recoveryOptions.evidenceGapCount,
       })
       .from(recoveryRuns)
       .innerJoin(
@@ -2075,12 +2381,330 @@ export async function createProofShare(params: {
     const row = rows[0];
     if (!row) return { created: false, reason: "NOT_FOUND" };
 
+    if (
+      (row.status !== "verified" && row.status !== "degraded") ||
+      row.ruleVersion !== RECOVERY_RULE_VERSION ||
+      !row.completedAt ||
+      !Number.isFinite(Date.parse(row.completedAt)) ||
+      !Number.isFinite(Date.parse(row.expiresAt)) ||
+      (row.optionStatus !== "applicable" &&
+        row.optionStatus !== "applied") ||
+      !row.contentId
+    ) {
+      return { created: false, reason: "INVALID_STATE" };
+    }
+    const applicationSnapshot = await decryptApplicationSnapshot(
+      row.applicationSnapshotJson,
+      row.runId,
+      row.optionId,
+      { contentId: row.contentId, title: row.title },
+    );
+    if (!applicationSnapshot) {
+      return { created: false, reason: "INVALID_STATE" };
+    }
+    const executionRows = row.optionStatus === "applied"
+      ? await db
+          .select({
+            id: journeyExecutions.id,
+            status: journeyExecutions.status,
+            activatedAt: journeyExecutions.activatedAt,
+            contractMetAt: journeyExecutions.contractMetAt,
+            contractMissedAt: journeyExecutions.contractMissedAt,
+            completedAt: journeyExecutions.completedAt,
+            updatedAt: journeyExecutions.updatedAt,
+            expiresAt: journeyExecutions.expiresAt,
+          })
+          .from(journeyExecutions)
+          .where(
+            and(
+              eq(journeyExecutions.sessionId, params.sessionId),
+              eq(journeyExecutions.sourceRunId, row.runId),
+              eq(journeyExecutions.sourceOptionId, row.optionId),
+              gt(journeyExecutions.expiresAt, now),
+            ),
+          )
+          .orderBy(desc(journeyExecutions.updatedAt))
+          .limit(1)
+      : [];
+    const sealedExecution = executionRows[0];
+    const checkedAtMs = Date.parse(applicationSnapshot.availability.checkedAt);
+    const visitStartMs = Date.parse(applicationSnapshot.visitStartAt);
+    const visitEndMs = Date.parse(applicationSnapshot.visitEndAt);
+    const SAFETY_EVIDENCE_MAX_AGE_MS = 15 * 60_000;
+    const scheduleDiff = parseJsonRecord(row.scheduleDiffJson);
+    const replacement =
+      scheduleDiff.replacementNode &&
+      typeof scheduleDiff.replacementNode === "object" &&
+      !Array.isArray(scheduleDiff.replacementNode)
+        ? (scheduleDiff.replacementNode as Record<string, unknown>)
+        : {};
+    if (
+      row.safetyContractVersion !==
+        APPLICATION_SAFETY_CONTRACT_VERSION ||
+      row.availabilityStatus !== "confirmed_open" ||
+      row.availabilityCheckedAt !==
+        applicationSnapshot.availability.checkedAt ||
+      row.visitStartAt !== applicationSnapshot.visitStartAt ||
+      row.visitEndAt !== applicationSnapshot.visitEndAt ||
+      row.confirmationRequired !== false ||
+      row.evidenceGapCount !== 0 ||
+      applicationSnapshot.contractVersion !==
+        APPLICATION_SAFETY_CONTRACT_VERSION ||
+      applicationSnapshot.ruleVersion !== RECOVERY_RULE_VERSION ||
+      applicationSnapshot.recoveryMode !== row.recoveryMode ||
+      applicationSnapshot.confirmationRequired !== false ||
+      applicationSnapshot.evidenceGapCodes.length !== 0 ||
+      applicationSnapshot.availability.status !== "confirmed_open" ||
+      !Number.isFinite(checkedAtMs) ||
+      !Number.isFinite(visitStartMs) ||
+      !Number.isFinite(visitEndMs) ||
+      visitEndMs <= visitStartMs ||
+      replacement.startAt !== applicationSnapshot.visitStartAt ||
+      replacement.endAt !== applicationSnapshot.visitEndAt
+    ) {
+      return { created: false, reason: "INVALID_STATE" };
+    }
+    const actionableContractIsCurrent =
+      Date.parse(row.expiresAt) > nowMs &&
+      checkedAtMs <= nowMs + 60_000 &&
+      nowMs - checkedAtMs <= SAFETY_EVIDENCE_MAX_AGE_MS &&
+      visitStartMs >= nowMs;
+    const historicalProof = Boolean(
+      sealedExecution &&
+        (sealedExecution.status !== "active" ||
+          !actionableContractIsCurrent),
+    );
+    if (!actionableContractIsCurrent && !sealedExecution) {
+      return { created: false, reason: "INVALID_STATE" };
+    }
+
+    if (historicalProof) {
+      if (row.recoveryMode === "registered_itinerary") {
+        const nextFixed = applicationSnapshot.nextFixed;
+        const nextFixedProof =
+          scheduleDiff.nextFixedAppointment &&
+          typeof scheduleDiff.nextFixedAppointment === "object" &&
+          !Array.isArray(scheduleDiff.nextFixedAppointment)
+            ? (scheduleDiff.nextFixedAppointment as Record<string, unknown>)
+            : undefined;
+        if (
+          !row.itineraryId ||
+          !row.disruptedNodeId ||
+          !row.nextFixedNodeId ||
+          !applicationSnapshot.itineraryImpact ||
+          row.itineraryImpactHash !==
+            applicationSnapshot.itineraryImpact.hash ||
+          !nextFixed ||
+          !nextFixedProof ||
+          nextFixedProof.nodeId !== nextFixed.nodeId ||
+          nextFixedProof.scheduledAt !== nextFixed.scheduledAt ||
+          nextFixedProof.estimatedArrivalAt !==
+            nextFixed.estimatedArrivalAt ||
+          nextFixedProof.status !== "preserved" ||
+          Date.parse(nextFixed.estimatedArrivalAt) >
+            Date.parse(nextFixed.scheduledAt)
+        ) {
+          return { created: false, reason: "INVALID_STATE" };
+        }
+      } else if (row.recoveryMode === "open_window") {
+        const protectedWindow = applicationSnapshot.openWindow;
+        const openWindowProof =
+          scheduleDiff.openWindow &&
+          typeof scheduleDiff.openWindow === "object" &&
+          !Array.isArray(scheduleDiff.openWindow)
+            ? (scheduleDiff.openWindow as Record<string, unknown>)
+            : undefined;
+        if (
+          !protectedWindow ||
+          !openWindowProof ||
+          openWindowProof.status !== "fits" ||
+          openWindowProof.windowStartAt !== protectedWindow.windowStartAt ||
+          openWindowProof.windowEndAt !== protectedWindow.windowEndAt ||
+          openWindowProof.returnMinutes !== protectedWindow.returnMinutes ||
+          openWindowProof.returnBasis !== protectedWindow.returnBasis ||
+          openWindowProof.returnProvider !== protectedWindow.returnProvider ||
+          openWindowProof.returnDistanceMeters !==
+            protectedWindow.returnDistanceMeters ||
+          openWindowProof.returnCalculatedAt !==
+            protectedWindow.returnCalculatedAt ||
+          openWindowProof.requiredBufferMinutes !==
+            protectedWindow.requiredBufferMinutes ||
+          openWindowProof.leftoverMinutes !==
+            protectedWindow.leftoverMinutes ||
+          visitStartMs < Date.parse(protectedWindow.windowStartAt) ||
+          protectedWindow.leftoverMinutes <
+            protectedWindow.requiredBufferMinutes ||
+          Math.floor(
+            (Date.parse(protectedWindow.windowEndAt) -
+              (visitEndMs + protectedWindow.returnMinutes * 60_000)) /
+              60_000,
+          ) !== protectedWindow.leftoverMinutes ||
+          visitEndMs +
+              (protectedWindow.returnMinutes +
+                protectedWindow.requiredBufferMinutes) *
+                60_000 >
+            Date.parse(protectedWindow.windowEndAt)
+        ) {
+          return { created: false, reason: "INVALID_STATE" };
+        }
+      } else {
+        return { created: false, reason: "INVALID_STATE" };
+      }
+    } else if (row.recoveryMode === "registered_itinerary") {
+      if (
+        !row.itineraryId ||
+        !row.disruptedNodeId ||
+        !row.nextFixedNodeId ||
+        !applicationSnapshot.itineraryImpact ||
+        row.itineraryImpactHash !==
+          applicationSnapshot.itineraryImpact.hash
+      ) {
+        return { created: false, reason: "INVALID_STATE" };
+      }
+      const itineraryRows = await db
+        .select({ id: itineraries.id })
+        .from(itineraries)
+        .where(
+          and(
+            eq(itineraries.id, row.itineraryId),
+            eq(itineraries.sessionId, params.sessionId),
+            isNull(itineraries.deletedAt),
+            gt(itineraries.expiresAt, now),
+          ),
+        )
+        .limit(1);
+      if (!itineraryRows[0]) {
+        return { created: false, reason: "INVALID_STATE" };
+      }
+      const nodeRows = await db
+        .select({
+          id: itineraryNodes.clientNodeId,
+          sequence: itineraryNodes.sequence,
+          type: itineraryNodes.type,
+          title: itineraryNodes.title,
+          startAt: itineraryNodes.startAt,
+          endAt: itineraryNodes.endAt,
+          durationMinutes: itineraryNodes.durationMinutes,
+          locked: itineraryNodes.locked,
+          reservation: itineraryNodes.reservation,
+          locationLabel: itineraryNodes.locationLabel,
+          latitude: itineraryNodes.latitude,
+          longitude: itineraryNodes.longitude,
+          regionCode: itineraryNodes.regionCode,
+          districtCode: itineraryNodes.districtCode,
+        })
+        .from(itineraryNodes)
+        .where(eq(itineraryNodes.itineraryId, row.itineraryId))
+        .orderBy(itineraryNodes.sequence);
+      const currentImpact = await createItineraryImpactSnapshot({
+        itineraryId: row.itineraryId,
+        disruptedNodeId: row.disruptedNodeId,
+        nextFixedNodeId: row.nextFixedNodeId,
+        nodes: nodeRows.map((node) => ({
+          id: node.id,
+          sequence: node.sequence,
+          type: node.type as ItineraryRegistration["nodes"][number]["type"],
+          title: node.title,
+          startAt: node.startAt ?? undefined,
+          endAt: node.endAt ?? undefined,
+          durationMinutes: node.durationMinutes ?? undefined,
+          locked: node.locked,
+          reservation: node.reservation,
+          location:
+            node.locationLabel &&
+            node.latitude !== null &&
+            node.longitude !== null
+              ? {
+                  label: node.locationLabel,
+                  latitude: node.latitude,
+                  longitude: node.longitude,
+                  areaCode: node.regionCode ?? undefined,
+                  sigunguCode: node.districtCode ?? undefined,
+                }
+              : undefined,
+        })),
+      });
+      const nextFixed = applicationSnapshot.nextFixed;
+      const nextFixedProof =
+        scheduleDiff.nextFixedAppointment &&
+        typeof scheduleDiff.nextFixedAppointment === "object" &&
+        !Array.isArray(scheduleDiff.nextFixedAppointment)
+          ? (scheduleDiff.nextFixedAppointment as Record<string, unknown>)
+          : undefined;
+      if (
+        !currentImpact ||
+        currentImpact.hash !== applicationSnapshot.itineraryImpact.hash ||
+        JSON.stringify(currentImpact.nodes) !==
+          JSON.stringify(applicationSnapshot.itineraryImpact.nodes) ||
+        !nextFixed ||
+        !nextFixedProof ||
+        nextFixedProof.nodeId !== nextFixed.nodeId ||
+        nextFixedProof.scheduledAt !== nextFixed.scheduledAt ||
+        nextFixedProof.estimatedArrivalAt !==
+          nextFixed.estimatedArrivalAt ||
+        nextFixedProof.status !== "preserved" ||
+        Date.parse(nextFixed.scheduledAt) <= nowMs ||
+        Date.parse(nextFixed.estimatedArrivalAt) >
+          Date.parse(nextFixed.scheduledAt)
+      ) {
+        return { created: false, reason: "INVALID_STATE" };
+      }
+    } else if (row.recoveryMode === "open_window") {
+      const protectedWindow = applicationSnapshot.openWindow;
+      const openWindowProof =
+        scheduleDiff.openWindow &&
+        typeof scheduleDiff.openWindow === "object" &&
+        !Array.isArray(scheduleDiff.openWindow)
+          ? (scheduleDiff.openWindow as Record<string, unknown>)
+          : undefined;
+      if (
+        !protectedWindow ||
+        !openWindowProof ||
+        openWindowProof.status !== "fits" ||
+        openWindowProof.windowStartAt !== protectedWindow.windowStartAt ||
+        openWindowProof.windowEndAt !== protectedWindow.windowEndAt ||
+        openWindowProof.returnMinutes !== protectedWindow.returnMinutes ||
+        openWindowProof.returnBasis !== protectedWindow.returnBasis ||
+        openWindowProof.returnProvider !== protectedWindow.returnProvider ||
+        openWindowProof.returnDistanceMeters !==
+          protectedWindow.returnDistanceMeters ||
+        openWindowProof.returnCalculatedAt !==
+          protectedWindow.returnCalculatedAt ||
+        openWindowProof.requiredBufferMinutes !==
+          protectedWindow.requiredBufferMinutes ||
+        openWindowProof.leftoverMinutes !==
+          protectedWindow.leftoverMinutes ||
+        nowMs < Date.parse(protectedWindow.windowStartAt) - 60_000 ||
+        nowMs >= Date.parse(protectedWindow.windowEndAt) ||
+        protectedWindow.leftoverMinutes <
+          protectedWindow.requiredBufferMinutes ||
+        Math.floor(
+          (Date.parse(protectedWindow.windowEndAt) -
+            (visitEndMs + protectedWindow.returnMinutes * 60_000)) /
+            60_000,
+        ) !== protectedWindow.leftoverMinutes ||
+        visitEndMs +
+            (protectedWindow.returnMinutes +
+              protectedWindow.requiredBufferMinutes) *
+              60_000 >
+          Date.parse(protectedWindow.windowEndAt) ||
+        nowMs - Date.parse(protectedWindow.returnCalculatedAt) >
+          SAFETY_EVIDENCE_MAX_AGE_MS ||
+        Date.parse(protectedWindow.returnCalculatedAt) > nowMs + 60_000
+      ) {
+        return { created: false, reason: "INVALID_STATE" };
+      }
+    } else {
+      return { created: false, reason: "INVALID_STATE" };
+    }
+
     const latestOutcomes = await db
       .select({
         event: recoveryOutcomes.event,
         occurredAt: recoveryOutcomes.occurredAt,
         actualArrivalAt: recoveryOutcomes.actualArrivalAt,
         arrivedOnTime: recoveryOutcomes.arrivedOnTime,
+        metadataJson: recoveryOutcomes.metadataJson,
       })
       .from(recoveryOutcomes)
       .where(
@@ -2091,8 +2715,15 @@ export async function createProofShare(params: {
       )
       .orderBy(desc(recoveryOutcomes.occurredAt))
       .limit(10);
+    const expiresAt = expiresInDays(7);
     const proof = {
       schema: "urn:ieoga:recovery-proof:v2",
+      proofKind: historicalProof
+        ? "historical_execution"
+        : "actionable_recovery",
+      actionability: historicalProof
+        ? "historical_not_actionable"
+        : "current_at_share",
       runId: row.runId,
       optionId: row.optionId,
       incident: row.incident,
@@ -2105,13 +2736,41 @@ export async function createProofShare(params: {
       nextFixedNodeId: row.nextFixedNodeId,
       ruleVersion: row.ruleVersion,
       generatedAt: row.completedAt,
+      shareExpiresAt: expiresAt,
+      execution: historicalProof && sealedExecution
+        ? {
+            id: sealedExecution.id,
+            status: sealedExecution.status,
+            activatedAt: sealedExecution.activatedAt,
+            contractMetAt: sealedExecution.contractMetAt,
+            contractMissedAt: sealedExecution.contractMissedAt,
+            completedAt: sealedExecution.completedAt,
+            lastUpdatedAt: sealedExecution.updatedAt,
+          }
+        : null,
       scheduleDiff: parsePrivacySafeJson(row.scheduleDiffJson),
       continuityProof: parsePrivacySafeJson(
         row.continuityProofJson,
         "continuity",
       ),
       counterfactual: parsePrivacySafeJson(row.counterfactualJson),
-      outcomes: latestOutcomes,
+      outcomes: latestOutcomes.map((outcome) => {
+        const metadata = parseJsonRecord(outcome.metadataJson);
+        const selfReported =
+          metadata.arrivalEvidence === "self_reported";
+        return {
+          event: outcome.event,
+          occurredAt: outcome.occurredAt,
+          actualArrivalAt: outcome.actualArrivalAt,
+          arrivedOnTime: outcome.arrivedOnTime,
+          evidenceKind: selfReported
+            ? "traveler_self_report"
+            : "system_event",
+          verificationLevel: selfReported
+            ? "self_reported_unverified"
+            : "system_recorded",
+        };
+      }),
       option: {
         rank: row.rank,
         contentId: row.contentId,
@@ -2125,7 +2784,9 @@ export async function createProofShare(params: {
         sources: JSON.parse(row.sourceNamesJson) as unknown,
       },
       notice:
-        "이 증명서는 사용 당시 공식 관광데이터와 이어가 규칙에 따른 판정 기록이며 예약·운영·물리적 안전을 보증하지 않습니다.",
+        historicalProof
+          ? "이 증명서는 실행 당시 보호된 판정과 이후 여정 기록을 보여 주는 역사적 증명입니다. 현재 영업·경로·예약 가능 여부를 뜻하지 않으며 현재 이동 결정에 사용하면 안 됩니다."
+          : "이 증명서는 공유 시점에 서버가 다시 확인한 안전 계약입니다. 예약·운영·물리적 안전을 보증하지 않으며 표시된 만료 시간 이후에는 다시 확인해야 합니다.",
     };
     const privacySafeProof = toPrivacySafeRecoveryEvidence(proof) as Record<
       string,
@@ -2133,7 +2794,6 @@ export async function createProofShare(params: {
     >;
     const token = randomToken();
     const tokenHash = await sha256(token);
-    const expiresAt = expiresInDays(7);
     await db.insert(proofShares).values({
       id: crypto.randomUUID(),
       runId: params.runId,
@@ -2155,7 +2815,10 @@ export async function createProofShare(params: {
 
 export async function getProofShare(
   token: string,
-): Promise<Record<string, unknown> | null> {
+): Promise<
+  | { found: true; proof: Record<string, unknown> }
+  | { found: false; reason: "NOT_FOUND" | "DB_UNAVAILABLE" }
+> {
   try {
     const db = getDb();
     const tokenHash = await sha256(token);
@@ -2171,17 +2834,24 @@ export async function getProofShare(
       )
       .limit(1);
     return rows[0]
-      ? (JSON.parse(rows[0].proofJson) as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
+      ? {
+          found: true,
+          proof: JSON.parse(rows[0].proofJson) as Record<string, unknown>,
+        }
+      : { found: false, reason: "NOT_FOUND" };
+  } catch (error) {
+    logRepositoryFailure("get_proof_share", undefined, error);
+    return { found: false, reason: "DB_UNAVAILABLE" };
   }
 }
 
 export async function revokeProofShare(params: {
   token: string;
   sessionId: string;
-}): Promise<boolean> {
+}): Promise<
+  | { revoked: true }
+  | { revoked: false; reason: "NOT_FOUND" | "DB_UNAVAILABLE" }
+> {
   try {
     const db = getDb();
     const tokenHash = await sha256(params.token);
@@ -2189,7 +2859,7 @@ export async function revokeProofShare(params: {
       .select({ id: recoveryRuns.id })
       .from(recoveryRuns)
       .where(eq(recoveryRuns.sessionId, params.sessionId));
-    if (!ownedRuns.length) return false;
+    if (!ownedRuns.length) return { revoked: false, reason: "NOT_FOUND" };
     const ownedRunIds = new Set(ownedRuns.map((row) => row.id));
     const matches = await db
       .select({ id: proofShares.id, runId: proofShares.runId })
@@ -2203,13 +2873,16 @@ export async function revokeProofShare(params: {
       )
       .limit(1);
     const match = matches[0];
-    if (!match || !ownedRunIds.has(match.runId)) return false;
+    if (!match || !ownedRunIds.has(match.runId)) {
+      return { revoked: false, reason: "NOT_FOUND" };
+    }
     await db
       .update(proofShares)
       .set({ revokedAt: new Date().toISOString() })
       .where(eq(proofShares.id, match.id));
-    return true;
-  } catch {
-    return false;
+    return { revoked: true };
+  } catch (error) {
+    logRepositoryFailure("revoke_proof_share", undefined, error);
+    return { revoked: false, reason: "DB_UNAVAILABLE" };
   }
 }

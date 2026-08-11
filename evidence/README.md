@@ -108,4 +108,9 @@ evidence/
 └── templates/                                 수집 양식 (헤더만, 데이터 0행)
 ```
 
-`templates/`는 비어 있는 수집 양식이다. `tripbreak-runs.csv`(14.6 벤치마크)와 `performance-runs.csv`(14.2 성능)는 **아직 한 행도 채워지지 않았다.**
+`templates/`는 비어 있는 수집 양식이다. `tripbreak-runs.csv`(14.6 벤치마크),
+`performance-runs.csv`(14.2 성능), 사람·현장·비교·실무·파트너·운영 원장과
+가명 `consent-ledger.csv`는 **양식일 뿐 검증 증거가 아니다.** 동의 원장에는
+이름·연락처·서명 원문을 넣지 않고 연구용 난수 ID, 동의 범위, 철회 반영과
+독립 검토자만 기록한다. 실제 파일은 원본 바이트 해시 검증과 독립 승인을
+통과해야 한다.

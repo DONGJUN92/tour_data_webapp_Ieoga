@@ -60,3 +60,20 @@ test("0건 화면이 실측 최다 사유를 이름으로 설명한다", async (
     );
   }
 });
+
+test("경로 실패 라벨은 특정 이동수단으로 오안내하지 않는다", async () => {
+  const flow = await src("../app/flow/FlowApp.tsx");
+  const labels = flow.slice(
+    flow.indexOf("const REJECTION_LABELS"),
+    flow.indexOf("function knownRejectionSummary"),
+  );
+  assert.match(
+    labels,
+    /선택한 이동수단의 실제 경로를 확인하지 못함/,
+  );
+  assert.match(
+    labels,
+    /A real route for the selected travel mode could not be verified/,
+  );
+  assert.doesNotMatch(labels, /Walking route could not be verified/);
+});

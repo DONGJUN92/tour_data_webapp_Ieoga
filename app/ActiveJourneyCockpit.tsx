@@ -62,6 +62,9 @@ export function ActiveJourneyCockpit({
 }: Props) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [messagePriority, setMessagePriority] = useState<"polite" | "assertive">(
+    "polite",
+  );
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const current = useMemo(
@@ -74,14 +77,22 @@ export function ActiveJourneyCockpit({
   const nextFixed = execution.steps.find(
     (step) => step.sequence === execution.nextFixedStepSequence,
   );
-  /* 진행 표시는 **앱이 도착 확인을 요구하는 구간까지만** 센다.
-     예전에는 분모가 전체 단계 수였다. 그런데 다음 고정 일정 이후의 단계는
-     사용자가 원래 계획대로 알아서 이어가는 구간이고 앱이 도착을 묻지 않는다.
-     그래서 "1/3 완료"에서 더 넘어갈 방법이 없었다 — 사용자가 무엇을 덜 했는지
-     찾게 만드는 표시였다. 지켜야 할 약속까지를 분모로 둔다. */
-  const trackedSteps = execution.steps.filter(
-    (step) => step.sequence <= execution.nextFixedStepSequence,
-  );
+  /* `completedAt`는 전체 동선 완료, contract_*는 약속 준수 결과다. 둘을
+     합치면 늦게 도착하고 남은 여행을 마친 사람에게 성공 배지를 주게 된다. */
+  const contractMissed =
+    execution.status === "contract_missed" || Boolean(execution.contractMissedAt);
+  const contractMet =
+    !contractMissed &&
+    (execution.status === "contract_met" || Boolean(execution.contractMetAt));
+  const journeyFinished =
+    execution.status !== "abandoned" &&
+    (execution.status === "completed" || Boolean(execution.completedAt));
+  const contractArrivalAt =
+    nextFixed?.arrivedAt ?? execution.contractMissedAt ?? execution.contractMetAt;
+  /* 실행 상태 머신은 다음 고정 일정 이후의 원래 일정도 `current`로 넘기고
+     도착 확인을 받는다. 따라서 진행률 역시 실제 실행 전체를 분모로 삼는다.
+     약속 도착만으로 100%를 표시하면 남은 일정과 completedAt의 의미가 깨진다. */
+  const trackedSteps = execution.steps;
   const completedCount = trackedSteps.filter(
     (step) => step.status === "arrived",
   ).length;
@@ -109,6 +120,7 @@ export function ActiveJourneyCockpit({
       | { action: "abandon"; reasonCode: string },
   ) {
     setState("loading");
+    setMessagePriority("polite");
     setMessage("");
     try {
       const response = await fetch("/api/v1/journey/active", {
@@ -128,51 +140,163 @@ export function ActiveJourneyCockpit({
           payload?.error?.message ?? tr("여행 진행 상태를 저장하지 못했습니다.", "Could not save your trip progress."),
         );
       }
+      if (
+        payload.execution.id !== execution.id ||
+        payload.execution.sourceRunId !== execution.sourceRunId ||
+        payload.execution.sourceOptionId !== execution.sourceOptionId
+      ) {
+        throw new Error(
+          tr(
+            "서버의 활성 일정이 바뀌어 도착 기록을 반영하지 않았습니다. 현재 일정으로 돌아가 다시 확인해 주세요.",
+            "The server's active itinerary changed, so this arrival was not accepted. Return to the current itinerary and check again.",
+          ),
+        );
+      }
       onChange(payload.execution);
       setState("idle");
+      setMessagePriority(
+        payload.execution.status === "contract_missed" ||
+          Boolean(payload.execution.contractMissedAt)
+          ? "assertive"
+          : "polite",
+      );
       setMessage(
-        payload.execution.status === "contract_met"
+        payload.execution.status === "contract_missed" ||
+          Boolean(payload.execution.contractMissedAt)
+          ? tr(
+              "도착은 기록했지만 약속 시각을 지키지 못했습니다. 남은 일정을 다시 복구하거나 관광통역안내 1330에 도움을 요청할 수 있습니다.",
+              "Arrival was recorded, but the promised time was missed. Recover the remaining trip or call the 1330 Travel Helpline for help.",
+            )
+          : payload.execution.status === "contract_met" ||
+              Boolean(payload.execution.contractMetAt)
           ? tr("다음 예약 도착을 확인했습니다. 남은 원래 일정을 계속 이어갑니다.", "Arrival at your next booking is confirmed. Your remaining stops continue.")
-          : payload.execution.status === "completed"
-            ? tr("복구된 여행을 끝까지 완주했습니다.", "You finished the recovered trip.")
+          : payload.execution.status === "completed" ||
+              Boolean(payload.execution.completedAt)
+            ? tr(
+                "남은 여행 단계가 완료되었습니다. 약속 준수 결과는 별도 확인이 필요합니다.",
+                "The remaining trip steps are complete. The appointment outcome still needs confirmation.",
+              )
             : tr("다음 일정으로 이어갑니다.", "Continuing to your next stop."),
       );
     } catch (error) {
       setState("error");
+      setMessagePriority("assertive");
       setMessage(
         error instanceof Error
           ? error.message
-          : "여행 진행 상태를 저장하지 못했습니다.",
+          : tr(
+              "여행 진행 상태를 저장하지 못했습니다.",
+              "Could not save your trip progress.",
+            ),
       );
     }
   }
 
-  if (execution.status === "completed") {
+  if (execution.status === "abandoned") {
     return (
-      <section className="journey-complete-card" data-testid="journey-completed">
-        <span aria-hidden="true">✓</span>
-        <p>{tr("여행 완주", "Trip completed")}</p>
-        <h1>{tr("복구된 일정으로 여행을 끝까지 이어갔어요.", "You kept the trip going all the way with the recovered plan.")}</h1>
-        <p>
+      <section
+        className="journey-complete-card is-abandoned"
+        data-testid="journey-abandoned"
+        role={contractMissed ? "alert" : "status"}
+        aria-live={contractMissed ? "assertive" : "polite"}
+        aria-atomic="true"
+      >
+        <p>{tr("복구 여행 종료", "Trip ended")}</p>
+        <h1>
           {tr(
-            "다음 예약 도착과 남은 원래 일정의 완료가 모두 기록되었습니다.",
-            "Arrival at your booking and every remaining stop are recorded.",
+            "남은 여행 진행을 종료했습니다.",
+            "You ended the remaining trip.",
           )}
+        </h1>
+        <p>
+          {contractMissed
+            ? tr(
+                "약속 시각을 놓친 기록은 그대로 유지되며, 이후 남은 일정을 중단했습니다.",
+                "The missed-appointment record remains, and the later stops were ended.",
+              )
+            : contractMet
+              ? tr(
+                  "다음 약속을 지킨 기록은 그대로 유지되며, 이후 남은 일정을 중단했습니다.",
+                  "The met-appointment record remains, and the later stops were ended.",
+                )
+              : tr(
+                  "약속 준수 성공으로 표시하지 않으며, 여행 중단 사실을 별도로 기록했습니다.",
+                  "This is not shown as an appointment success; the trip termination is recorded separately.",
+                )}
         </p>
+        {contractMissed && onRecoverAgain && (
+          <button type="button" onClick={onRecoverAgain}>
+            {tr("남은 일정 다시 복구하기", "Recover the remaining trip")}
+          </button>
+        )}
         <button type="button" onClick={onCloseCompleted}>
-          {tr("새 여행 준비하기", "Plan a new trip")}
+          {tr("여행 화면으로 돌아가기", "Back to the trip screen")}
         </button>
       </section>
     );
   }
 
-  if (execution.status === "abandoned") {
+  if (journeyFinished) {
     return (
-      <section className="journey-complete-card is-abandoned">
-        <p>{tr("복구 여행 종료", "Trip ended")}</p>
-        <h1>{tr("이번 여행 진행을 종료했습니다.", "This trip has been ended.")}</h1>
+      <section
+        className={`journey-complete-card ${contractMissed ? "is-contract-missed" : ""}`}
+        data-testid={
+          contractMissed
+            ? "journey-completed-contract-missed"
+            : "journey-completed"
+        }
+        role={contractMissed ? "alert" : "status"}
+        aria-live={contractMissed ? "assertive" : "polite"}
+        aria-atomic="true"
+      >
+        <span aria-hidden="true">{contractMet ? "✓" : "!"}</span>
+        <p>{tr("여행 단계 완료", "Trip steps completed")}</p>
+        <h1>
+          {contractMissed
+            ? tr(
+                "여행은 마쳤지만 약속 시각은 지키지 못했습니다.",
+                "The trip is complete, but the promised time was missed.",
+              )
+            : contractMet
+              ? tr(
+                  "다음 약속을 지키고 여행을 끝까지 이어갔어요.",
+                  "You met the next appointment and completed the trip.",
+                )
+              : tr(
+                  "남은 여행 단계를 완료했습니다.",
+                  "You completed the remaining trip steps.",
+                )}
+        </h1>
+        <p>
+          {contractMissed
+            ? tr(
+                "도착 기록은 남아 있지만 정시 도착 성공으로 처리하지 않았습니다.",
+                "The arrival remains recorded, but it is not counted as an on-time success.",
+              )
+            : contractMet
+              ? tr(
+                  "약속 시각 준수와 남은 일정 완료가 각각 기록되었습니다.",
+                  "The on-time appointment and remaining-trip completion are recorded separately.",
+                )
+              : tr(
+                  "약속 준수 근거가 없어 성공으로 표시하지 않습니다.",
+                  "No appointment-outcome evidence is available, so this is not shown as a success.",
+                )}
+        </p>
+        {contractMissed && (
+          <div className="journey-complete-actions">
+            {onRecoverAgain && (
+              <button type="button" onClick={onRecoverAgain}>
+                {tr("남은 일정 다시 복구하기", "Recover the remaining trip")}
+              </button>
+            )}
+            <a href="tel:1330">
+              {tr("관광통역안내 1330 연결", "Call the 1330 Travel Helpline")}
+            </a>
+          </div>
+        )}
         <button type="button" onClick={onCloseCompleted}>
-          {tr("여행 화면으로 돌아가기", "Back to the trip screen")}
+          {tr("새 여행 준비하기", "Plan a new trip")}
         </button>
       </section>
     );
@@ -196,7 +320,9 @@ export function ActiveJourneyCockpit({
             않는다. 1/1은 진행률이 아니라 장식이다. */}
         {trackedTotal > 1 && (
           <b>
-            {tr("다음 예약까지", "to your booking")} {completedCount}/
+            {contractMet || contractMissed
+              ? tr("전체 복구 일정", "whole recovered trip")
+              : tr("다음 예약을 향해", "toward your booking")} {completedCount}/
             {trackedTotal}
           </b>
         )}
@@ -218,7 +344,13 @@ export function ActiveJourneyCockpit({
               </dd>
             </dl>
             <dl>
-              <dt>{tr("지켜야 할 다음 예약", "Booking to protect")}</dt>
+              <dt>
+                {contractMissed
+                  ? tr("놓친 다음 예약", "Missed booking")
+                  : contractMet
+                    ? tr("지킨 다음 예약", "Protected booking")
+                    : tr("지켜야 할 다음 예약", "Booking to protect")}
+              </dt>
               <dd>
                 {nextFixed.title} ·{" "}
                 {formatTime(
@@ -308,8 +440,51 @@ export function ActiveJourneyCockpit({
         </div>
       )}
 
-      {execution.status === "contract_met" && (
-        <div className="cockpit-contract-met" role="status">
+      {contractMissed && (
+        <div
+          className="cockpit-contract-missed"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
+          data-testid="contract-missed-alert"
+        >
+          <strong>
+            {tr(
+              "도착했지만 약속 시각을 지키지 못했습니다.",
+              "You arrived, but did not meet the promised time.",
+            )}
+          </strong>
+          <span>
+            {nextFixed?.scheduledAt && contractArrivalAt
+              ? tr(
+                  `약속 ${formatTime(nextFixed.scheduledAt, language)} · 도착 확인 ${formatTime(contractArrivalAt, language)}`,
+                  `Promised ${formatTime(nextFixed.scheduledAt, language)} · arrival recorded ${formatTime(contractArrivalAt, language)}`,
+                )
+              : tr(
+                  "도착 기록은 보존하지만 정시 도착 성공으로 집계하지 않습니다.",
+                  "The arrival is retained, but it is not counted as an on-time success.",
+                )}
+          </span>
+          <div className="cockpit-support-actions">
+            {onRecoverAgain && (
+              <button type="button" onClick={onRecoverAgain}>
+                {tr("지금 상황에서 다시 복구", "Recover again from here")}
+              </button>
+            )}
+            <a href="tel:1330">
+              {tr("관광통역안내 1330 연결", "Call the 1330 Travel Helpline")}
+            </a>
+          </div>
+        </div>
+      )}
+
+      {contractMet && (
+        <div
+          className="cockpit-contract-met"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <strong>{tr("다음 예약을 지켰어요.", "Your booking is safe.")}</strong>
           <span>{tr("이제 남아 있는 원래 일정도 같은 순서로 이어갑니다.", "Your remaining stops continue in the same order.")}</span>
         </div>
@@ -360,7 +535,10 @@ export function ActiveJourneyCockpit({
 
       <div className="cockpit-footer">
         <span>
-          원본 일정은 그대로 보관되며, 현재 복구 버전만 실행 중입니다.
+          {tr(
+            "원본 일정은 그대로 보관되며, 현재 복구 버전만 실행 중입니다.",
+            "Your original itinerary remains unchanged; only this recovery version is active.",
+          )}
         </span>
         <button
           type="button"
@@ -372,13 +550,15 @@ export function ActiveJourneyCockpit({
           }
           disabled={state === "loading"}
         >
-          복구 여행 종료
+          {tr("복구 여행 종료", "End recovered trip")}
         </button>
       </div>
       {message && (
         <p
-          className={`cockpit-message ${state === "error" ? "is-error" : ""}`}
-          role={state === "error" ? "alert" : "status"}
+          className={`cockpit-message ${messagePriority === "assertive" ? "is-error" : ""}`}
+          role={messagePriority === "assertive" ? "alert" : "status"}
+          aria-live={messagePriority}
+          aria-atomic="true"
         >
           {message}
         </p>

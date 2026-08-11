@@ -99,6 +99,35 @@ test("문화시설 휴관일이 방문일과 겹치면 운영 불가로 판정�
   assert.match(evidence.note, /휴무/);
 });
 
+test("상시 개방·연중무휴 공식 표기는 체류 구간 전체의 운영 확인으로 인정한다", async () => {
+  const { evaluateAvailabilityItem } = await import(
+    "../lib/kto/availability.ts"
+  );
+  const startAt = new Date("2026-08-09T10:00:00+09:00");
+  const endAt = new Date("2026-08-09T12:00:00+09:00");
+  const evidence = evaluateAvailabilityItem(
+    { usetime: "상시 개방", restdate: "연중무휴" },
+    audit,
+    startAt,
+    endAt,
+  );
+  assert.equal(evidence.status, "confirmed_open");
+});
+
+test("상시 개방이어도 체류가 자정을 넘어 공식 휴무일과 겹치면 실패 폐쇄한다", async () => {
+  const { evaluateAvailabilityItem } = await import(
+    "../lib/kto/availability.ts"
+  );
+  const evidence = evaluateAvailabilityItem(
+    { usetime: "상시 개방", restdate: "매주 월요일 휴무" },
+    audit,
+    new Date("2026-08-09T23:30:00+09:00"),
+    new Date("2026-08-10T00:30:00+09:00"),
+  );
+  assert.equal(evidence.status, "confirmed_closed");
+  assert.match(evidence.note, /체류 구간/);
+});
+
 test("원장에 적는 필드 목록이 실제로 읽는 필드를 포함한다", async () => {
   const source = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../lib/kto/adapters.ts", import.meta.url), "utf8"),

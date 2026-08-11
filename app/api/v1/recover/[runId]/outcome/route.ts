@@ -3,6 +3,7 @@ import { recordRecoveryOutcome } from "@/lib/db/repository";
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
@@ -12,11 +13,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(
   request: NextRequest,
-  context: { params: Promise<{ runId: string }> },
 ) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
-  const { runId } = await context.params;
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) return unsafeMutation;
+  const pathSegments = request.nextUrl.pathname.split("/").filter(Boolean);
+  const runId = pathSegments.at(-2) ?? "";
   const sessionId = readSessionId(request);
   if (
     !/^[a-zA-Z0-9_-]{8,80}$/.test(runId) ||
@@ -68,7 +71,8 @@ export async function POST(
       {
         error: {
           code: "INVALID_RECOVERY_OUTCOME",
-          message: "선택·적용·도착 결과값을 확인해 주세요.",
+          message:
+            "선택한 복구안 식별자와 event=selected 값을 확인해 주세요.",
           fields: parsed.error.issues.map((issue) => ({
             path: issue.path.join("."),
             message: issue.message,
@@ -76,6 +80,24 @@ export async function POST(
         },
       },
       { status: 400 },
+    );
+  }
+
+  /* Final journey truth belongs to the active execution state machine.
+     `/apply` atomically records `applied`; `/journey/active` alone may record
+     an arrival at the current next-fixed step or abandon an active journey.
+     This legacy endpoint is selection telemetry only, so a direct client can
+     never manufacture an early success/failure outcome. */
+  if (parsed.data.event !== "selected") {
+    return jsonResponse(
+      {
+        error: {
+          code: "JOURNEY_EXECUTION_REQUIRED",
+          message:
+            "적용·도착·중단 결과는 진행 중인 여행 단계에서만 기록할 수 있습니다.",
+        },
+      },
+      { status: 409 },
     );
   }
 
@@ -93,10 +115,10 @@ export async function POST(
             recorded.reason === "NOT_FOUND"
               ? "이 세션의 복구안 또는 선택 결과를 찾지 못했습니다."
               : recorded.reason === "INVALID_STATE"
-                ? "먼저 복구안을 현재 일정에 적용한 뒤 최종 결과를 기록해 주세요."
+                ? "현재 적용 가능한 복구안의 선택 기록만 저장할 수 있습니다."
                 : recorded.reason === "ALREADY_FINALIZED"
                   ? "이 복구 실행의 최종 결과는 이미 기록되었습니다."
-              : "현재 복구 결과를 저장하지 못했습니다.",
+                  : "현재 복구 선택을 저장하지 못했습니다.",
         },
       },
       {

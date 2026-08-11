@@ -167,36 +167,37 @@ async function executeSearch(request: NextRequest, input: unknown) {
   return response;
 }
 
-export async function GET(request: NextRequest) {
+export async function GET() {
+  const response = jsonResponse(
+    {
+      error: {
+        code: "SENSITIVE_QUERY_PARAMETERS_FORBIDDEN",
+        message:
+          "장소명과 위치 조건은 브라우저 기록·접근 로그에 남는 URL로 전송하지 않습니다. application/json POST 요청을 사용해 주세요.",
+      },
+    },
+    { status: 405 },
+  );
+  response.headers.set("Allow", "POST");
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+export async function POST(request: NextRequest) {
   if (
-    request.nextUrl.searchParams.has("latitude") ||
-    request.nextUrl.searchParams.has("longitude")
+    request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !==
+    "application/json"
   ) {
     return jsonResponse(
       {
         error: {
-          code: "SENSITIVE_QUERY_PARAMETERS_FORBIDDEN",
-          message:
-            "현재 위치 좌표는 URL로 전송할 수 없습니다. JSON POST 요청을 사용해 주세요.",
+          code: "JSON_CONTENT_TYPE_REQUIRED",
+          message: "장소 검색은 application/json 형식으로만 요청할 수 있습니다.",
         },
       },
-      { status: 400 },
+      { status: 415 },
     );
   }
-  return executeSearch(request, {
-    keyword: request.nextUrl.searchParams.get("keyword") ?? "",
-    purpose:
-      request.nextUrl.searchParams.get("purpose") || "saved_stop",
-    fallback:
-      request.nextUrl.searchParams.get("fallback") || "auto",
-    areaCode:
-      request.nextUrl.searchParams.get("areaCode") || undefined,
-    sigunguCode:
-      request.nextUrl.searchParams.get("sigunguCode") || undefined,
-  });
-}
-
-export async function POST(request: NextRequest) {
   let body: unknown;
   try {
     body = await request.json();

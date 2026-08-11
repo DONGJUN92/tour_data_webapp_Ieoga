@@ -12,6 +12,9 @@ function firstFile(candidates) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") {
+    return nextResolve("next/server.js", context);
+  }
   if (specifier === "cloudflare:workers") {
     return { url: cloudflareStub.href, shortCircuit: true };
   }

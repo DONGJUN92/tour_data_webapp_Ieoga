@@ -330,7 +330,10 @@ export async function getRoute(
        keyed provider works from configuration alone, with no per-provider
        code here. */
     const url = new URL(baseUrl);
-    url.pathname = `${url.pathname.replace(/\/$/, "")}/${key}`;
+    /* `key` also carries the cache namespace (`walk:`/`car:`). Sending that
+       prefix to an OSRM-compatible endpoint makes the first longitude
+       invalid. Only the coordinate portion belongs in the provider URL. */
+    url.pathname = `${url.pathname.replace(/\/$/, "")}/${routeKey(points)}`;
     url.searchParams.set("overview", "simplified");
     url.searchParams.set("geometries", "geojson");
     url.searchParams.set("steps", "false");

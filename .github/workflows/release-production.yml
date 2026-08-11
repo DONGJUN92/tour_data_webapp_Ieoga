@@ -1,0 +1,140 @@
+name: Release production worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: production-worker-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'DONGJUN92/tour_data_webapp_Ieoga' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      # Build/test-only material; the deployed secret remains in Cloudflare and
+      # is preserved by --keep-vars. Never expose the production signing key to
+      # the build process.
+      SESSION_SIGNING_KEY: "ieoga-release-build-only-key-0001"
+
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.0"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify source and production dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          npm run audit:production
+          npm run typecheck
+          npm run lint
+
+      # This is the only production build in the job. Every later step hashes,
+      # tests, deploys, and attests these exact dist directories.
+      - name: Build the production worker once
+        run: npm run build
+
+      - name: Enforce coverage and contract thresholds against the single build
+        run: npm run test:coverage
+
+      - name: Validate submission evidence structure
+        run: npm run evidence:structure
+
+      - name: Install the pinned browser runtime
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Run all four viewport, keyboard, and accessibility projects
+        run: npm run test:e2e
+
+      - name: Canonically hash the exact worker and static assets
+        run: >-
+          node scripts/release-identity.mjs prepare
+          --commit "$GITHUB_SHA"
+          --output outputs/release/prepared-build.json
+          --bundle-manifest outputs/release/worker-bundle-manifest.json
+          --asset-manifest outputs/release/static-asset-manifest.json
+
+      - name: Deploy the exact no-bundle artifact at 100 percent
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+        run: |
+          npx --no-install wrangler deploy dist/server/index.js \
+            --config dist/server/wrangler.json \
+            --no-bundle \
+            --assets dist/client \
+            --tag "$GITHUB_SHA" \
+            --message "GitHub Actions release $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" \
+            --var "DEPLOYMENT_COMMIT_SHA:$GITHUB_SHA" \
+            --keep-vars \
+            --strict
+
+      - name: Bind runtime metadata and Cloudflare receipt to the build
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          node scripts/release-identity.mjs finalize
+          --prepared outputs/release/prepared-build.json
+          --wrangler-output "${{ runner.temp }}/wrangler-output.ndjson"
+          --output outputs/release/release-receipt.json
+
+      - name: Attest the immutable release receipt
+        id: attest
+        # actions/attest@v4 is pinned to an immutable upstream commit.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: outputs/release/release-receipt.json
+
+      - name: Add receipt checksum for submission handoff
+        shell: bash
+        run: sha256sum outputs/release/release-receipt.json > outputs/release/release-receipt.sha256
+
+      - name: Preserve receipt, canonical manifests, and Sigstore bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-release-${{ github.sha }}
+          path: |
+            outputs/release/
+            ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Preserve pre-deploy browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-production-release-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 14

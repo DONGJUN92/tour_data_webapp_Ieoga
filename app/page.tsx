@@ -42,37 +42,42 @@ const CHOICES = [
 
 export default function Landing() {
   return (
-    <main className="landing">
-      <div className="landing-inner">
-        <div className="landing-brand">
-          <span className="landing-mark" aria-hidden="true">
-            이
-          </span>
-          <div>
-            <h1>이어가</h1>
-            <p>여행을 이어 주는 서비스</p>
+    <>
+      <a className="skip-link" href="#main-content">
+        본문으로 건너뛰기
+      </a>
+      <main className="landing" id="main-content" tabIndex={-1}>
+        <div className="landing-inner">
+          <div className="landing-brand">
+            <span className="landing-mark" aria-hidden="true">
+              이
+            </span>
+            <div>
+              <h1>이어가</h1>
+              <p>여행을 이어 주는 서비스</p>
+            </div>
           </div>
+
+          <h2 className="landing-question">지금 어떤 상황인가요?</h2>
+
+          <nav className="landing-choices" aria-label="시작할 기능">
+            {CHOICES.map((choice) => (
+              <Link key={choice.href} href={choice.href} className="landing-choice">
+                <span className="landing-choice-emoji" aria-hidden="true">
+                  {choice.emoji}
+                </span>
+                <span className="landing-choice-text">
+                  <strong>{choice.label}</strong>
+                  <em>{choice.hint}</em>
+                </span>
+                <span className="landing-choice-arrow" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            ))}
+          </nav>
         </div>
-
-        <h2 className="landing-question">지금 어떤 상황인가요?</h2>
-
-        <nav className="landing-choices" aria-label="시작할 기능">
-          {CHOICES.map((choice) => (
-            <Link key={choice.href} href={choice.href} className="landing-choice">
-              <span className="landing-choice-emoji" aria-hidden="true">
-                {choice.emoji}
-              </span>
-              <span className="landing-choice-text">
-                <strong>{choice.label}</strong>
-                <em>{choice.hint}</em>
-              </span>
-              <span className="landing-choice-arrow" aria-hidden="true">
-                →
-              </span>
-            </Link>
-          ))}
-        </nav>
-      </div>
-    </main>
+      </main>
+    </>
   );
 }

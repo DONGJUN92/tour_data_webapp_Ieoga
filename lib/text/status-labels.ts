@@ -109,8 +109,12 @@ export function statusLabel(
   if (!key) return FALLBACK[language];
   const label = LABELS[key];
   if (label) return label[language];
-  // 사람이 읽을 수 있는 한국어 문장이 이미 들어온 경우는 그대로 통과시킨다.
-  if (/[가-힣]/.test(String(value))) return String(value).trim();
+  // 한국어 화면에서는 사람이 읽는 서버 문장을 보존한다. 영어 화면에서 같은
+  // 문장을 그대로 흘리면 언어 전환 뒤에도 한국어 상태가 남으므로 안전한 영어
+  // fallback을 쓴다. 세부 근거는 별도 source/evidence 문장으로 제공한다.
+  if (/[가-힣]/u.test(String(value))) {
+    return language === "ko" ? String(value).trim() : FALLBACK.en;
+  }
   return FALLBACK[language];
 }
 
@@ -131,7 +135,7 @@ export function isMappedStatus(value: unknown): boolean {
  */
 const SOURCE_LABELS: Record<string, string> = {
   "한국관광공사 국문 관광정보":
-    "Korea Tourism Organization · official tourism data",
+    "Korea Tourism Organization · official Korean tourism data",
   "한국관광공사 무장애 여행정보":
     "Korea Tourism Organization · barrier-free travel data",
   "한국관광공사 관광지 집중률 예측":
@@ -141,6 +145,7 @@ const SOURCE_LABELS: Record<string, string> = {
   "한국관광공사 기초지자체 중심 관광지":
     "Korea Tourism Organization · district hub destinations",
   "카카오 로컬": "Kakao Local",
+  "카카오 장소검색": "Kakao Local place search",
   "주소 검색": "Address lookup",
   "OpenStreetMap 보행 경로": "OpenStreetMap walking route",
   "TMAP 보행자 경로": "TMAP pedestrian routing",
@@ -157,7 +162,8 @@ export function sourceLabelText(
   const text = String(label ?? "").trim();
   if (!text) return language === "en" ? "Source not recorded" : "출처 미기록";
   if (language === "ko") return text;
-  return SOURCE_LABELS[text] ?? text;
+  return SOURCE_LABELS[text] ??
+    (/[가-힣]/u.test(text) ? "Official source · Korean label" : text);
 }
 
 /** 상태의 색 톤. good/warn/bad/idle */

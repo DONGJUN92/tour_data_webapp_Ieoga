@@ -4,11 +4,13 @@ import handler from "vinext/server/app-router-entry";
 import { refreshKtoHealth } from "../lib/kto/health-refresh";
 import { runPolicySync } from "../lib/sync/policy-sync";
 import { refreshProviderProbes } from "../lib/provider-readiness";
+import { parseEmbedAllowedOrigins } from "../lib/embed-policy";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   REGION_PACKS: R2Bucket;
+  CF_VERSION_METADATA: WorkerVersionMetadata;
   KTO_SERVICE_KEY?: string;
   PARTNER_API_KEY?: string;
   OPS_API_KEY?: string;
@@ -16,6 +18,9 @@ interface Env {
   KMA_SERVICE_KEY?: string;
   SESSION_SIGNING_KEY?: string;
   RELEASE_AUDITOR_API_KEY?: string;
+  EMBED_ALLOWED_ORIGINS?: string;
+  EVIDENCE_ARTIFACT_ALLOWED_ORIGINS?: string;
+  DEPLOYMENT_COMMIT_SHA?: string;
   REVERSE_GEOCODE_URL?: string;
   FORWARD_GEOCODE_URL?: string;
   ROUTING_BASE_URL?: string;
@@ -57,12 +62,27 @@ const worker = {
 
     const response = await handler.fetch(request, env, ctx);
     const headers = new Headers(response.headers);
+    const isEmbedRecover =
+      url.pathname === "/embed/recover" ||
+      url.pathname === "/embed/recover/";
+    const isEmbedDemo =
+      url.pathname === "/embed/demo" || url.pathname === "/embed/demo/";
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("Cross-Origin-Opener-Policy", "same-origin");
-    headers.set("Cross-Origin-Resource-Policy", "same-origin");
+    headers.set(
+      "Cross-Origin-Resource-Policy",
+      isEmbedRecover ? "cross-origin" : "same-origin",
+    );
     headers.set("Origin-Agent-Cluster", "?1");
-    headers.set("X-Frame-Options", "DENY");
+    if (isEmbedRecover) {
+      // X-Frame-Options cannot express a multi-origin allowlist and would
+      // override the CSP policy in older browsers. Every non-widget page
+      // remains explicitly denied below.
+      headers.delete("X-Frame-Options");
+    } else {
+      headers.set("X-Frame-Options", "DENY");
+    }
     headers.set("X-DNS-Prefetch-Control", "off");
     headers.set("X-Permitted-Cross-Domain-Policies", "none");
     headers.set(
@@ -83,11 +103,16 @@ const worker = {
       "worker-src 'self'",
       "manifest-src 'self'",
       "media-src 'self'",
-      "frame-src 'none'",
+      isEmbedDemo ? "frame-src 'self'" : "frame-src 'none'",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
-      "frame-ancestors 'none'",
+      isEmbedRecover
+        ? `frame-ancestors ${parseEmbedAllowedOrigins(
+            env.EMBED_ALLOWED_ORIGINS,
+            { includeSelf: true, allowLocalDevelopment: true },
+          ).join(" ")}`
+        : "frame-ancestors 'none'",
       ...(url.protocol === "https:" ? ["upgrade-insecure-requests"] : []),
     ].join("; ");
     headers.set(

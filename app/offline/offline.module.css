@@ -1,0 +1,72 @@
+.snapshot,
+.snapshotStatus {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid #b7c9be;
+  border-radius: 16px;
+  background: #f5f9f6;
+  color: #223f36;
+  line-height: 1.6;
+}
+
+.snapshot h2 {
+  margin: 0;
+  color: #102b23;
+  font-size: 1.2rem;
+}
+
+.snapshotMeta {
+  margin: 8px 0 0;
+  color: #49635a;
+  font-size: 0.875rem;
+}
+
+.snapshotGroup {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #cad8d0;
+}
+
+.snapshotGroup h3 {
+  margin: 0;
+  color: #163d31;
+  font-size: 1rem;
+}
+
+.stepList {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 0;
+  padding-left: 22px;
+}
+
+.stepList li {
+  padding-left: 4px;
+}
+
+.stepList strong,
+.stepList span,
+.stepList em {
+  display: block;
+}
+
+.stepList span {
+  color: #3e5a50;
+  font-size: 0.925rem;
+}
+
+.stepList em {
+  color: #8a3c20;
+  font-size: 0.875rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.warning {
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid #cad8d0;
+  color: #6f321e;
+  font-size: 0.9rem;
+  font-weight: 700;
+}

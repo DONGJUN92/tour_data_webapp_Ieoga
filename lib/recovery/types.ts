@@ -1,6 +1,9 @@
 import type { AvailabilityEvidence } from "@/lib/kto/availability";
 import type { KtoAudit, KtoServiceName } from "@/lib/kto/types";
-import type { WalkingRouteEvidence } from "@/lib/mobility/routing";
+import type {
+  WalkingRouteEvidence,
+  WalkingRouteProvider,
+} from "@/lib/mobility/routing";
 import type { WeatherEvidence } from "@/lib/weather/service";
 
 export type RecoveryStatus =
@@ -143,7 +146,17 @@ export type OpenWindowProof = {
   appliedStayMinutes: number;
   /* 다음 장소가 있으면 그곳까지의 이동, 없으면 출발지로 되돌아오는 이동. */
   returnMinutes: number;
-  returnBasis: "next_place_route" | "same_route_reversed";
+  /* `origin_return_route` is a separately requested candidate→origin route.
+     It must never be inferred by copying the outbound duration: direction,
+     traffic and transit schedules can all make the two legs asymmetric. */
+  returnBasis: "next_place_route" | "origin_return_route";
+  returnProvider: WalkingRouteProvider;
+  returnDistanceMeters: number;
+  returnCalculatedAt: string;
+  /* A route that merely reaches the boundary is not an actionable travel
+     recommendation. This is the user-declared reserve that must still remain
+     after the verified return leg (or before the next fixed appointment). */
+  requiredBufferMinutes: number;
   leftoverMinutes: number;
   status: "fits" | "at_risk";
 };
@@ -300,6 +313,12 @@ export type RejectionReasonCode =
   | "SAME_AS_DISRUPTED_PLACE"
   | "TRAVEL_PURPOSE_MISMATCH"
   | "OFFICIALLY_CLOSED"
+  /* The official endpoint responded, but did not contain enough structured
+     operating data to prove the whole proposed stay is open. */
+  | "OPERATING_STATUS_UNCONFIRMED"
+  /* The operating-hours endpoint itself failed. Kept separate from a valid
+     empty/unstructured response so callers know whether retrying can help. */
+  | "OPERATING_STATUS_UPSTREAM_UNAVAILABLE"
   | "CONTINUITY_WAYPOINT_AT_RISK"
   | "NEXT_FIXED_APPOINTMENT_AT_RISK"
   /* 빈 시간 추천에서 이동+체류+복귀가 남은 시간을 넘긴 후보. */

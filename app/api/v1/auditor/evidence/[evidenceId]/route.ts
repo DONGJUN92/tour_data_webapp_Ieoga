@@ -5,6 +5,7 @@ import { jsonResponse } from "@/lib/http";
 import {
   decideFieldEvidenceAudit,
   listStoredFieldEvidence,
+  verifyArtifactReference,
 } from "@/lib/release/field-evidence";
 
 export const dynamic = "force-dynamic";
@@ -79,7 +80,12 @@ export async function GET(
       (item) => item.id === evidenceId,
     );
     return evidence
-      ? jsonResponse({ evidence })
+      ? jsonResponse({
+          evidence,
+          artifactVerification: await verifyArtifactReference(
+            evidence.artifactReference,
+          ),
+        })
       : jsonResponse(
           {
             error: {
@@ -167,7 +173,9 @@ export async function PATCH(
                 ? "감사할 증거를 찾지 못했습니다."
                 : result.reason === "AUDIT_ALREADY_DECIDED"
                   ? "이미 독립 감사 결정이 완료된 증거입니다. 새 증거를 제출해 주세요."
-                : "형식 검증에 실패했거나 180일을 지난 증거는 승인할 수 없습니다.",
+                  : result.reason === "ARTIFACT_UNVERIFIED"
+                    ? "허용된 원본 파일의 실제 존재 여부와 SHA-256 해시가 일치해야 승인할 수 있습니다."
+                    : "형식 검증에 실패했거나 180일을 지난 증거는 승인할 수 없습니다.",
           },
         },
         { status: result.reason === "NOT_FOUND" ? 404 : 409 },

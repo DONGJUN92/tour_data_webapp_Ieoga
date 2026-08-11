@@ -16,7 +16,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CI: "true"
       # Public test-only material, exactly 32 ASCII bytes. Never reuse it in a
@@ -39,6 +39,9 @@ jobs:
       - name: Reject production dependency vulnerabilities
         run: npm run audit:production
 
+      - name: Validate submission evidence contracts
+        run: node scripts/submission-gate.mjs --structure-only
+
       - name: Type-check
         run: npm run typecheck
 
@@ -60,8 +63,11 @@ jobs:
       - name: Run viewport, keyboard, and accessibility tests
         run: npm run test:e2e
 
-      - name: Run Lighthouse quality budgets
-        run: npx --yes @lhci/cli@0.15.1 autorun
+      - name: Run mobile Lighthouse quality budgets
+        run: npx --yes @lhci/cli@0.15.1 autorun --config=lighthouserc.json
+
+      - name: Run desktop Lighthouse quality budgets
+        run: npx --yes @lhci/cli@0.15.1 autorun --config=lighthouserc.desktop.json
 
       - name: Preserve browser diagnostics on failure
         if: failure()

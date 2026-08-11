@@ -44,7 +44,6 @@ import {
   POLICY_APIS,
   PlaceSearchResult,
   RecoveryOption,
-  RecoveryOutcome,
   RecoveryResponse,
   Region,
   ScheduleDiff,
@@ -58,7 +57,6 @@ import {
   formatCoverage,
   formatCrowd,
   formatDate,
-  formatDayOnly,
   formatIsoTime,
   formatMetricLabel,
   formatReferenceDate,
@@ -73,7 +71,6 @@ import {
   normalizeJourneyPlan,
   normalizePlaceResults,
   normalizeRegions,
-  parseKoreaCoordinate,
   practiceJourneySchedule,
   readText,
   sourceDecisionEffect,
@@ -90,7 +87,290 @@ import {
   toHalfHour,
 } from "./product-app-model";
 import { quotedWithParticle, withParticle } from "@/lib/text/korean";
-import { statusLabel } from "@/lib/text/status-labels";
+import { regionDisplayName } from "@/lib/text/region-alias";
+import { sourceLabelText, statusLabel } from "@/lib/text/status-labels";
+import {
+  authoritativeExecutionMatchesApply,
+  executionMatchesAppliedRecovery,
+  executionPreservesLockedAppointment,
+  optionApplicationSafety,
+} from "./traveler-safety";
+
+const ABLATION_SOURCE_EN: Record<string, { label: string; lost: string }> = {
+  TarRlteTarService1: {
+    label: "Related-destination evidence",
+    lost: "Co-visit evidence disappears, so IEOGA cannot prove purpose preservation or use that ranking signal.",
+  },
+  TatsCnctrRateService: {
+    label: "Visitor concentration forecast",
+    lost: "Future concentration evidence disappears, so IEOGA cannot verify crowd avoidance or adjust the ranking.",
+  },
+  KorWithService2: {
+    label: "Barrier-free tourism data",
+    lost: "Official accessibility evidence disappears, so every option remains unverified for mobility needs.",
+  },
+};
+
+const PURPOSE_LABEL_EN: Record<string, string> = {
+  "지금 비어 있는 시간": "Open time now",
+  "관광 명소": "Sightseeing",
+  "문화·전시 관람": "Culture and exhibitions",
+  "축제·공연 관람": "Festivals and performances",
+  "여행 코스 체험": "Touring route",
+  "레포츠·체험": "Leisure activity",
+  숙박: "Accommodation",
+  "쇼핑·시장 방문": "Shopping or market visit",
+  식사: "Meal",
+  "관광 방문": "Tourism visit",
+  이동: "Transfer",
+  "관광·체험": "Sightseeing or activity",
+};
+
+function purposeLabelText(value: string | undefined, language: Language): string {
+  if (language === "ko") return value || "여행 경험";
+  return PURPOSE_LABEL_EN[value ?? ""] || "Travel experience";
+}
+
+function contributionSourceText(value: unknown, language: Language): string {
+  const source = String(value ?? "").trim();
+  const labels: Record<string, { ko: string; en: string }> = {
+    KorService2: {
+      ko: "한국관광공사 국문 관광정보",
+      en: "Korea Tourism Organization · official Korean tourism data",
+    },
+    TarRlteTarService1: {
+      ko: "한국관광공사 연관 관광지",
+      en: "Korea Tourism Organization · related destinations",
+    },
+    TatsCnctrRateService: {
+      ko: "한국관광공사 관광지 집중률 예측",
+      en: "Korea Tourism Organization · visitor concentration forecast",
+    },
+    KorWithService2: {
+      ko: "한국관광공사 무장애 여행정보",
+      en: "Korea Tourism Organization · barrier-free travel data",
+    },
+    "TMAP 보행자 경로안내": {
+      ko: "TMAP 보행자 경로안내",
+      en: "TMAP pedestrian routing",
+    },
+    "TMAP 자동차 경로안내": {
+      ko: "TMAP 자동차 경로안내",
+      en: "TMAP driving route",
+    },
+    "카카오맵 대중교통 길찾기": {
+      ko: "카카오맵 대중교통 길찾기",
+      en: "KakaoMap public-transit routing",
+    },
+    "카카오맵 자전거 길찾기": {
+      ko: "카카오맵 자전거 길찾기",
+      en: "KakaoMap bicycle routing",
+    },
+    "OpenStreetMap Routing": {
+      ko: "OpenStreetMap 경로",
+      en: "OpenStreetMap routing",
+    },
+    "기상청 단기예보": {
+      ko: "기상청 단기예보",
+      en: "Korea Meteorological Administration forecast",
+    },
+    "Open-Meteo": { ko: "Open-Meteo", en: "Open-Meteo" },
+  };
+  const exact = labels[source];
+  if (exact) return exact[language];
+  const known = Object.entries(labels).find(([key]) => source.includes(key));
+  if (known) return known[1][language];
+  if (language === "en") return sourceLabelText(source, "en");
+  return source || "공식 데이터";
+}
+
+function contributionDecisionText(
+  contribution: DataContribution,
+  language: Language,
+): string {
+  if (language === "ko") {
+    return contribution.decision || "복구 조건 판정에 사용했습니다.";
+  }
+  const source = String(contribution.source ?? "");
+  if (source === "KorService2") {
+    return contribution.decision?.includes("운영")
+      ? "Verified whether the place is officially open for the proposed stay."
+      : "Verified the official place, coordinates, distance and tourism-content type.";
+  }
+  if (source === "TarRlteTarService1") {
+    return "Used related-destination evidence to preserve the original travel purpose.";
+  }
+  if (source === "TatsCnctrRateService") {
+    return "Used the concentration forecast for crowd avoidance and ordering.";
+  }
+  if (source === "KorWithService2") {
+    return "Verified the required accessibility route in official barrier-free data.";
+  }
+  if (source.includes("TMAP") || source.includes("카카오맵") || source.includes("Routing")) {
+    return "Calculated the real route and arrival buffer through the next protected appointment.";
+  }
+  if (source.includes("기상청") || source.includes("Open-Meteo")) {
+    return contribution.status === "unavailable"
+      ? "The weather provider did not return usable evidence; the limitation is disclosed."
+      : "Recorded current weather evidence for this recovery decision.";
+  }
+  return "Used this source to verify a required recovery condition.";
+}
+
+function contributionEffectText(value: unknown, language: Language): string {
+  const effect = String(value ?? "");
+  const labels: Record<string, { ko: string; en: string }> = {
+    verified: { ko: "검증 근거", en: "Verified evidence" },
+    excluded: { ko: "제외 근거", en: "Exclusion evidence" },
+    ranked: { ko: "순위에 반영", en: "Affected ordering" },
+    bounded: { ko: "판단 범위 설정", en: "Bounded the decision" },
+  };
+  return labels[effect]?.[language] ?? statusLabel(value, language);
+}
+
+function compactLocalizedValue(value: unknown, language: Language): string {
+  if (language === "ko") return compactValue(value);
+  if (value === null || value === undefined || value === "") return "Not verified";
+  if (typeof value === "boolean") return value ? "Verified" : "Not verified";
+  if (typeof value === "number") return value.toLocaleString("en-US");
+  if (typeof value === "string") {
+    return /[가-힣]/u.test(value)
+      ? "See the official Korean data"
+      : statusLabel(value, "en");
+  }
+  const record = asRecord(value);
+  const english = readText(record, ["noteEn", "labelEn", "descriptionEn"]);
+  if (english) return english;
+  const status = readText(record, ["status", "value"]);
+  return status ? statusLabel(status, "en") : "See the official evidence";
+}
+
+function localizedErrorText(
+  error: unknown,
+  language: Language,
+  fallbackEn: string,
+  fallbackKo: string,
+): string {
+  const message = error instanceof Error ? error.message.trim() : "";
+  if (language === "ko") return message || fallbackKo;
+  if (message && !/[가-힣]/u.test(message)) return message;
+  const requestId = message.match(/(?:Request ID|요청 ID)\s*[:·]?\s*([\w-]+)/i)?.[1];
+  return requestId ? `${fallbackEn} · Request ID ${requestId}` : fallbackEn;
+}
+
+function counterfactualReasonText(
+  counterfactual: Counterfactual,
+  language: Language,
+): string {
+  if (language === "ko") {
+    return (
+      counterfactual.reason ||
+      "다음 예약을 지키면서 가능한 최소 조건 조정을 계산했습니다."
+    );
+  }
+  const relaxation = counterfactual.requiredRelaxation;
+  if (!relaxation) {
+    return "IEOGA calculated the smallest condition change that may produce a safe alternative.";
+  }
+  const amount = relaxation.amount ?? 0;
+  if (relaxation.constraint === "maximum_distance") {
+    return `The maximum travel distance must increase by ${amount.toLocaleString("en-US")} metres before this place can be verified.`;
+  }
+  if (relaxation.constraint === "available_time") {
+    return `At least ${amount} more minute${amount === 1 ? "" : "s"} are needed before the next booking.`;
+  }
+  if (relaxation.constraint === "minimum_stay") {
+    return `The minimum stay must be reduced by ${amount} minute${amount === 1 ? "" : "s"} before this place can be verified.`;
+  }
+  if (relaxation.constraint === "safety_buffer") {
+    return `The booking safety buffer would need to change by ${amount} minute${amount === 1 ? "" : "s"}.`;
+  }
+  if (relaxation.constraint === "indoor_requirement") {
+    return "Outdoor options must be included before this place can be verified.";
+  }
+  return "One required condition must change before this place can be verified.";
+}
+
+function relaxationDescriptionText(
+  counterfactual: Counterfactual,
+  language: Language,
+): string {
+  const relaxation = counterfactual.requiredRelaxation;
+  if (language === "ko") return relaxation?.description || "조건 조정 필요";
+  if (!relaxation) return "Condition change required";
+  const current = relaxation.currentLimit;
+  const required = relaxation.requiredLimit;
+  if (relaxation.constraint === "maximum_distance") {
+    return `Maximum travel distance: ${(current ?? 0).toLocaleString("en-US")} m → ${(required ?? 0).toLocaleString("en-US")} m`;
+  }
+  if (relaxation.constraint === "available_time") {
+    return `Available time: ${current ?? 0} min → ${required ?? 0} min`;
+  }
+  if (relaxation.constraint === "minimum_stay") {
+    return `Minimum stay: ${current ?? 0} min → ${required ?? 0} min`;
+  }
+  if (relaxation.constraint === "safety_buffer") {
+    return `Safety buffer: ${current ?? 0} min → ${required ?? 0} min`;
+  }
+  if (relaxation.constraint === "indoor_requirement") {
+    return "Indoor-only: on → include outdoor options";
+  }
+  return "Adjust one required condition";
+}
+
+function weatherSourceInfo(
+  evidence: unknown,
+  language: Language,
+): { label: string; url?: string } {
+  const record = asRecord(evidence);
+  const provider = readText(record, ["provider", "source"]);
+  if (provider === "kma_short_term" || provider.includes("기상청")) {
+    return {
+      label:
+        language === "en"
+          ? "Korea Meteorological Administration · short-term forecast"
+          : "기상청 단기예보",
+      url: "https://www.weather.go.kr/",
+    };
+  }
+  if (provider === "open_meteo" || provider.includes("Open-Meteo")) {
+    return { label: "Open-Meteo", url: "https://open-meteo.com/" };
+  }
+  return {
+    label: language === "en" ? "Weather source not recorded" : "기상 출처 미기록",
+  };
+}
+
+function formatLocalizedDay(value: string | undefined, language: Language) {
+  if (!value) {
+    return language === "en" ? "Date unavailable" : "날짜 정보 없음";
+  }
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T00:00:00+09:00`)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+}
+
+function formatLocalizedDateTime(value: string | undefined, language: Language) {
+  if (!value) return language === "en" ? "Time unavailable" : "시각 정보 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}
 
 export function ProductApp() {
   const [activeTab, setActiveTab] = useState<TabId>("recover");
@@ -98,6 +378,7 @@ export function ProductApp() {
      되돌릴 수도 없다. 축을 고른 행위가 곧 동의가 되게 한다. */
   const [optionSort, setOptionSort] = useState<OptionSort>("recommended");
   const [language, setLanguage] = useState<Language>("ko");
+  const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionState, setRegionState] = useState<LoadState>("loading");
   const [regionError, setRegionError] = useState("");
@@ -129,17 +410,12 @@ export function ProductApp() {
   const [geoState, setGeoState] = useState<LoadState>("idle");
   const [geoMessage, setGeoMessage] = useState("");
   const [geoAttribution, setGeoAttribution] = useState("");
-  const [placeKeyword, setPlaceKeyword] = useState("");
-  const [placeSearchState, setPlaceSearchState] = useState<LoadState>("idle");
-  const [placeSearchError, setPlaceSearchError] = useState("");
-  const [placeResults, setPlaceResults] = useState<PlaceSearchResult[]>([]);
   const originSelectionCurrent = Boolean(
     latitude.trim() &&
       longitude.trim() &&
       geoState === "success" &&
-      (locationMode === "automatic" ||
-        (locationMode === "manual" &&
-          placeKeyword.trim() === originLabel.trim())),
+      originLabel.trim() &&
+      (locationMode === "automatic" || locationMode === "manual"),
   );
   const [incident, setIncident] = useState<Incident>("rain");
   const [availableMinutes, setAvailableMinutes] = useState(90);
@@ -152,7 +428,7 @@ export function ProductApp() {
   /* 우천이면 실내 조건을 기본으로 켠다. 엔진이 더 이상 우천을 이유로 실내를
      강제하지 않으므로(명시적으로 보낸 값이 이긴다) 그 기본값을 화면이 만들어야
      한다. 사용자가 끄면 그 선택이 유지되며, 그때 비로소 실외 후보까지 검토된다. */
-  const [indoorOnly, setIndoorOnly] = useState(false);
+  const [indoorOnly, setIndoorOnly] = useState(true);
   const [indoorTouched, setIndoorTouched] = useState(false);
   /* 심사용 제거실험. 끈 서비스는 이 요청에서 호출되지 않고, 응답의 ablation이
      무엇을 끄고 얻은 수치인지 함께 적는다. */
@@ -180,8 +456,10 @@ export function ProductApp() {
   const [recovery, setRecovery] = useState<RecoveryResponse | null>(null);
   const [shareMessages, setShareMessages] = useState<Record<string, string>>({});
   const [appliedOptionId, setAppliedOptionId] = useState("");
-  const [recoveryOutcome, setRecoveryOutcome] = useState<RecoveryOutcome>("idle");
+  const [applyingOptionId, setApplyingOptionId] = useState("");
   const [outcomeMessage, setOutcomeMessage] = useState("");
+  const [outcomePriority, setOutcomePriority] =
+    useState<"polite" | "assertive">("polite");
   /* 기본값을 전체 노출로 둔다. 대안을 폭넓게 보여 주기로 한 뒤에도 첫 장
      외에는 접혀 있어서, 넓힌 후보가 사실상 보이지 않았다. */
   const [showAllOptions, setShowAllOptions] = useState(true);
@@ -196,6 +474,8 @@ export function ProductApp() {
   const resultRef = useRef<HTMLDivElement>(null);
   const appliedPlanRef = useRef<HTMLDivElement>(null);
   const recoveryFormRef = useRef<HTMLFormElement>(null);
+  const applyInFlightRef = useRef(false);
+  const applyRequestGenerationRef = useRef(0);
 
   const [insightRegions, setInsightRegions] = useState<Region[]>([]);
   const [insightListState, setInsightListState] = useState<LoadState>("idle");
@@ -271,9 +551,6 @@ export function ProductApp() {
         setActiveExecution(execution);
         if (execution) {
           setAppliedOptionId(execution.sourceOptionId);
-          setRecoveryOutcome(
-            execution.status === "contract_met" ? "arrived" : "applied",
-          );
         }
       })
       .catch(() => {
@@ -455,11 +732,14 @@ export function ProductApp() {
   ): Promise<PlaceSearchResult> {
     for (const keyword of keywords) {
       try {
-        const payload = await fetchJson(
-          `/api/v1/places/search?keyword=${encodeURIComponent(
+        const payload = await fetchJson("/api/v1/places/search", {
+          method: "POST",
+          body: JSON.stringify({
             keyword,
-          )}&purpose=saved_stop&fallback=auto`,
-        );
+            purpose: "saved_stop",
+            fallback: "auto",
+          }),
+        });
         const place = normalizePlaceResults(payload).find(
           (candidate) => candidate.retention !== "ephemeral",
         );
@@ -487,7 +767,7 @@ export function ProductApp() {
       const schedule = practiceJourneySchedule();
       const practicePlan: JourneyPlan = {
         id: "new-journey",
-        title: "이어가 사용 연습",
+        title: tr("이어가 사용 연습", "IEOGA practice itinerary"),
         date: schedule.date,
         audience: "general",
         savedAt: "",
@@ -511,7 +791,7 @@ export function ProductApp() {
             title: fixedPlace.title,
             address: fixedPlace.address ?? "",
             fixed: true,
-            reservationCode: "연습용 고정 일정",
+            reservationCode: tr("연습용 고정 일정", "Practice fixed appointment"),
             latitude: fixedPlace.latitude,
             longitude: fixedPlace.longitude,
             areaCode: fixedPlace.areaCode,
@@ -534,9 +814,12 @@ export function ProductApp() {
     } catch (error) {
       setPracticeState("error");
       setPracticeError(
-        error instanceof Error
-          ? error.message
-          : "실제 장소를 불러오지 못했습니다.",
+        localizedErrorText(
+          error,
+          language,
+          "Could not load real places for the practice itinerary.",
+          "실제 장소를 불러오지 못했습니다.",
+        ),
       );
     }
   }
@@ -580,21 +863,36 @@ export function ProductApp() {
     setJourneyPlaceError("");
     if (keyword.length < 2) {
       setJourneyPlaceState("error");
-      setJourneyPlaceError("장소명을 두 글자 이상 입력한 뒤 확인해 주세요.");
+      setJourneyPlaceError(
+        tr(
+          "장소명을 두 글자 이상 입력한 뒤 확인해 주세요.",
+          "Enter at least two characters for the place name.",
+        ),
+      );
       return;
     }
     setJourneyPlaceState("loading");
     try {
-      const payload = await fetchJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(keyword)}&purpose=saved_stop&fallback=${fallback}`,
-      );
+      const payload = await fetchJson("/api/v1/places/search", {
+        method: "POST",
+        body: JSON.stringify({
+          keyword,
+          purpose: "saved_stop",
+          fallback,
+        }),
+      });
       const next = normalizePlaceResults(payload).slice(0, 8);
       setJourneyPlaceResults(next);
       setJourneyPlaceState("success");
     } catch (error) {
       setJourneyPlaceState("error");
       setJourneyPlaceError(
-        error instanceof Error ? error.message : "공식 관광지 정보를 확인하지 못했습니다.",
+        localizedErrorText(
+          error,
+          language,
+          "Could not verify official place information.",
+          "공식 관광지 정보를 확인하지 못했습니다.",
+        ),
       );
     }
   }
@@ -638,11 +936,21 @@ export function ProductApp() {
       (stop) => stop.title.trim() && stop.time,
     );
     if (!journeyDraft.title.trim() || !journeyDraft.date) {
-      setJourneyError("여행 이름과 날짜를 입력해 주세요.");
+      setJourneyError(
+        tr(
+          "여행 이름과 날짜를 입력해 주세요.",
+          "Enter a trip name and travel date.",
+        ),
+      );
       return;
     }
     if (completeStops.length < 2) {
-      setJourneyError("원래 일정과 다음 일정을 포함해 두 개 이상의 일정을 입력해 주세요.");
+      setJourneyError(
+        tr(
+          "바꿀 수 있는 일정과 그 뒤에 지킬 일정을 포함해 두 곳 이상 입력해 주세요.",
+          "Add at least two stops: one that can change and a later appointment to protect.",
+        ),
+      );
       return;
     }
     const stopWithoutLocation = completeStops.find(
@@ -652,7 +960,9 @@ export function ProductApp() {
     );
     if (stopWithoutLocation) {
       setJourneyError(
-        `${quotedWithParticle(stopWithoutLocation.title, "을/를")} 장소 검색 결과에서 선택해 주세요.`,
+        language === "en"
+          ? `Select “${stopWithoutLocation.title}” from the place-search results so its location can be verified.`
+          : `${quotedWithParticle(stopWithoutLocation.title, "을/를")} 장소 검색 결과에서 선택해 주세요.`,
       );
       return;
     }
@@ -663,7 +973,12 @@ export function ProductApp() {
       (stop) => stop.fixed || stop.type === "reservation",
     );
     if (!fixedStops.length) {
-      setJourneyError("반드시 지켜야 할 예약 또는 고정 일정 하나 이상을 잠가 주세요.");
+      setJourneyError(
+        tr(
+          "반드시 지켜야 할 예약 또는 고정 일정 하나 이상을 잠가 주세요.",
+          "Lock at least one booking or fixed appointment that IEOGA must protect.",
+        ),
+      );
       return;
     }
     const firstChangeableIndex = orderedStops.findIndex(
@@ -676,7 +991,10 @@ export function ProductApp() {
     );
     if (firstChangeableIndex < 0 || !nextFixed) {
       setJourneyError(
-        "변경 가능한 일정 뒤에 도착해야 할 예약 또는 고정 일정을 배치해 주세요.",
+        tr(
+          "변경 가능한 일정 뒤에 도착해야 할 예약 또는 고정 일정을 배치해 주세요.",
+          "Place a protected booking or fixed appointment after a changeable stop.",
+        ),
       );
       return;
     }
@@ -685,7 +1003,10 @@ export function ProductApp() {
       typeof nextFixed.longitude !== "number"
     ) {
       setJourneyError(
-        "다음 고정 일정의 도착 가능성을 계산하려면 장소검색 결과에서 위치를 선택해 주세요.",
+        tr(
+          "다음 고정 일정의 도착 가능성을 계산하려면 장소 검색 결과에서 위치를 선택해 주세요.",
+          "Select the next fixed appointment from place-search results so arrival can be verified.",
+        ),
       );
       return;
     }
@@ -723,10 +1044,13 @@ export function ProductApp() {
       setJourneyEditing(false);
       setPracticeReady(false);
       setJourneySaveState("success");
-    } catch (error) {
+    } catch {
       setJourneySaveState("error");
       setJourneyError(
-        error instanceof Error ? error.message : "여행 일정을 저장하지 못했습니다.",
+        tr(
+          "일정을 저장하지 못했습니다. 입력을 확인한 뒤 다시 시도해 주세요.",
+          "Could not save the itinerary. Check the entries and try again.",
+        ),
       );
     }
   }
@@ -734,7 +1058,10 @@ export function ProductApp() {
   async function deleteMyData() {
     if (
       !window.confirm(
-        "이 기기에 연결된 일정과 복구 기록을 삭제할까요? 삭제한 기록은 되돌릴 수 없습니다.",
+        tr(
+          "이 기기에 연결된 일정과 복구 기록을 삭제할까요? 삭제한 기록은 되돌릴 수 없습니다.",
+          "Delete the itinerary and recovery history linked to this device? This cannot be undone.",
+        ),
       )
     ) {
       return;
@@ -753,7 +1080,6 @@ export function ProductApp() {
       setAffectedStopId("");
       setNextFixedStopId("");
       setAppliedOptionId("");
-      setRecoveryOutcome("idle");
       setActiveExecution(null);
       setPracticeReady(false);
       setDeleteState("success");
@@ -867,7 +1193,12 @@ export function ProductApp() {
     if (!navigator.geolocation) {
       setLocationMode("manual");
       setGeoState("error");
-      setGeoMessage("이 브라우저에서는 현재 위치 기능을 지원하지 않습니다. 장소를 직접 입력해 주세요.");
+      setGeoMessage(
+        tr(
+          "이 브라우저에서는 현재 위치 기능을 지원하지 않습니다. 장소를 직접 입력해 주세요.",
+          "This browser does not support location detection. Search for your current place instead.",
+        ),
+      );
       return;
     }
     setGeoState("loading");
@@ -877,7 +1208,12 @@ export function ProductApp() {
         const nextLongitude = position.coords.longitude.toFixed(5);
         setLatitude(nextLatitude);
         setLongitude(nextLongitude);
-        setGeoMessage("현재 위치의 행정구역을 확인하고 있습니다.");
+        setGeoMessage(
+          tr(
+            "현재 위치의 행정구역을 확인하고 있습니다.",
+            "Resolving the official Korean region for your current location.",
+          ),
+        );
         void fetchJson("/api/v1/location/resolve", {
           method: "POST",
           body: JSON.stringify({
@@ -894,21 +1230,26 @@ export function ProductApp() {
             const districtName = readText(resolved, ["districtName", "sigunguName"]);
             setAreaCode(resolvedAreaCode);
             setSigunguCode(resolvedDistrictCode);
-            setOriginLabel(readText(resolved, ["label"]) || "내 현재 위치");
-            setPlaceKeyword("");
-            setPlaceResults([]);
+            setOriginLabel(
+              readText(resolved, ["label"]) || tr("내 현재 위치", "My current location"),
+            );
             setGeoAttribution(readText(resolved, ["attribution"]));
             setLocationMode("automatic");
             setGeoState("success");
             setGeoMessage(
-              `${withParticle([areaName, districtName].filter(Boolean).join(" ") || "현재 지역", "으로/로")} 자동 입력했어요. 정확한 좌표는 복구 계산에만 사용합니다.`,
+              language === "en"
+                ? `Location set. ${regionDisplayName([areaName, districtName].filter(Boolean).join(" "), language) || "Official Korean region unavailable"}. Exact coordinates are used only for this recovery calculation.`
+                : `${withParticle([areaName, districtName].filter(Boolean).join(" ") || "현재 지역", "으로/로")} 자동 입력했어요. 정확한 좌표는 복구 계산에만 사용합니다.`,
             );
           })
           .catch(() => {
             setLocationMode("manual");
             setGeoState("error");
             setGeoMessage(
-              "현재 위치는 확인했지만 행정구역을 자동 판별하지 못했습니다. 아래에서 장소를 직접 입력해 주세요.",
+              tr(
+                "현재 위치는 확인했지만 행정구역을 자동 판별하지 못했습니다. 아래에서 장소를 직접 입력해 주세요.",
+                "Your coordinates were detected, but the official region could not be resolved. Search for your current place below.",
+              ),
             );
           });
       },
@@ -917,8 +1258,14 @@ export function ProductApp() {
         setGeoState("error");
         setGeoMessage(
           error.code === error.PERMISSION_DENIED
-            ? "위치 권한을 사용하지 않습니다. 아래에서 현재 장소를 직접 입력해 주세요."
-            : "현재 위치를 확인하지 못했습니다. 아래에서 현재 장소를 직접 입력해 주세요.",
+            ? tr(
+                "위치 권한을 사용하지 않습니다. 아래에서 현재 장소를 직접 입력해 주세요.",
+                "Location permission was not used. Search for your current place below.",
+              )
+            : tr(
+                "현재 위치를 확인하지 못했습니다. 아래에서 현재 장소를 직접 입력해 주세요.",
+                "Your current location could not be resolved. Search for your current place below.",
+              ),
         );
       },
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 },
@@ -931,74 +1278,12 @@ export function ProductApp() {
     setLatitude("");
     setLongitude("");
     setOriginLabel("");
-    setPlaceKeyword("");
-    setPlaceResults([]);
-    setPlaceSearchState("idle");
     setGeoAttribution("");
-    setGeoMessage("현재 장소명이나 주소를 검색해 주세요.");
-  }
-
-  async function searchOriginPlace(
-    fallback: "auto" | "force" = "auto",
-  ) {
-    const keyword = placeKeyword.trim();
-    setPlaceSearchError("");
-    setPlaceResults([]);
-    if (keyword.length < 2) {
-      setPlaceSearchState("error");
-      setPlaceSearchError("관광지명을 두 글자 이상 입력해 주세요.");
-      return;
-    }
-    setLatitude("");
-    setLongitude("");
-    setOriginLabel("");
-    setGeoState("idle");
-    setPlaceSearchState("loading");
-    const currentLatitude = parseKoreaCoordinate(latitude, 32, 39.8);
-    const currentLongitude = parseKoreaCoordinate(longitude, 124, 132);
-    const searchInput = {
-      keyword,
-      purpose: "current_origin",
-      fallback,
-      ...(areaCode ? { areaCode } : {}),
-      ...(sigunguCode ? { sigunguCode } : {}),
-      ...(currentLatitude !== undefined && currentLongitude !== undefined
-        ? {
-            latitude: currentLatitude,
-            longitude: currentLongitude,
-          }
-        : {}),
-    };
-    try {
-      const payload = await fetchJson("/api/v1/places/search", {
-        method: "POST",
-        body: JSON.stringify(searchInput),
-      });
-      const next = normalizePlaceResults(payload).slice(0, 10);
-      setPlaceResults(next);
-      setPlaceSearchState("success");
-    } catch (error) {
-      setPlaceSearchState("error");
-      setPlaceSearchError(error instanceof Error ? error.message : "관광지를 검색하지 못했습니다.");
-    }
-  }
-
-  function selectOriginPlace(place: PlaceSearchResult) {
-    if (place.areaCode && place.areaCode !== areaCode) {
-      setAreaCode(place.areaCode);
-    }
-    if (place.sigunguCode) setSigunguCode(place.sigunguCode);
-    setLatitude(place.latitude.toFixed(6));
-    setLongitude(place.longitude.toFixed(6));
-    setOriginLabel(place.title);
-    setPlaceKeyword(place.title);
-    setLocationMode("manual");
-    setPlaceResults([]);
-    setPlaceSearchState("idle");
-    setGeoState("success");
-    setGeoAttribution(place.sourceLabel ?? "");
     setGeoMessage(
-      `현재 위치를 ${quotedWithParticle(place.title, "으로/로")} 정했어요.${place.retention === "ephemeral" ? " 이 좌표는 일정에 저장하지 않습니다." : ""}`,
+      tr(
+        "현재 장소명이나 주소를 검색해 주세요.",
+        "Search for your current place or address.",
+      ),
     );
   }
 
@@ -1007,7 +1292,12 @@ export function ProductApp() {
     setRecoverError("");
     if (!journeyPlan || !selectedAffectedStop || !selectedNextFixedStop) {
       setRecoverState("error");
-      setRecoverError("먼저 원래 일정과 다음 고정 일정을 선택해 주세요.");
+      setRecoverError(
+        tr(
+          "먼저 원래 일정과 다음 고정 일정을 선택해 주세요.",
+          "Select the disrupted stop and the next fixed appointment first.",
+        ),
+      );
       return;
     }
     if (
@@ -1016,7 +1306,10 @@ export function ProductApp() {
     ) {
       setRecoverState("error");
       setRecoverError(
-        "다음 예약까지 남은 시간이 남겨 두기로 한 여유보다 짧습니다. 일정 시각을 확인하거나 긴급 지원을 이용해 주세요.",
+        tr(
+          "다음 예약까지 남은 시간이 남겨 두기로 한 여유보다 짧습니다. 일정 시각을 확인하거나 긴급 지원을 이용해 주세요.",
+          "There is less time left than the safety buffer required before your next booking. Check its time or use urgent travel support.",
+        ),
       );
       return;
     }
@@ -1032,7 +1325,10 @@ export function ProductApp() {
     ) {
       setRecoverState("error");
       setRecoverError(
-        "현재 위치를 자동으로 확인하거나 장소명·주소 검색 결과에서 선택해 주세요.",
+        tr(
+          "현재 위치를 자동으로 확인하거나 장소명·주소 검색 결과에서 선택해 주세요.",
+          "Use your current location or select a place from the search results.",
+        ),
       );
       return;
     }
@@ -1051,7 +1347,12 @@ export function ProductApp() {
       minimumStayMinutes > 180
     ) {
       setRecoverState("error");
-      setRecoverError("쓸 수 있는 시간은 15~240분, 머무는 시간은 10~180분, 이동 거리는 300~20,000m, 찾는 범위는 500~20,000m 사이로 넣어 주세요.");
+      setRecoverError(
+        tr(
+          "쓸 수 있는 시간은 15~240분, 머무는 시간은 10~180분, 이동 거리는 300~20,000m, 찾는 범위는 500~20,000m 사이로 넣어 주세요.",
+          "Enter 15–240 minutes available, a 10–180 minute stay, 300–20,000 metres travel distance and a 500–20,000 metre search radius.",
+        ),
+      );
       return;
     }
 
@@ -1059,7 +1360,6 @@ export function ProductApp() {
     setRecovery(null);
     setAppliedOptionId("");
     setShowAllOptions(false);
-    setRecoveryOutcome("idle");
     setOutcomeMessage("");
     try {
       const payload = await fetchJson("/api/v1/recover", {
@@ -1068,7 +1368,7 @@ export function ProductApp() {
           origin: {
             latitude: lat,
             longitude: lng,
-            label: originLabel.trim() || "사용자 지정 위치",
+            label: originLabel.trim() || tr("사용자 지정 위치", "User-selected location"),
             areaCode: areaCode || undefined,
             sigunguCode: sigunguCode || undefined,
           },
@@ -1127,7 +1427,14 @@ export function ProductApp() {
       window.setTimeout(() => resultRef.current?.focus({ preventScroll: false }), 40);
     } catch (error) {
       setRecoverState("error");
-      setRecoverError(error instanceof Error ? error.message : "여행 복구 요청에 실패했습니다.");
+      setRecoverError(
+        localizedErrorText(
+          error,
+          language,
+          "The recovery request failed. Check the inputs and try again.",
+          "여행 복구 요청에 실패했습니다.",
+        ),
+      );
     }
   }
 
@@ -1144,6 +1451,9 @@ export function ProductApp() {
       setMinimumStayMinutes(relaxation.requiredLimit);
     } else if (relaxation.constraint === "safety_buffer") {
       setSafetyBufferMinutes(relaxation.requiredLimit);
+    } else if (relaxation.constraint === "indoor_requirement") {
+      setIndoorTouched(true);
+      setIndoorOnly(false);
     } else {
       return;
     }
@@ -1237,23 +1547,24 @@ export function ProductApp() {
        선택이고, 공유는 "이 경로는 공식 근거로 검증됐다"는 증명서를 다른 사람에게
        건네는 것이다. 확인하지 못한 것이 있는 결과에 그 증명서를 붙이면 받는
        사람이 속는다. */
-    if (
-      option.confirmationRequired ||
-      (option.evidenceGaps?.length ?? 0) > 0
-    ) {
+    const safety = optionApplicationSafety(option, language);
+    if (!safety.canApply) {
       setShareMessages((current) => ({
         ...current,
         [option.id]:
           language === "en"
-            ? "This result has conditions we could not verify, so it cannot be shared as a verified record. You can still apply it yourself."
-            : "확인하지 못한 조건이 있어 검증 기록으로는 공유할 수 없습니다. 직접 적용하는 것은 가능합니다.",
+            ? "This option is closed or unverified, so it cannot be applied or shared as a verified record."
+            : "휴무 또는 미확인 후보는 일정에 적용하거나 검증 기록으로 공유할 수 없습니다.",
       }));
       return;
     }
     if (!originSelectionCurrent) {
       setRecoverState("error");
       setRecoverError(
-        "현재 위치를 자동으로 확인하거나 검색 결과에서 장소를 다시 선택해 주세요.",
+        tr(
+          "현재 위치를 자동으로 확인하거나 검색 결과에서 장소를 다시 선택해 주세요.",
+          "Use your current location or select the place again from the search results.",
+        ),
       );
       return;
     }
@@ -1261,13 +1572,16 @@ export function ProductApp() {
       setShareMessages((current) => ({
         ...current,
         [option.id]:
-          "저장이 확인된 복구 실행만 공유할 수 있습니다. 복구를 다시 실행해 주세요.",
+          tr(
+            "저장이 확인된 복구 실행만 공유할 수 있습니다. 복구를 다시 실행해 주세요.",
+            "Only a verified saved recovery can be shared. Run recovery again.",
+          ),
       }));
       return;
     }
     setShareMessages((current) => ({
       ...current,
-      [option.id]: "공유 링크 생성 중",
+      [option.id]: tr("공유 링크 생성 중", "Creating share link"),
     }));
     try {
       const payload = asRecord(
@@ -1280,13 +1594,20 @@ export function ProductApp() {
         }),
       );
       const relativeUrl = readText(payload, ["url"]);
-      if (!relativeUrl) throw new Error("공유 링크를 확인하지 못했습니다.");
+      if (!relativeUrl) {
+        throw new Error(
+          tr("공유 링크를 확인하지 못했습니다.", "The share link was not returned."),
+        );
+      }
       const absoluteUrl = new URL(relativeUrl, window.location.origin).toString();
       const usedNativeShare = "share" in navigator;
       if (usedNativeShare) {
         await navigator.share({
-          title: `이어가 · ${option.title}`,
-          text: "내 원래 일정과 다음 예약을 지키는 여행 복구안입니다.",
+          title: `${language === "en" ? "IEOGA" : "이어가"} · ${option.title}`,
+          text: tr(
+            "내 원래 일정과 다음 예약을 지키는 여행 복구안입니다.",
+            "A verified travel recovery that protects my original itinerary and next booking.",
+          ),
           url: absoluteUrl,
         });
       } else {
@@ -1294,99 +1615,189 @@ export function ProductApp() {
       }
       setShareMessages((current) => ({
         ...current,
-        [option.id]: usedNativeShare ? "공유 완료" : "7일 공유 링크 복사 완료",
+        [option.id]: usedNativeShare
+          ? tr("공유 완료", "Shared")
+          : tr("7일 공유 링크 복사 완료", "7-day share link copied"),
       }));
     } catch (error) {
       setShareMessages((current) => ({
         ...current,
         [option.id]:
-          error instanceof Error ? error.message : "공유 링크 생성 실패",
+          localizedErrorText(
+            error,
+            language,
+            "Could not create the share link.",
+            "공유 링크 생성 실패",
+          ),
       }));
     }
   }
 
-  async function recordRecoveryOutcome(
-    option: RecoveryOption,
-    event: "selected" | "applied" | "arrived" | "continued" | "abandoned",
-  ) {
-    /* 확인하지 못한 조건이 있어도 적용을 막지 않는다. 대안을 보고 결정하는
-       것은 여행자다. 다만 무엇을 모르고 가는지는 적용 직후에 다시 알린다 —
-       막는 것과 알리는 것은 다르다. */
-    const unverified =
-      option.confirmationRequired ||
-      (option.evidenceGaps?.length ?? 0) > 0;
+  async function applyRecoveryOption(option: RecoveryOption) {
+    const safety = optionApplicationSafety(option, language);
+    if (!safety.canApply) {
+      setOutcomePriority("assertive");
+      setOutcomeMessage(safety.reasons.join(" "));
+      return;
+    }
     if (!recovery?.requestId || !option.id || !recoveryPersisted) {
+      setOutcomePriority("assertive");
       setOutcomeMessage(
-        "저장이 확인된 복구 실행만 적용하거나 결과를 기록할 수 있습니다. 복구를 다시 실행해 주세요.",
+        tr(
+          "저장이 확인된 복구 실행만 적용하거나 결과를 기록할 수 있습니다. 복구를 다시 실행해 주세요.",
+          "Only a verified saved recovery can be applied or recorded. Run recovery again.",
+        ),
       );
       return;
     }
-    setOutcomeMessage("여행 연속성 기록을 저장하고 있습니다.");
+    if (applyInFlightRef.current) {
+      setOutcomePriority("polite");
+      setOutcomeMessage(
+        tr(
+          "다른 복구안의 서버 활성 상태를 확인하고 있습니다. 확인이 끝난 뒤 다시 선택해 주세요.",
+          "Another recovery is being verified with the server. Choose again after that check finishes.",
+        ),
+      );
+      return;
+    }
+
+    const expected = {
+      runId: recovery.requestId,
+      optionId: option.id,
+    };
+    const requestGeneration = ++applyRequestGenerationRef.current;
+    let reconciledActiveExecution = false;
+    applyInFlightRef.current = true;
+    setApplyingOptionId(option.id);
+    setOutcomePriority("polite");
+    setOutcomeMessage(
+      tr("여행 연속성 기록을 저장하고 있습니다.", "Saving the journey-continuity record."),
+    );
     try {
-      if (event === "applied") {
-        const payload = await fetchJson(
-          `/api/v1/recover/${encodeURIComponent(recovery.requestId)}/apply`,
-          {
-            method: "POST",
-            body: JSON.stringify({ optionId: option.id }),
-          },
-        );
-        const execution = normalizeJourneyExecution(payload);
-        if (!execution) {
-          throw new Error("적용된 복구 일정을 확인하지 못했습니다.");
-        }
-        setAppliedOptionId(option.id);
-        setRecoveryOutcome("applied");
-        setActiveExecution(execution);
-        setOutcomeMessage(
-          "복구 일정이 새 버전으로 저장되었습니다. 지금부터 순서대로 안내합니다.",
-        );
-        window.setTimeout(
-          () => document
-            .querySelector<HTMLElement>(".active-journey-cockpit")
-            ?.focus({ preventScroll: false }),
-          40,
-        );
-        return;
-      }
-      await fetchJson(
-        `/api/v1/recover/${encodeURIComponent(recovery.requestId)}/outcome`,
+      const payload = await fetchJson(
+        `/api/v1/recover/${encodeURIComponent(expected.runId)}/apply`,
         {
           method: "POST",
-          body: JSON.stringify({
-            optionId: option.id,
-            event,
-            reasonCode: event === "abandoned" ? "USER_REPORTED_NOT_ARRIVED" : undefined,
-          }),
+          body: JSON.stringify({ optionId: option.id }),
         },
       );
-      if (event === "selected") {
-        setAppliedOptionId(option.id);
-        setRecoveryOutcome("applied");
-        setOutcomeMessage(
-          unverified
-            ? "이 일정으로 이어갑니다. 확인하지 못한 조건이 있으니 출발 전에 운영기관 안내를 한 번 확인해 주세요."
-            : "이 복구안을 현재 일정에 적용했습니다.",
-        );
-        window.setTimeout(
-          () => appliedPlanRef.current?.focus({ preventScroll: false }),
-          40,
-        );
-      } else if (event === "arrived" || event === "continued") {
-        setRecoveryOutcome("arrived");
-        setOutcomeMessage("다음 고정 일정 도착을 확인했습니다. 여행이 이어졌습니다.");
-      } else {
-        setRecoveryOutcome("not_arrived");
-        setOutcomeMessage(
-          "도착하지 못한 원인을 기록했습니다. 같은 조건의 다음 복구 품질 개선에 반영됩니다.",
+      const applyExecution = normalizeJourneyExecution(payload);
+      /* POST의 200/201만으로는 성공으로 보지 않는다. A를 적용하고 B로
+         교체한 뒤 A를 다시 누르면 과거 A 버전이 반환될 수 있다. 같은 요청
+         세대 안에서 authoritative active를 반드시 다시 읽는다. */
+      const activePayload = await fetchJson("/api/v1/journey/active");
+      const execution = normalizeJourneyExecution(activePayload);
+
+      if (requestGeneration !== applyRequestGenerationRef.current) {
+        throw new Error(
+          tr(
+            "더 최근의 적용 요청이 있어 이 응답을 사용하지 않았습니다. 현재 활성 일정을 확인해 주세요.",
+            "A newer apply request exists, so this response was ignored. Check the currently active itinerary.",
+          ),
         );
       }
-    } catch (error) {
+      if (
+        !authoritativeExecutionMatchesApply(
+          applyExecution,
+          execution,
+          expected,
+        )
+      ) {
+        /* authoritative GET이 다른 active를 돌려주면 그 실행을 화면에
+           복원한다. 오래된 A를 성공처럼 보여 준 뒤 PATCH가 실패하는 것보다,
+           실제로 활성인 B로 즉시 돌아가는 것이 정직하다. */
+        if (execution?.status === "active") {
+          setActiveExecution(execution);
+          setAppliedOptionId(execution.sourceOptionId);
+          reconciledActiveExecution = true;
+        }
+        const activeTitle = recovery.options.find(
+          (candidate) => candidate.id === execution?.sourceOptionId,
+        )?.title;
+        throw new Error(
+          activeTitle
+            ? tr(
+                `이전에 적용한 '${activeTitle}' 일정이 아직 서버의 활성 일정입니다. 방금 누른 복구안은 적용하지 않았으며 실제 활성 일정으로 돌아갑니다.`,
+                `“${activeTitle}” is still the server's active itinerary. The option you just chose was not applied, and IEOGA returned to the actual active itinerary.`,
+              )
+            : tr(
+                "서버의 실제 활성 일정이 방금 누른 복구안과 달라 적용하지 않았습니다. 최신 상황으로 복구를 다시 실행해 주세요.",
+                "The server's active itinerary differs from the option you just chose, so it was not applied. Run recovery again from the latest situation.",
+              ),
+        );
+      }
+      if (!executionMatchesAppliedRecovery(execution, expected)) {
+        throw new Error(
+          tr(
+            "서버가 이 복구안을 현재 활성 일정으로 확인하지 않아 적용하지 않았습니다.",
+            "The server did not confirm this recovery as the current active itinerary, so it was not applied.",
+          ),
+        );
+      }
+      if (!journeyPlan || !selectedNextFixedStop) {
+        throw new Error(
+          language === "en"
+            ? "The protected appointment contract is missing. Run recovery again."
+            : "잠근 다음 일정의 원본 계약이 없습니다. 복구를 다시 실행해 주세요.",
+        );
+      }
+      if (
+        !executionPreservesLockedAppointment(execution, {
+          id: selectedNextFixedStop.id,
+          startAt: `${journeyPlan.date}T${selectedNextFixedStop.time}:00+09:00`,
+          title: selectedNextFixedStop.title,
+          locked: selectedNextFixedStop.fixed,
+          reservation: selectedNextFixedStop.type === "reservation",
+        })
+      ) {
+        throw new Error(
+          language === "en"
+            ? "Safety verification stopped the update because the protected appointment ID or time changed in the server response."
+            : "안전 검증이 적용을 중단했습니다. 서버 응답에서 원래 잠근 약속의 ID 또는 시각이 달라졌습니다.",
+        );
+      }
+      setAppliedOptionId(option.id);
+      setActiveExecution(execution);
+      setOutcomePriority("polite");
       setOutcomeMessage(
-        error instanceof Error
-          ? error.message
-          : "결과 기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        tr(
+          "복구 일정이 새 버전으로 저장되었습니다. 지금부터 순서대로 안내합니다.",
+          "The recovery itinerary was saved as a new version. Follow the steps below in order.",
+        ),
       );
+      window.setTimeout(
+        () =>
+          document
+            .querySelector<HTMLElement>(".active-journey-cockpit")
+            ?.focus({ preventScroll: false }),
+        40,
+      );
+    } catch (error) {
+      if (requestGeneration === applyRequestGenerationRef.current) {
+        setOutcomePriority("assertive");
+        setOutcomeMessage(
+          localizedErrorText(
+            error,
+            language,
+            "Could not save the outcome. Try again shortly.",
+            "결과 기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          ),
+        );
+      }
+    } finally {
+      if (requestGeneration === applyRequestGenerationRef.current) {
+        applyInFlightRef.current = false;
+        setApplyingOptionId("");
+      }
+      if (reconciledActiveExecution) {
+        window.setTimeout(
+          () =>
+            document
+              .querySelector<HTMLElement>(".active-journey-cockpit")
+              ?.focus({ preventScroll: false }),
+          40,
+        );
+      }
     }
   }
 
@@ -1457,6 +1868,7 @@ export function ProductApp() {
         isOpen={guideOpen}
         isLoading={practiceState === "loading"}
         loadError={practiceError}
+        language={language}
         onClose={() => setGuideOpen(false)}
         onDismiss={dismissSimulationGuide}
         onLoadPracticeItinerary={() => void loadPracticeItinerary()}
@@ -1469,10 +1881,10 @@ export function ProductApp() {
           aria-label={language === "en" ? "IEOGA home" : "이어가 홈"}
         >
           <span className="product-brand-mark" aria-hidden="true">
-            이
+            {language === "en" ? "I" : "이"}
           </span>
           <span>
-            <strong>이어가</strong>
+            <strong>{language === "en" ? "IEOGA" : "이어가"}</strong>
             <small>{language === "en" ? "Keep your trip going" : "여행을 이어 주는 서비스"}</small>
           </span>
         </a>
@@ -1582,7 +1994,7 @@ export function ProductApp() {
 
                 기본값은 "있어요"다. 아래 폼이 그대로 보이므로 늘 쓰던 사람은
                 클릭이 늘지 않는다. */}
-            <div className="plan-branch" role="group" aria-label="시작 방법">
+            <div className="plan-branch" role="group" aria-label={language === "en" ? "How to start" : "시작 방법"}>
               <span className="plan-branch-question">
                 {language === "en"
                   ? "Do you have a plan saved here?"
@@ -1603,7 +2015,9 @@ export function ProductApp() {
             {executionState === "loading" && (
               <div className="execution-loading" role="status">
                 <span className="loading-ring dark" aria-hidden="true" />
-                진행 중인 복구 여행을 확인하고 있습니다.
+                {language === "en"
+                  ? "Checking for an active recovery journey."
+                  : "진행 중인 복구 여행을 확인하고 있습니다."}
               </div>
             )}
             {placeToPlan && (
@@ -1631,38 +2045,58 @@ export function ProductApp() {
             )}
 
             {activeExecution && (
-              <ActiveJourneyCockpit
-                execution={activeExecution}
-                language={language}
-                onChange={setActiveExecution}
+              <>
+                {outcomeMessage && (
+                  <p
+                    className={`execution-transition-notice ${outcomePriority === "assertive" ? "is-error" : ""}`}
+                    role={outcomePriority === "assertive" ? "alert" : "status"}
+                    aria-live={outcomePriority}
+                    aria-atomic="true"
+                  >
+                    {outcomeMessage}
+                  </p>
+                )}
+                <ActiveJourneyCockpit
+                  execution={activeExecution}
+                  language={language}
+                  onChange={setActiveExecution}
                 /* 동선이 꼬여 다음 고정 일정을 지킬 수 없을 때, 사용자를
-                   지금 상황으로 다시 찾는 자리로 데려간다. 우리가 대신
-                   다시 복구하지는 않는다 — 무엇을 포기할지는 사용자가
-                   정할 일이다. */
-                onRecoverAgain={() => {
-                  changeTab("discover");
-                  window.requestAnimationFrame(() => {
-                    document
-                      .getElementById("main-content")
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  });
-                }}
+                     지금 조건을 다시 입력하는 자리로 데려간다. 과거 결과는
+                     지워 A→B→A처럼 오래된 실행을 다시 고르지 않게 한다. */
+                  onRecoverAgain={() => {
+                    setActiveExecution(null);
+                    setAppliedOptionId("");
+                    setRecovery(null);
+                    setRecoverState("idle");
+                    setOutcomeMessage("");
+                    changeTab("recover");
+                    window.requestAnimationFrame(() => {
+                      recoveryFormRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "start",
+                      });
+                      recoveryFormRef.current?.focus({ preventScroll: true });
+                    });
+                  }}
                 /* 실행을 접고 복구안 목록으로 되돌아간다. `recovery`는
-                   그대로 두는 것이 핵심이다 — 다시 조회하지 않고 방금 보던
-                   다른 대안을 바로 고를 수 있어야 "이전으로"가 뜻을 가진다. */
-                onBack={() => {
-                  setActiveExecution(null);
-                  setAppliedOptionId("");
-                  window.scrollTo({ top: 0, behavior: "smooth" });
-                }}
-                onCloseCompleted={() => {
-                  setActiveExecution(null);
-                  setAppliedOptionId("");
-                  setRecovery(null);
-                  setRecoverState("idle");
-                  window.scrollTo({ top: 0, behavior: "smooth" });
-                }}
-              />
+                     그대로 두어 다른 대안을 고를 수 있게 하되, 다음 적용은
+                     반드시 authoritative active와 다시 대조한다. */
+                  onBack={() => {
+                    setActiveExecution(null);
+                    setAppliedOptionId("");
+                    setOutcomeMessage("");
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                  onCloseCompleted={() => {
+                    setActiveExecution(null);
+                    setAppliedOptionId("");
+                    setRecovery(null);
+                    setRecoverState("idle");
+                    setOutcomeMessage("");
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                />
+              </>
             )}
             <div className="hero-grid">
               <div className="hero-copy">
@@ -1701,24 +2135,32 @@ export function ProductApp() {
                     : "일정을 미리 등록하지 않아도 됩니다. 10초면 시작할 수 있어요."}
                 </p>
               </div>
-              <aside className="scope-card" aria-label="서비스 범위">
+              <aside className="scope-card" aria-label={language === "en" ? "Service coverage" : "서비스 범위"}>
                 <span className="scope-orbit" aria-hidden="true">
                   <i />
-                  전국
+                  {language === "en" ? "KR" : "전국"}
                 </span>
                 <div>
-                  <p>전국 시도·시군구</p>
+                  <p>{language === "en" ? "All Korean cities and districts" : "전국 시도·시군구"}</p>
                   <strong>
                     {regionState === "success" && regions.length
-                      ? `${regions.length}개 광역권 연결`
-                      : "관광정보 연결 중"}
+                      ? language === "en"
+                        ? `${regions.length} regions connected`
+                        : `${regions.length}개 광역권 연결`
+                      : language === "en"
+                        ? "Connecting tourism data"
+                        : "관광정보 연결 중"}
                   </strong>
-                  <small>지역 목록은 TourAPI 응답 기준으로 표시합니다.</small>
+                  <small>
+                    {language === "en"
+                      ? "Region coverage follows the official tourism API response."
+                      : "지역 목록은 공식 관광정보 API 응답 기준으로 표시합니다."}
+                  </small>
                 </div>
               </aside>
             </div>
 
-            <ol className="journey-steps" aria-label="이어가 사용 단계">
+            <ol className="journey-steps" aria-label={language === "en" ? "IEOGA journey steps" : "이어가 사용 단계"}>
               <li className={!journeyPlan || journeyEditing ? "is-current" : "is-complete"}>
                 <b>1</b>
                 <span>
@@ -1745,7 +2187,9 @@ export function ProductApp() {
             {journeyState === "loading" && (
               <div className="journey-loading" role="status">
                 <span className="loading-ring dark" aria-hidden="true" />
-                저장된 여행 일정을 확인하고 있습니다.
+                {language === "en"
+                  ? "Loading your saved itinerary."
+                  : "저장된 여행 일정을 확인하고 있습니다."}
               </div>
             )}
 
@@ -1775,7 +2219,7 @@ export function ProductApp() {
                         setJourneyError("");
                       }}
                     >
-                      편집 취소
+                      {language === "en" ? "Cancel editing" : "편집 취소"}
                     </button>
                   )}
                 </div>
@@ -1784,11 +2228,15 @@ export function ProductApp() {
                   <div className="practice-ready" role="status">
                     <span aria-hidden="true">✓</span>
                     <div>
-                      <strong>실제 관광지로 연습 일정이 준비됐어요</strong>
+                      <strong>
+                        {language === "en"
+                          ? "A practice trip with real places is ready"
+                          : "실제 관광지로 연습 일정이 준비됐어요"}
+                      </strong>
                       <p>
-                        장소와 시간은 자유롭게 바꿀 수 있어요. 아래의
-                        ‘이 일정으로 여행 시작’을 누르면 실제 복구 흐름을
-                        연습합니다.
+                        {language === "en"
+                          ? "Change any place or time, then start this itinerary to practise the real recovery flow."
+                          : "장소와 시간은 자유롭게 바꿀 수 있어요. 아래의 ‘이 일정으로 여행 시작’을 누르면 실제 복구 흐름을 연습합니다."}
                       </p>
                     </div>
                   </div>
@@ -1796,11 +2244,13 @@ export function ProductApp() {
 
                 <details className="journey-advanced">
                   <summary>
-                    오늘이 아니거나 이동 배려 설정이 필요해요
+                    {language === "en"
+                      ? "Change the date or mobility support"
+                      : "오늘이 아니거나 이동 배려 설정이 필요해요"}
                   </summary>
                   <div className="journey-meta-grid">
                     <label>
-                      <span>여행 이름 <i>필수</i></span>
+                      <span>{language === "en" ? "Trip name" : "여행 이름"} <i>{language === "en" ? "Required" : "필수"}</i></span>
                       <input
                         value={journeyDraft.title}
                         onChange={(event) =>
@@ -1810,12 +2260,12 @@ export function ProductApp() {
                           }))
                         }
                         maxLength={60}
-                        placeholder="예: 서울 미술관과 저녁 공연"
+                        placeholder={language === "en" ? "e.g. Seoul museums and an evening show" : "예: 서울 미술관과 저녁 공연"}
                         required
                       />
                     </label>
                     <label>
-                      <span>여행 날짜 <i>필수</i></span>
+                      <span>{language === "en" ? "Travel date" : "여행 날짜"} <i>{language === "en" ? "Required" : "필수"}</i></span>
                       <input
                         type="date"
                         value={journeyDraft.date}
@@ -1829,7 +2279,7 @@ export function ProductApp() {
                       />
                     </label>
                     <label>
-                      <span>이동 도움</span>
+                      <span>{language === "en" ? "Mobility support" : "이동 도움"}</span>
                       {/* 예전에는 유아차·휠체어·고령자를 각각 고르게 했다.
                           그런데 판정은 갈리지 않았다 — 휠체어와 고령자는 조회
                           필드도 필수 항목도 완전히 같았고 유아차만 달랐다.
@@ -1855,9 +2305,9 @@ export function ProductApp() {
                               : "이동 도움이 필요해요"}
                           </strong>
                           <small>
-                            유아차·휠체어·보행보조 등 계단 없는 동선이 필요한
-                            경우입니다. 공식 무장애여행정보에서 출입 동선과 내부
-                            이동을 확인합니다.
+                            {language === "en"
+                              ? "For a stroller, wheelchair or walking aid. We check step-free access and indoor movement in official accessibility data."
+                              : "유아차·휠체어·보행보조 등 계단 없는 동선이 필요한 경우입니다. 공식 무장애여행정보에서 출입 동선과 내부 이동을 확인합니다."}
                           </small>
                         </span>
                       </label>
@@ -1868,11 +2318,15 @@ export function ProductApp() {
                 <div className="schedule-builder">
                   <div className="schedule-builder-title">
                     <div>
-                      <strong>원래 여행 일정</strong>
-                      <span>순서대로 입력하고 예약·공연·교통편처럼 바꿀 수 없는 일정은 잠가 주세요.</span>
+                      <strong>{language === "en" ? "Original itinerary" : "원래 여행 일정"}</strong>
+                      <span>
+                        {language === "en"
+                          ? "Enter stops in order and lock bookings, performances and transport that cannot move."
+                          : "순서대로 입력하고 예약·공연·교통편처럼 바꿀 수 없는 일정은 잠가 주세요."}
+                      </span>
                     </div>
                     <button type="button" onClick={addJourneyStop}>
-                      + 일정 추가
+                      {language === "en" ? "+ Add stop" : "+ 일정 추가"}
                     </button>
                   </div>
 
@@ -1901,19 +2355,31 @@ export function ProductApp() {
                             <div className="schedule-card-guide">
                               <strong>
                                 {index === 0
-                                  ? "지금 문제가 생길 수 있는 일정"
-                                  : "반드시 지켜야 할 다음 일정"}
+                                  ? tr(
+                                      "지금 문제가 생길 수 있는 일정",
+                                      "The stop that may need to change",
+                                    )
+                                  : tr(
+                                      "반드시 지켜야 할 다음 일정",
+                                      "The next appointment to protect",
+                                    )}
                               </strong>
                               <span>
                                 {index === 0
-                                  ? "이 장소만 바꾸고 여행 목적은 유지해요."
-                                  : "이어가가 이 시각까지 돌아오는 복구안만 보여줘요."}
+                                  ? tr(
+                                      "이 장소만 바꾸고 여행 목적은 유지해요.",
+                                      "IEOGA changes only this stop and keeps the trip's purpose.",
+                                    )
+                                  : tr(
+                                      "이어가가 이 시각까지 도착하는 복구안만 보여줘요.",
+                                      "Only recovery options that reach this appointment on time are shown.",
+                                    )}
                               </span>
                             </div>
                           )}
                           <div className="schedule-primary-fields">
                             <label>
-                              <span>시각</span>
+                              <span>{tr("시각", "Time")}</span>
                               {/* 여행자는 분 단위로 계획하지 않는다. 시와 분을
                                   각각 조작하는 입력은 위기 순간에 쓰는 도구로서
                                   문턱이 높다. 30분 단위 드롭다운 하나로 줄인다. */}
@@ -1924,16 +2390,16 @@ export function ProductApp() {
                                 }
                                 required
                               >
-                                <option value="">시각을 고르세요</option>
+                                <option value="">{tr("시각을 고르세요", "Choose a time")}</option>
                                 {HALF_HOUR_TIMES.map((entry) => (
                                   <option key={entry.value} value={entry.value}>
-                                    {entry.label}
+                                    {language === "en" ? entry.value : entry.label}
                                   </option>
                                 ))}
                               </select>
                             </label>
                             <label>
-                              <span>일정 유형</span>
+                              <span>{tr("일정 유형", "Stop type")}</span>
                               <select
                                 value={stop.type}
                                 onChange={(event) =>
@@ -1946,16 +2412,16 @@ export function ProductApp() {
                                   })
                                 }
                               >
-                                <option value="visit">관광·방문</option>
-                                <option value="reservation">예약·공연</option>
-                                <option value="meal">식사</option>
-                                <option value="transit">교통</option>
-                                <option value="stay">숙소</option>
-                                <option value="other">기타</option>
+                                <option value="visit">{tr("관광·방문", "Sightseeing")}</option>
+                                <option value="reservation">{tr("예약·공연", "Booking or event")}</option>
+                                <option value="meal">{tr("식사", "Meal")}</option>
+                                <option value="transit">{tr("교통", "Transport")}</option>
+                                <option value="stay">{tr("숙소", "Accommodation")}</option>
+                                <option value="other">{tr("기타", "Other")}</option>
                               </select>
                             </label>
                             <label className="schedule-title-field">
-                              <span>장소·일정명</span>
+                              <span>{tr("장소·일정명", "Place or appointment")}</span>
                               <input
                                 value={stop.title}
                                 onChange={(event) =>
@@ -1978,7 +2444,10 @@ export function ProductApp() {
                                   void searchJourneyStopPlace(stop.id);
                                 }}
                                 maxLength={80}
-                                placeholder="예: 국립현대미술관 서울"
+                                placeholder={tr(
+                                  "예: 국립현대미술관 서울",
+                                  "e.g. National Museum of Modern and Contemporary Art, Seoul",
+                                )}
                                 required
                               />
                             </label>
@@ -1992,11 +2461,11 @@ export function ProductApp() {
                               }
                             >
                               {typeof stop.latitude === "number"
-                                ? "장소 확인됨"
+                                ? tr("장소 확인됨", "Place verified")
                                 : journeyPlaceState === "loading" &&
                                     journeyPlaceStopId === stop.id
-                                  ? "확인 중…"
-                                  : "장소 찾기"}
+                                  ? tr("확인 중…", "Checking…")
+                                  : tr("장소 찾기", "Find place")}
                             </button>
                           </div>
 
@@ -2012,8 +2481,13 @@ export function ProductApp() {
                                 }
                               />
                               <span>
-                                <strong>이 일정 잠금</strong>
-                                <small>복구안이 변경하거나 취소할 수 없습니다.</small>
+                                <strong>{tr("이 일정 잠금", "Protect this appointment")}</strong>
+                                <small>
+                                  {tr(
+                                    "복구안은 이 일정의 장소나 시각을 변경하지 않습니다.",
+                                    "Recovery can never change this appointment's place or time.",
+                                  )}
+                                </small>
                               </span>
                             </label>
                             {stop.address && <span className="verified-address">{stop.address}</span>}
@@ -2022,9 +2496,13 @@ export function ProductApp() {
                                 type="button"
                                 className="remove-stop"
                                 onClick={() => removeJourneyStop(stop.id)}
-                                aria-label={`${stop.title || `${index + 1}번 일정`} 삭제`}
+                                aria-label={
+                                  language === "en"
+                                    ? `Remove ${stop.title || `stop ${index + 1}`}`
+                                    : `${stop.title || `${index + 1}번 일정`} 삭제`
+                                }
                               >
-                                삭제
+                                {tr("삭제", "Remove")}
                               </button>
                             )}
                           </div>
@@ -2039,7 +2517,12 @@ export function ProductApp() {
                             journeyPlaceState === "success" &&
                             journeyPlaceResults.length === 0 && (
                               <div className="place-search-message">
-                                <span>일치하는 장소를 찾지 못했습니다.</span>
+                                <span>
+                                  {tr(
+                                    "일치하는 장소를 찾지 못했습니다.",
+                                    "No matching place was found.",
+                                  )}
+                                </span>
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2049,7 +2532,10 @@ export function ProductApp() {
                                     )
                                   }
                                 >
-                                  주소·다른 지도에서 다시 찾기
+                                  {tr(
+                                    "주소·다른 지도에서 다시 찾기",
+                                    "Search by address or another map",
+                                  )}
                                 </button>
                               </div>
                             )}
@@ -2069,13 +2555,20 @@ export function ProductApp() {
                                       onClick={() => selectJourneyStopPlace(stop.id, place)}
                                     >
                                       <span>
-                                        <strong>{place.title}</strong>
-                                        <small>{place.address || "주소 정보 없음"}</small>
+                                        <strong lang={language === "en" && place.provider === "kto" ? "ko" : undefined}>
+                                          {place.title}
+                                        </strong>
+                                        <small lang={language === "en" && place.provider === "kto" ? "ko" : undefined}>
+                                          {place.address || tr("주소 정보 없음", "Address unavailable")}
+                                        </small>
+                                        {language === "en" && place.provider === "kto" && (
+                                          <small>KTO official Korean place name and address</small>
+                                        )}
                                         {place.sourceLabel && (
-                                          <small>{place.sourceLabel}</small>
+                                          <small>{sourceLabelText(place.sourceLabel, language)}</small>
                                         )}
                                       </span>
-                                      <b>이 장소 선택</b>
+                                      <b>{tr("이 장소 선택", "Select this place")}</b>
                                     </button>
                                   </li>
                                 ))}
@@ -2093,7 +2586,10 @@ export function ProductApp() {
                                   )
                                 }
                               >
-                                찾는 장소가 없어요 · 주소로 더 찾기
+                                {tr(
+                                  "찾는 장소가 없어요 · 주소로 더 찾기",
+                                  "Can't find it? Search more address sources",
+                                )}
                               </button>
                             )}
                         </div>
@@ -2104,7 +2600,9 @@ export function ProductApp() {
 
                 {journeyError && (
                   <div className="notice is-error" role="alert">
-                    <strong>일정을 저장할 수 없습니다.</strong>
+                    <strong>
+                      {tr("일정을 저장할 수 없습니다.", "The itinerary cannot be saved.")}
+                    </strong>
                     <p>{journeyError}</p>
                   </div>
                 )}
@@ -2114,8 +2612,8 @@ export function ProductApp() {
                   disabled={journeySaveState === "loading"}
                 >
                   {journeySaveState === "loading"
-                    ? "잠근 일정을 저장하고 있어요…"
-                    : "이 일정으로 여행 시작"}
+                    ? tr("잠근 일정을 저장하고 있어요…", "Saving protected appointments…")
+                    : tr("이 일정으로 여행 시작", "Start with this itinerary")}
                   <span aria-hidden="true">→</span>
                 </button>
               </form>
@@ -2128,8 +2626,10 @@ export function ProductApp() {
                     <p>{language === "en" ? "Saved trip" : "저장한 오늘 일정"}</p>
                     <h2 id="journey-context-title">{journeyPlan.title}</h2>
                     <span>
-                      {formatDayOnly(journeyPlan.date)} · 잠긴 일정{" "}
-                      {journeyPlan.stops.filter((stop) => stop.fixed).length}개
+                      {formatLocalizedDay(journeyPlan.date, language)} ·{" "}
+                      {language === "en"
+                        ? `${journeyPlan.stops.filter((stop) => stop.fixed).length} protected`
+                        : `잠긴 일정 ${journeyPlan.stops.filter((stop) => stop.fixed).length}개`}
                     </span>
                   </div>
                   <div className="journey-context-actions">
@@ -2141,7 +2641,7 @@ export function ProductApp() {
                         setJourneyError("");
                       }}
                     >
-                      원래 일정 편집
+                      {tr("원래 일정 편집", "Edit original itinerary")}
                     </button>
                     <button
                       type="button"
@@ -2149,7 +2649,9 @@ export function ProductApp() {
                       onClick={() => void deleteMyData()}
                       disabled={deleteState === "loading"}
                     >
-                      {deleteState === "loading" ? "삭제 중…" : "내 데이터 삭제"}
+                      {deleteState === "loading"
+                        ? tr("삭제 중…", "Deleting…")
+                        : tr("내 데이터 삭제", "Delete my data")}
                     </button>
                   </div>
                 </div>
@@ -2159,9 +2661,13 @@ export function ProductApp() {
                       <time>{formatStopTime(stop.time)}</time>
                       <span>
                         <strong>{stop.title}</strong>
-                        <small>{stop.address || "위치 설명 없음"}</small>
+                        <small>{stop.address || tr("위치 설명 없음", "Location unavailable")}</small>
                       </span>
-                      <b>{stop.fixed ? "잠금" : "변경 가능"}</b>
+                      <b>
+                        {stop.fixed
+                          ? tr("잠금", "Protected")
+                          : tr("변경 가능", "Can change")}
+                      </b>
                     </li>
                   ))}
                 </ol>
@@ -2176,10 +2682,15 @@ export function ProductApp() {
               </section>
             )}
 
-            <div className="region-ribbon" aria-label="현재 연결된 전국 시도 범위">
-              <span>전국 범위</span>
+            <div
+              className="region-ribbon"
+              aria-label={tr("현재 연결된 전국 시도 범위", "Connected Korean regions")}
+            >
+              <span>{tr("전국 범위", "Coverage")}</span>
               <div>
-                {regionState === "loading" && <small>시도 목록을 불러오는 중입니다.</small>}
+                {regionState === "loading" && (
+                  <small>{tr("시도 목록을 불러오는 중입니다.", "Loading regions…")}</small>
+                )}
                 {regionState === "error" && <small>{regionError}</small>}
                 {regionState === "success" &&
                   regions.map((region) => <b key={region.code}>{region.name}</b>)}
@@ -2190,6 +2701,7 @@ export function ProductApp() {
               <form
                 className="recovery-form"
                 ref={recoveryFormRef}
+                tabIndex={-1}
                 onSubmit={submitRecovery}
                 noValidate
               >
@@ -2206,38 +2718,45 @@ export function ProductApp() {
                 </div>
 
                 <fieldset className="form-group itinerary-link-fieldset compact-contract-fieldset">
-                  <legend>이어갈 일정</legend>
+                  <legend>{tr("이어갈 일정", "Itinerary segment")}</legend>
                   {selectedAffectedStop && selectedNextFixedStop && (
                     <div className="continuity-contract">
                       <span>
-                        <b>지금 변경할 곳</b>
+                        <b>{tr("지금 변경할 곳", "Stop to change now")}</b>
                         <strong>{selectedAffectedStop.title}</strong>
                       </span>
                       <i aria-hidden="true">→</i>
                       <span className="is-locked">
-                        <b>반드시 도착</b>
+                        <b>{tr("반드시 도착", "Appointment to protect")}</b>
                         <strong>{selectedNextFixedStop.title}</strong>
                       </span>
                       <small>
                         {nextAppointmentMinutes === null
-                          ? "남은 시간 계산 전"
+                          ? tr("남은 시간 계산 전", "Time window not calculated")
                           : nextAppointmentMinutes > 0
-                            ? `${nextAppointmentMinutes}분 후 · 여유 ${safetyBufferMinutes}분 남기기`
-                            : "고정 일정 시각이 지났습니다."}
+                            ? language === "en"
+                              ? `In ${nextAppointmentMinutes} min · keep ${safetyBufferMinutes} min buffer`
+                              : `${nextAppointmentMinutes}분 후 · 여유 ${safetyBufferMinutes}분 남기기`
+                            : tr(
+                                "고정 일정 시각이 지났습니다.",
+                                "The protected appointment time has passed.",
+                              )}
                       </small>
                     </div>
                   )}
                   <details className="context-adjustment">
-                    <summary>다른 일정 구간 선택</summary>
+                    <summary>{tr("다른 일정 구간 선택", "Choose a different segment")}</summary>
                     <div className="field-grid two">
                     <label>
-                      <span>문제가 생긴 일정 <i>필수</i></span>
+                      <span>
+                        {tr("문제가 생긴 일정", "Affected stop")} <i>{tr("필수", "Required")}</i>
+                      </span>
                       <select
                         value={affectedStopId}
                         onChange={(event) => setAffectedStopId(event.target.value)}
                         required
                       >
-                        <option value="">일정을 선택하세요</option>
+                        <option value="">{tr("일정을 선택하세요", "Choose a stop")}</option>
                         {/* 잠근 일정도 문제가 생길 수 있다. 예약이 취소되거나
                             공연이 취소되는 것이 그렇고, 3곳 중 2번을 잠갔다면
                             예전 구현에서는 2번을 고를 수조차 없었다 — 실제로
@@ -2253,13 +2772,18 @@ export function ProductApp() {
                       </select>
                     </label>
                     <label>
-                      <span>다음 고정 일정 <i>필수</i></span>
+                      <span>
+                        {tr("다음 고정 일정", "Next protected appointment")} {" "}
+                        <i>{tr("필수", "Required")}</i>
+                      </span>
                       <select
                         value={nextFixedStopId}
                         onChange={(event) => setNextFixedStopId(event.target.value)}
                         required
                       >
-                        <option value="">복귀할 일정을 선택하세요</option>
+                        <option value="">
+                          {tr("도착할 일정을 선택하세요", "Choose the appointment to reach")}
+                        </option>
                         {eligibleNextFixedStops.map((stop) => (
                             <option key={stop.id} value={stop.id}>
                               {formatStopTime(stop.time)} · {stop.title}
@@ -2272,7 +2796,7 @@ export function ProductApp() {
                 </fieldset>
 
                 <fieldset className="form-group">
-                  <legend>지금 어디에 있나요?</legend>
+                  <legend>{tr("지금 어디에 있나요?", "Where are you now?")}</legend>
                   {locationMode === "unselected" && (
                     <div className="location-choice">
                       <button
@@ -2286,10 +2810,15 @@ export function ProductApp() {
                         <span>
                           <strong>
                             {geoState === "loading"
-                              ? "현재 위치 확인 중…"
-                              : "현재 위치 자동 입력"}
+                              ? tr("현재 위치 확인 중…", "Finding your location…")
+                              : tr("현재 위치 자동 입력", "Use current location")}
                           </strong>
-                          <small>권한을 허용하면 시도·시군구까지 자동으로 채웁니다.</small>
+                          <small>
+                            {tr(
+                              "권한을 허용하면 시도·시군구까지 자동으로 채웁니다.",
+                              "With permission, IEOGA fills the province and district automatically.",
+                            )}
+                          </small>
                         </span>
                       </button>
                       <button
@@ -2297,11 +2826,13 @@ export function ProductApp() {
                         className="location-choice-manual"
                         onClick={useManualLocation}
                       >
-                        위치 권한 없이 직접 입력
+                        {tr("위치 권한 없이 직접 입력", "Enter a place without location access")}
                       </button>
                       <p>
-                        현재 좌표는 저장하지 않지만 행정구역·경로·날씨 확인을 위해 관련 제공자에
-                        일시 전송됩니다. 저장한 일정 장소 좌표는 직접 삭제하거나 만료될 때까지 보관됩니다.
+                        {tr(
+                          "현재 좌표는 저장하지 않지만 행정구역·경로·날씨 확인을 위해 관련 제공자에 일시 전송됩니다. 저장한 일정 장소 좌표는 직접 삭제하거나 만료될 때까지 보관됩니다.",
+                          "Your live coordinates are not stored, but are sent temporarily to providers to check the district, route and weather. Coordinates in a saved itinerary remain until you delete them or they expire.",
+                        )}
                       </p>
                     </div>
                   )}
@@ -2310,24 +2841,33 @@ export function ProductApp() {
                     <div className="automatic-location-card">
                       <span className="target-icon" aria-hidden="true" />
                       <div>
-                        <b>현재 위치 자동 입력 완료</b>
+                        <b>{tr("현재 위치 자동 입력 완료", "Current location found")}</b>
                         <strong>
-                          {originLabel || "내 현재 위치"}
+                          {originLabel || tr("내 현재 위치", "My current location")}
                           {[selectedRegion?.name, selectedDistrict?.name].some(Boolean)
-                            ? ` · ${[selectedRegion?.name, selectedDistrict?.name]
-                                .filter(Boolean)
-                                .join(" ")}`
+                            ? ` · ${regionDisplayName(
+                                [selectedRegion?.name, selectedDistrict?.name]
+                                  .filter(Boolean)
+                                  .join(" "),
+                                language,
+                              )}`
                             : ""}
                         </strong>
-                        <small>현재 좌표는 관련 경로·날씨 제공자에 일시 전송되며 서버에 저장하지 않습니다.</small>
+                        <small>
+                          {tr(
+                            "현재 좌표는 관련 경로·날씨 제공자에 일시 전송되며 서버에 저장하지 않습니다.",
+                            "Live coordinates are sent temporarily to route and weather providers and are not stored on the server.",
+                          )}
+                        </small>
                         {geoAttribution && (
                           <em className="provider-attribution">
-                            위치 판별 출처 · {geoAttribution}
+                            {tr("위치 판별 출처", "Location source")} ·{" "}
+                            {contributionSourceText(geoAttribution, language)}
                           </em>
                         )}
                       </div>
                       <button type="button" onClick={useManualLocation}>
-                        직접 입력으로 변경
+                        {tr("직접 입력으로 변경", "Enter a place instead")}
                       </button>
                     </div>
                   )}
@@ -2343,133 +2883,39 @@ export function ProductApp() {
 
                   {locationMode === "manual" && (
                     <div className="manual-location-panel">
-                      <div className="manual-location-heading">
-                        <div>
-                          <strong>현재 장소 직접 입력</strong>
-                          <span>장소명이나 도로명 주소만 입력하면 위치를 찾습니다.</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={requestGeolocation}
-                          disabled={geoState === "loading"}
-                        >
-                          위치 권한 다시 사용
-                        </button>
-                      </div>
-
-                      <div className="place-search">
-                        <label htmlFor="origin-place-keyword">
-                          현재 장소명·주소
-                        </label>
-                        <div>
-                          <input
-                            id="origin-place-keyword"
-                            value={placeKeyword}
-                            onChange={(event) => {
-                              setPlaceKeyword(event.target.value);
-                              setLatitude("");
-                              setLongitude("");
-                              setOriginLabel("");
-                              setGeoState("idle");
-                              setPlaceResults([]);
-                              setPlaceSearchState("idle");
-                              setPlaceSearchError("");
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                void searchOriginPlace();
-                              }
-                            }}
-                            placeholder="예: 서울역, 광화문 D타워, 도로명 주소"
-                            maxLength={80}
-                            autoComplete="off"
-                            data-testid="origin-place-keyword"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => void searchOriginPlace()}
-                            disabled={placeSearchState === "loading"}
-                            data-testid="origin-place-search"
-                          >
-                            {placeSearchState === "loading"
-                              ? "검색 중…"
-                              : "장소 찾기"}
-                          </button>
-                        </div>
-                        <p>
-                          한국관광공사 관광정보를 먼저 확인하고, 없으면 다른
-                          지도·주소 검색으로 자동 전환합니다.
-                        </p>
-                        {placeSearchState === "error" && (
-                          <span className="place-search-message is-error" role="alert">
-                            {placeSearchError}
-                          </span>
-                        )}
-                        {placeSearchState === "success" && placeResults.length === 0 && (
-                          <span className="place-search-message">
-                            일치하는 장소가 없습니다.
-                            <button
-                              type="button"
-                              onClick={() => void searchOriginPlace("force")}
-                            >
-                              다른 지도에서 다시 찾기
-                            </button>
-                          </span>
-                        )}
-                        {placeResults.length > 0 && (
-                          <ul className="place-results" aria-label="관광지 검색 결과">
-                            {placeResults.map((place) => (
-                              <li
-                                key={
-                                  place.providerId ||
-                                  place.contentId ||
-                                  `${place.title}-${place.latitude}-${place.longitude}`
-                                }
-                              >
-                                <button type="button" onClick={() => selectOriginPlace(place)}>
-                                  <span>
-                                    <strong>{place.title}</strong>
-                                    <small>{place.address || "주소 정보 없음"}</small>
-                                    {place.sourceLabel && (
-                                      <small>{place.sourceLabel}</small>
-                                    )}
-                                  </span>
-                                  <b>현재 위치로 선택</b>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        {placeResults.length > 0 && (
-                          <button
-                            type="button"
-                            className="place-fallback-button"
-                            onClick={() => void searchOriginPlace("force")}
-                          >
-                            찾는 장소가 없어요 · 다른 지도에서 더 찾기
-                          </button>
-                        )}
-                      </div>
-
                       {/* 장소명을 모를 때를 위한 두 번째 길.
                           여행 중에는 지금 서 있는 곳의 이름을 모르는 일이 흔하다.
                           그때 장소명만 요구하면 아무것도 할 수 없다. 시·군·구만
                           골라도 그 일대를 기준으로 찾을 수 있게 한다. */}
                       <ManualLocationPicker
                         language={language}
+                        onRetryGeolocation={requestGeolocation}
+                        geoBusy={geoState === "loading"}
+                        heading={tr("현재 장소 직접 입력", "Enter your current place")}
+                        areaHint={tr(
+                          "장소명을 모르겠다면 시·군·구를 고르세요. 그 지역의 대표 지점을 기준으로 찾으며, 정확한 현재 위치로 저장하지 않습니다.",
+                          "If you do not know the place name, choose a city and district. IEOGA searches from a representative point and does not treat it as your exact location.",
+                        )}
                         onPick={(place) => {
                           setLatitude(String(place.latitude));
                           setLongitude(String(place.longitude));
                           setOriginLabel(place.title);
                           setAreaCode(place.areaCode ?? "");
                           setSigunguCode(place.sigunguCode ?? "");
-                          setPlaceKeyword(place.title);
-                          setPlaceResults([]);
-                          setPlaceSearchState("idle");
+                          setLocationMode("manual");
                           setGeoState("success");
                           setGeoMessage(
-                            `${place.title} 기준으로 찾습니다. 위치 권한은 쓰지 않았습니다.`,
+                            language === "en"
+                              ? `Using the ${place.sourceLabel?.includes("한국관광공사") ? "KTO official Korean" : "source"} place name “${place.title}” as your current location. Location permission was not used.${
+                                  place.retention === "ephemeral"
+                                    ? " These coordinates will not be saved to the itinerary."
+                                    : ""
+                                }`
+                              : `${quotedWithParticle(place.title, "을/를")} 현재 위치로 선택했어요. 위치 권한은 쓰지 않았습니다.${
+                                  place.retention === "ephemeral"
+                                    ? " 이 좌표는 일정에 저장하지 않습니다."
+                                    : ""
+                                }`,
                           );
                           setGeoAttribution(place.sourceLabel ?? "");
                         }}
@@ -2479,7 +2925,7 @@ export function ProductApp() {
                 </fieldset>
 
                 <fieldset className="form-group">
-                  <legend>무슨 일이 생겼나요?</legend>
+                  <legend>{tr("무슨 일이 생겼나요?", "What happened?")}</legend>
                   <div className="incident-list">
                     {INCIDENTS.map((item) => (
                       <label
@@ -2522,10 +2968,14 @@ export function ProductApp() {
                   <legend>{language === "en" ? "What IEOGA will protect" : "이어가가 반드시 지킬 것"}</legend>
                   <div className="derived-time-card">
                     <span>{language === "en" ? "Time you can use before the next booking" : "다음 예약까지 쓸 수 있는 시간"}</span>
-                    <strong>{availableMinutes}분</strong>
+                    <strong>
+                      {tr(`${availableMinutes}분`, `${availableMinutes} min`)}
+                    </strong>
                     <small>
-                      예약 시각과 남겨 둘 여유 {safetyBufferMinutes}분을 반영해
-                      자동 계산했어요.
+                      {tr(
+                        `예약 시각과 남겨 둘 여유 ${safetyBufferMinutes}분을 반영해 자동 계산했어요.`,
+                        `Calculated from the appointment time with a ${safetyBufferMinutes}-minute safety buffer.`,
+                      )}
                     </small>
                   </div>
                   <div
@@ -2560,20 +3010,26 @@ export function ProductApp() {
                         남긴다. */}
                     {travelMode === "car" && (
                       <small>
-                        도착 시각에 주차 시간은 포함하지 않았습니다.
+                        {tr(
+                          "도착 시각에 주차 시간은 포함하지 않았습니다.",
+                          "The arrival estimate does not include parking time.",
+                        )}
                       </small>
                     )}
                   </div>
                   <details className="ablation-panel">
                     <summary>
-                      심사용 · 한국관광공사 API를 끄고 결과 차이 보기
+                      {tr(
+                        "심사용 · 한국관광공사 API를 끄고 결과 차이 보기",
+                        "Evaluation tool · compare results with selected KTO APIs disabled",
+                      )}
                     </summary>
                     <div className="ablation-body">
                       <p>
-                        끈 서비스는 이 요청에서 호출하지 않습니다. 호출해 놓고
-                        결과만 버리면 데이터가 없을 때 무엇이 깨지는지 보여 줄 수
-                        없기 때문입니다. 국문 관광정보는 후보 자체를 만드는 유일한
-                        원천이라 끌 수 없습니다.
+                        {tr(
+                          "끈 서비스는 이 요청에서 호출하지 않습니다. 호출해 놓고 결과만 버리면 데이터가 없을 때 무엇이 깨지는지 보여 줄 수 없기 때문입니다. 국문 관광정보는 후보 자체를 만드는 유일한 원천이라 끌 수 없습니다.",
+                          "Disabled services are not called for this request, so the comparison shows what genuinely breaks when that evidence is unavailable. KTO official Korean tourism data cannot be disabled because it is the source of the candidate places.",
+                        )}
                       </p>
                       {ABLATION_SOURCES.map((item) => (
                         <label key={item.id} className="check-row">
@@ -2589,15 +3045,28 @@ export function ProductApp() {
                             }
                           />
                           <span>
-                            <strong>{item.label} 끄기</strong>
-                            <small>{item.lost}</small>
+                            <strong>
+                              {language === "en"
+                                ? `Disable ${ABLATION_SOURCE_EN[item.id].label}`
+                                : `${item.label} 끄기`}
+                            </strong>
+                            <small>
+                              {language === "en"
+                                ? ABLATION_SOURCE_EN[item.id].lost
+                                : item.lost}
+                            </small>
                           </span>
                         </label>
                       ))}
                     </div>
                   </details>
                   <details className="recovery-preferences">
-                    <summary>이동 배려·실내 조건이 필요해요</summary>
+                    <summary>
+                      {tr(
+                        "이동 배려·실내 조건이 필요해요",
+                        "I need mobility or indoor conditions",
+                      )}
+                    </summary>
                     <div className="recovery-preferences-body">
                       {/* 켜고 끄는 하나다. 두 항목뿐인 드롭다운은 여는 동작이
                           하나 더 붙을 뿐 고르는 일을 쉽게 만들지 않는다. 아래
@@ -2621,9 +3090,10 @@ export function ProductApp() {
                               : "이동 도움이 필요해요"}
                           </strong>
                           <small>
-                            계단 없는 동선이 필요한 경우입니다. 공식
-                            무장애여행정보에서 출입 동선과 내부 이동을
-                            확인합니다.
+                            {tr(
+                              "계단 없는 동선이 필요한 경우입니다. 공식 무장애여행정보에서 출입 동선과 내부 이동을 확인합니다.",
+                              "For a stroller, wheelchair or walking aid. IEOGA verifies step-free entry and indoor movement in official accessibility data.",
+                            )}
                           </small>
                         </span>
                       </label>
@@ -2637,11 +3107,19 @@ export function ProductApp() {
                           }}
                         />
                         <span>
-                          <strong>실내 후보만 찾기</strong>
+                          <strong>
+                            {tr("실내 후보만 찾기", "Only find verified indoor options")}
+                          </strong>
                           <small>
-                            실내 여부가 확인되지 않은 후보는 제외합니다.
+                            {tr(
+                              "실내 여부가 확인되지 않은 후보는 제외합니다.",
+                              "Options without verified indoor status are excluded.",
+                            )}
                             {incident === "rain" && !indoorOnly
-                              ? " 지금은 꺼져 있어 실외 후보까지 함께 검토합니다."
+                              ? tr(
+                                  " 지금은 꺼져 있어 실외 후보까지 함께 검토합니다.",
+                                  " This is off, so outdoor options are also checked.",
+                                )
                               : ""}
                           </small>
                         </span>
@@ -2649,15 +3127,20 @@ export function ProductApp() {
                     </div>
                   </details>
                   <details className="advanced-constraints">
-                    <summary>시간·거리 자세히 정하기</summary>
+                    <summary>
+                      {tr("시간·거리 자세히 정하기", "Set time and distance limits")}
+                    </summary>
                     <div className="field-grid three">
                       <label>
                         <span>
-                          지금부터 쓸 수 있는 시간
+                          {tr("지금부터 쓸 수 있는 시간", "Time available from now")}
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="지금부터 쓸 수 있는 시간 (15~240분)"
+                            aria-label={tr(
+                              "지금부터 쓸 수 있는 시간 (15~240분)",
+                              "Time available from now (15 to 240 minutes)",
+                            )}
                             type="number"
                             min={15}
                             max={240}
@@ -2665,16 +3148,19 @@ export function ProductApp() {
                             value={availableMinutes}
                             onChange={(event) => setAvailableMinutes(Number(event.target.value))}
                           />
-                          <b aria-hidden="true">분</b>
+                          <b aria-hidden="true">{tr("분", "min")}</b>
                         </span>
                       </label>
                       <label>
                         <span>
-                          예약 전에 남겨 둘 여유
+                          {tr("예약 전에 남겨 둘 여유", "Safety buffer before the booking")}
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="예약 전에 남겨 둘 여유 (5~60분)"
+                            aria-label={tr(
+                              "예약 전에 남겨 둘 여유 (5~60분)",
+                              "Safety buffer before the booking (5 to 60 minutes)",
+                            )}
                             type="number"
                             min={5}
                             max={60}
@@ -2682,16 +3168,19 @@ export function ProductApp() {
                             value={safetyBufferMinutes}
                             onChange={(event) => setSafetyBufferMinutes(Number(event.target.value))}
                           />
-                          <b aria-hidden="true">분</b>
+                          <b aria-hidden="true">{tr("분", "min")}</b>
                         </span>
                       </label>
                       <label>
                         <span>
-                          가면 최소 이만큼은 머물기
+                          {tr("가면 최소 이만큼은 머물기", "Minimum time at the alternative")}
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="가면 최소 이만큼은 머물기 (10~180분)"
+                            aria-label={tr(
+                              "가면 최소 이만큼은 머물기 (10~180분)",
+                              "Minimum time at the alternative (10 to 180 minutes)",
+                            )}
                             type="number"
                             min={10}
                             max={180}
@@ -2701,16 +3190,19 @@ export function ProductApp() {
                               setMinimumStayMinutes(Number(event.target.value))
                             }
                           />
-                          <b aria-hidden="true">분</b>
+                          <b aria-hidden="true">{tr("분", "min")}</b>
                         </span>
                       </label>
                       <label>
                         <span>
-                          여기까지만 이동
+                          {tr("여기까지만 이동", "Maximum travel distance")}
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="여기까지만 이동 (300~20,000m)"
+                            aria-label={tr(
+                              "여기까지만 이동 (300~20,000m)",
+                              "Maximum travel distance (300 to 20,000 metres)",
+                            )}
                             type="number"
                             min={300}
                             max={20000}
@@ -2723,11 +3215,14 @@ export function ProductApp() {
                       </label>
                       <label>
                         <span>
-                          이 범위 안에서 찾기
+                          {tr("이 범위 안에서 찾기", "Search radius")}
                         </span>
                         <span className="number-input">
                           <input
-                            aria-label="이 범위 안에서 찾기 (500~20,000m)"
+                            aria-label={tr(
+                              "이 범위 안에서 찾기 (500~20,000m)",
+                              "Search radius (500 to 20,000 metres)",
+                            )}
                             type="number"
                             min={500}
                             max={20000}
@@ -2747,10 +3242,17 @@ export function ProductApp() {
                       onChange={(event) => setAnalyticsConsent(event.target.checked)}
                     />
                     <span>
-                      <strong>선택: 익명 결과를 지역 관광 공백 개선에 활용</strong>
+                      <strong>
+                        {tr(
+                          "선택: 익명 결과를 지역 관광 공백 개선에 활용",
+                          "Optional: use anonymized outcomes to improve local tourism gaps",
+                        )}
+                      </strong>
                       <small>
-                        정확한 위치·일정명은 저장하지 않습니다. 시군구·시간대·문제 유형과
-                        도착 결과만 30일 보관하며, 동의하지 않아도 복구 기능은 동일합니다.
+                        {tr(
+                          "정확한 위치·일정명은 저장하지 않습니다. 시군구·시간대·문제 유형과 도착 결과만 30일 보관하며, 동의하지 않아도 복구 기능은 동일합니다.",
+                          "Exact locations and itinerary names are not stored. Only district, time band, incident type and arrival outcome are retained for 30 days. Recovery works the same if you decline.",
+                        )}
                       </small>
                     </span>
                   </label>
@@ -2758,7 +3260,9 @@ export function ProductApp() {
 
                 {recoverState === "error" && (
                   <div className="notice is-error" role="alert" data-testid="recover-error">
-                    <strong>복구 요청을 완료하지 못했습니다.</strong>
+                    <strong>
+                      {tr("복구 요청을 완료하지 못했습니다.", "The recovery request did not complete.")}
+                    </strong>
                     <p>{recoverError}</p>
                   </div>
                 )}
@@ -2772,13 +3276,15 @@ export function ProductApp() {
                   data-testid="recover-submit"
                 >
                   {recoverState === "loading"
-                    ? "갈 수 있는 길을 확인하는 중…"
-                    : "한 곳만 바꿔서 찾기"}
+                    ? tr("갈 수 있는 길을 확인하는 중…", "Checking a safe route…")
+                    : tr("한 곳만 바꿔서 찾기", "Replace only the disrupted stop")}
                   <span aria-hidden="true">→</span>
                 </button>
                 <p className="estimate-note">
-                  실제 보행 경로와 운영 여부를 확인한 곳만 결과에 올립니다.
-                  확인하지 못한 조건은 숨기지 않고 따로 알려 드립니다.
+                  {tr(
+                    "실제 보행 경로와 운영 여부를 확인한 곳만 결과에 올립니다. 확인하지 못한 조건은 숨기지 않고 따로 알려 드립니다.",
+                    "Only places with a verified route and opening status appear. Any condition that could not be verified is shown explicitly.",
+                  )}
                 </p>
               </form>
 
@@ -2803,10 +3309,17 @@ export function ProductApp() {
                       <i />
                       <b />
                     </span>
-                    <strong>조건을 입력하면 여기에 결과가 나타납니다.</strong>
+                    <strong>
+                      {tr(
+                        "조건을 입력하면 여기에 결과가 나타납니다.",
+                        "Your verified alternatives will appear here.",
+                      )}
+                    </strong>
                     <p>
-                      긴 목록을 먼저 보여주지 않습니다. 시간·거리·이동 조건을
-                      통과한 공식 관광정보만 제안합니다.
+                      {tr(
+                        "긴 목록을 먼저 보여주지 않습니다. 시간·거리·이동 조건을 통과한 공식 관광정보만 제안합니다.",
+                        "IEOGA does not show an unfiltered list. It only proposes official tourism places that pass your time, distance and mobility constraints.",
+                      )}
                     </p>
                   </div>
                 )}
@@ -2814,10 +3327,17 @@ export function ProductApp() {
                 {recoverState === "loading" && (
                   <div className="result-loading" role="status">
                     <span className="loading-ring" aria-hidden="true" />
-                    <strong>전국 관광데이터를 교차 확인하고 있어요.</strong>
+                    <strong>
+                      {tr(
+                        "전국 관광데이터를 교차 확인하고 있어요.",
+                        "Cross-checking nationwide tourism data.",
+                      )}
+                    </strong>
                     <p>
-                      조건을 못 지키는 곳은 이 단계에서 빠집니다. 보통 5~15초
-                      걸립니다.
+                      {tr(
+                        "조건을 못 지키는 곳은 이 단계에서 빠집니다. 보통 5~15초 걸립니다.",
+                        "Places that fail a required condition are removed at this stage. This usually takes 5–15 seconds.",
+                      )}
                     </p>
                   </div>
                 )}
@@ -2827,10 +3347,15 @@ export function ProductApp() {
                     <span className="error-mark" aria-hidden="true">
                       !
                     </span>
-                    <strong>결과를 만들지 않았습니다.</strong>
+                    <strong>
+                      {tr("결과를 만들지 않았습니다.", "No result was fabricated.")}
+                    </strong>
                     <p>
                       {recoverError ||
-                        "실데이터 호출 또는 필수 입력을 확인한 뒤 다시 요청해 주세요."}
+                        tr(
+                          "실데이터 호출 또는 필수 입력을 확인한 뒤 다시 요청해 주세요.",
+                          "Check the live-data connection and required inputs, then try again.",
+                        )}
                     </p>
                   </div>
                 )}
@@ -2841,49 +3366,78 @@ export function ProductApp() {
                        사실을 숨기면 이 결과가 전체 사용 결과로 읽힌다. */
                     <aside className="ablation-result" role="status">
                       <strong>
-                        제거실험 진행 중 · 한국관광공사 API{" "}
-                        {recovery.ablation.disabledSources.length}종을 끈 결과입니다
+                        {tr(
+                          `제거실험 진행 중 · 한국관광공사 API ${recovery.ablation.disabledSources.length}종을 끈 결과입니다`,
+                          `Ablation running · ${recovery.ablation.disabledSources.length} KTO API source${recovery.ablation.disabledSources.length === 1 ? "" : "s"} disabled`,
+                        )}
                       </strong>
                       <ul>
-                        {(recovery.ablation.lostCapabilities ?? []).map((lost) => (
-                          <li key={lost}>{lost}</li>
-                        ))}
+                        {language === "en"
+                          ? recovery.ablation.disabledSources.map((source) => (
+                              <li key={source}>
+                                {ABLATION_SOURCE_EN[source]?.lost ??
+                                  "A decision signal is unavailable in this comparison."}
+                              </li>
+                            ))
+                          : (recovery.ablation.lostCapabilities ?? []).map((lost) => (
+                              <li key={lost}>{lost}</li>
+                            ))}
                       </ul>
                       <p>
-                        검증된 후보 {recovery.ablation.verifiedOptionCount ?? 0}개 ·
-                        확인 필요 {recovery.ablation.confirmationRequiredCount ?? 0}개 ·
-                        연계 방문 근거 {recovery.ablation.relatedEvidenceCount ?? 0}개 ·
-                        집중률 근거 {recovery.ablation.crowdEvidenceCount ?? 0}개 ·
-                        접근성 확인 {recovery.ablation.accessibilityVerifiedCount ?? 0}개
+                        {tr(
+                          `검증된 후보 ${recovery.ablation.verifiedOptionCount ?? 0}개 · 확인 필요 ${recovery.ablation.confirmationRequiredCount ?? 0}개 · 연계 방문 근거 ${recovery.ablation.relatedEvidenceCount ?? 0}개 · 집중률 근거 ${recovery.ablation.crowdEvidenceCount ?? 0}개 · 접근성 확인 ${recovery.ablation.accessibilityVerifiedCount ?? 0}개`,
+                          `Verified ${recovery.ablation.verifiedOptionCount ?? 0} · needs review ${recovery.ablation.confirmationRequiredCount ?? 0} · related-destination evidence ${recovery.ablation.relatedEvidenceCount ?? 0} · concentration evidence ${recovery.ablation.crowdEvidenceCount ?? 0} · accessibility verified ${recovery.ablation.accessibilityVerifiedCount ?? 0}`,
+                        )}
                       </p>
                     </aside>
                   )}
 
                 {recoverState === "success" && recovery && recovery.options.length === 0 && (
                   <div className="no-candidate" data-testid="no-candidate">
-                    <span>적용 가능 후보 0</span>
-                    <h3>조건을 만족하는 일정을 찾지 못했습니다.</h3>
+                    <span>{tr("적용 가능 후보 0", "0 safe-to-apply alternatives")}</span>
+                    <h3>
+                      {tr(
+                        "조건을 만족하는 일정을 찾지 못했습니다.",
+                        "No itinerary satisfies every required condition.",
+                      )}
+                    </h3>
                     <p>
-                      없는 후보를 만들어내지 않았습니다. 찾는 범위나 이동 거리를 조금 넓히거나, 실내
-                      조건을 해제한 뒤 다시 확인해 주세요.
+                      {tr(
+                        "없는 후보를 만들어내지 않았습니다. 찾는 범위나 이동 거리를 조금 넓히거나, 실내 조건을 해제한 뒤 다시 확인해 주세요.",
+                        "IEOGA did not invent an option. Increase the search radius or travel limit, or remove the indoor-only condition, then verify again.",
+                      )}
                     </p>
                     {typeof recovery.rejectedCount === "number" && (
-                      <small>조건 검증에서 제외된 후보 {recovery.rejectedCount.toLocaleString("ko-KR")}개</small>
+                      <small>
+                        {tr(
+                          `조건 검증에서 제외된 후보 ${recovery.rejectedCount.toLocaleString("ko-KR")}개`,
+                          `${recovery.rejectedCount.toLocaleString("en-US")} candidate${recovery.rejectedCount === 1 ? "" : "s"} excluded by required-condition checks`,
+                        )}
+                      </small>
                     )}
                     {recovery.counterfactual?.title && (
                       <aside className="counterfactual-card is-empty-result">
                         <div>
-                          <span>한 가지 조건만 바꾸면 가능한 대안</span>
-                          <h3>{recovery.counterfactual.title}</h3>
+                          <span>
+                            {tr(
+                              "한 가지 조건만 바꾸면 가능한 대안",
+                              "Possible if one condition changes",
+                            )}
+                          </span>
+                          <h3 lang={language === "en" ? "ko" : undefined}>
+                            {recovery.counterfactual.title}
+                          </h3>
+                          {language === "en" && (
+                            <small>KTO official Korean place name</small>
+                          )}
                         </div>
                         <div>
                           <p>
-                            {recovery.counterfactual.reason ||
-                              "다음 예약을 지키면서 가능한 최소 조건 조정을 계산했습니다."}
+                            {counterfactualReasonText(recovery.counterfactual, language)}
                           </p>
                           {recovery.counterfactual.requiredRelaxation?.description && (
                             <strong className="counterfactual-relaxation">
-                              {recovery.counterfactual.requiredRelaxation.description}
+                              {relaxationDescriptionText(recovery.counterfactual, language)}
                             </strong>
                           )}
                           {/* 사전 걸러내기 단계 탈락안은 경로·운영시간을 아직
@@ -2893,8 +3447,14 @@ export function ProductApp() {
                           <small>
                             {recovery.counterfactual.verificationDepth ===
                             "pre_filter"
-                              ? "거리·시간 조건만 비교한 단계입니다. 실제 경로와 운영시간, 다음 예약 보존은 이 조건을 적용한 뒤 다시 검증합니다."
-                              : "다른 일정과 다음 예약은 그대로 보존합니다."}
+                              ? tr(
+                                  "거리·시간 조건만 비교한 단계입니다. 실제 경로와 운영시간, 다음 예약 보존은 이 조건을 적용한 뒤 다시 검증합니다.",
+                                  "This is only a distance-and-time pre-check. The real route, opening hours and next-booking preservation will be verified after you apply this condition.",
+                                )
+                              : tr(
+                                  "다른 일정과 다음 예약은 그대로 보존합니다.",
+                                  "The remaining itinerary and next booking stay protected.",
+                                )}
                           </small>
                         </div>
                         <button
@@ -2904,15 +3464,21 @@ export function ProductApp() {
                             !recovery.counterfactual.requiredRelaxation
                           }
                         >
-                          이 한 조건만 적용
+                          {tr("이 한 조건만 적용", "Apply this one condition")}
                         </button>
                       </aside>
                     )}
                     {recovery.warnings?.map((warning) => (
-                      <small key={warning}>{warning}</small>
+                      <small key={warning}>
+                        {language === "en"
+                          ? "An official evidence source reported a limitation; review the verification details before changing any condition."
+                          : warning}
+                      </small>
                     ))}
                     <div className="no-candidate-actions">
-                      <a href="tel:1330">관광통역안내 1330 연결</a>
+                      <a href="tel:1330">
+                        {tr("관광통역안내 1330 연결", "Call the 1330 Travel Helpline")}
+                      </a>
                       <button
                         type="button"
                         onClick={() => {
@@ -2921,7 +3487,7 @@ export function ProductApp() {
                             ?.scrollIntoView({ behavior: "smooth", block: "start" });
                         }}
                       >
-                        조건을 직접 검토하기
+                        {tr("조건을 직접 검토하기", "Review my conditions")}
                       </button>
                     </div>
                   </div>
@@ -2932,10 +3498,17 @@ export function ProductApp() {
                     <div className="recovery-ready-banner">
                       <span aria-hidden="true">✓</span>
                       <div>
-                        <strong>다음 예약을 지키는 복구안을 찾았어요</strong>
+                        <strong>
+                          {tr(
+                            "다음 예약을 지키는 복구안을 찾았어요",
+                            "We found a recovery that protects your next booking",
+                          )}
+                        </strong>
                         <p>
-                          원래 여행에서 가장 적게 바꾸는 안을 먼저
-                          보여드려요.
+                          {tr(
+                            "원래 여행에서 가장 적게 바꾸는 안을 먼저 보여드려요.",
+                            "The option with the smallest change to your original trip appears first.",
+                          )}
                         </p>
                       </div>
                     </div>
@@ -2946,19 +3519,30 @@ export function ProductApp() {
                             알려 주지 않으면서 결과 전체를 의심하게 만든다.
                             아래에 실제 사유가 이미 나열되므로 제목은 그것을
                             가리키는 말이면 된다. */}
-                        <strong>참고해 주세요</strong>
+                        <strong>{tr("참고해 주세요", "Please review")}</strong>
                         {recovery.warnings.map((warning) => (
-                          <p key={warning}>{warning}</p>
+                          <p key={warning}>
+                            {language === "en"
+                              ? "An official evidence source was unavailable or incomplete. Affected safety conditions remain blocked and are identified on each option."
+                              : warning}
+                          </p>
                         ))}
                       </div>
                     )}
 
                     {!recoveryPersisted && (
                       <div className="notice is-error" role="alert">
-                        <strong>복구 실행 저장을 확인하지 못했습니다.</strong>
+                        <strong>
+                          {tr(
+                            "복구 실행 저장을 확인하지 못했습니다.",
+                            "The saved recovery run could not be verified.",
+                          )}
+                        </strong>
                         <p>
-                          이 결과는 일정에 적용하거나 공유·성과 기록에 사용할 수
-                          없습니다. 복구를 다시 실행해 주세요.
+                          {tr(
+                            "이 결과는 일정에 적용하거나 공유·성과 기록에 사용할 수 없습니다. 복구를 다시 실행해 주세요.",
+                            "This result cannot be applied, shared or recorded as an outcome. Run recovery again.",
+                          )}
                         </p>
                       </div>
                     )}
@@ -2971,14 +3555,24 @@ export function ProductApp() {
                       >
                         <div className="applied-recovery-heading">
                           <div>
-                            <span>현재 적용 중인 복구안</span>
+                            <span>
+                              {tr("현재 적용 중인 복구안", "Recovery currently in use")}
+                            </span>
                             <h3>
-                              일정{" "}
-                              {appliedScheduleDiff?.changedNodeCount ??
-                                appliedScheduleDiff?.changedCount ??
-                                appliedScheduleDiff?.changedNodeIds?.length ??
-                                1}
-                              개만 바꿔 다음 예약을 지킵니다.
+                              {tr(
+                                `일정 ${
+                                  appliedScheduleDiff?.changedNodeCount ??
+                                  appliedScheduleDiff?.changedCount ??
+                                  appliedScheduleDiff?.changedNodeIds?.length ??
+                                  1
+                                }개만 바꿔 다음 예약을 지킵니다.`,
+                                `Only ${
+                                  appliedScheduleDiff?.changedNodeCount ??
+                                  appliedScheduleDiff?.changedCount ??
+                                  appliedScheduleDiff?.changedNodeIds?.length ??
+                                  1
+                                } stop is changed to protect your next booking.`,
+                              )}
                             </h3>
                           </div>
                           <b
@@ -2991,19 +3585,19 @@ export function ProductApp() {
                           >
                             {appliedScheduleDiff?.nextFixedAppointmentPreserved === false ||
                             appliedScheduleDiff?.nextFixedStopPreserved === false
-                              ? "예약 보존 재확인 필요"
-                              : "다음 고정 일정 보존"}
+                              ? tr("예약 보존 재확인 필요", "Booking preservation needs re-checking")
+                              : tr("다음 고정 일정 보존", "Next fixed appointment preserved")}
                           </b>
                         </div>
 
                         <div className="before-after-timeline">
                           <div className="timeline-column">
-                            <span>변경 전</span>
+                            <span>{tr("변경 전", "Before")}</span>
                             <ol>
                               <li className="is-disrupted">
                                 <time>{formatStopTime(selectedAffectedStop.time)}</time>
                                 <strong>{selectedAffectedStop.title}</strong>
-                                <small>돌발상황으로 진행 불가</small>
+                                <small>{tr("돌발상황으로 진행 불가", "Disrupted")}</small>
                               </li>
                               {preservedOriginalStops.map((stop) => (
                                 <li
@@ -3012,27 +3606,30 @@ export function ProductApp() {
                                 >
                                   <time>{formatStopTime(stop.time)}</time>
                                   <strong>{stop.title}</strong>
-                                  <small>원래 일정 · 변경하지 않음</small>
+                                  <small>{tr("원래 일정 · 변경하지 않음", "Original stop · unchanged")}</small>
                                 </li>
                               ))}
                               <li className="is-locked">
                                 <time>{formatStopTime(selectedNextFixedStop.time)}</time>
                                 <strong>{selectedNextFixedStop.title}</strong>
-                                <small>예약·고정 일정</small>
+                                <small>{tr("예약·고정 일정", "Booked · fixed appointment")}</small>
                               </li>
                             </ol>
                           </div>
                           <i aria-hidden="true">→</i>
                           <div className="timeline-column is-after">
-                            <span>최소변경 복구 후</span>
+                            <span>{tr("최소변경 복구 후", "After minimum-change recovery")}</span>
                             <ol>
                               <li className="is-replacement">
-                                <time>지금</time>
+                                <time>{tr("지금", "Now")}</time>
                                 <strong>{appliedOption.title}</strong>
                                 <small>
                                   {typeof appliedOption.estimatedTravelMinutes === "number"
-                                    ? `첫 이동 약 ${Math.ceil(appliedOption.estimatedTravelMinutes)}분`
-                                    : "이동 경로 확인"}
+                                    ? tr(
+                                        `첫 이동 약 ${Math.ceil(appliedOption.estimatedTravelMinutes)}분`,
+                                        `First leg about ${Math.ceil(appliedOption.estimatedTravelMinutes)} min`,
+                                      )
+                                    : tr("이동 경로 확인", "Route verified")}
                                 </small>
                               </li>
                               {appliedScheduleDiff?.preservedWaypoints
@@ -3053,23 +3650,27 @@ export function ProductApp() {
                                     <time>
                                       {formatIsoTime(
                                         waypoint.estimatedArrivalAt,
+                                        language,
                                       )}
                                     </time>
                                     <strong>
-                                      {waypoint.title ?? "보존 일정"}
+                                      {waypoint.title ?? tr("보존 일정", "Preserved stop")}
                                     </strong>
                                     <small>
                                       {typeof waypoint.arrivalBufferMinutes ===
                                       "number"
-                                        ? `도착 여유 ${waypoint.arrivalBufferMinutes}분 · 보존 검증`
-                                        : "원래 일정 보존 검증"}
+                                        ? tr(
+                                            `도착 여유 ${waypoint.arrivalBufferMinutes}분 · 보존 검증`,
+                                            `${waypoint.arrivalBufferMinutes} min arrival buffer · preservation verified`,
+                                          )
+                                        : tr("원래 일정 보존 검증", "Original stop preservation verified")}
                                     </small>
                                   </li>
                                 ))}
                               <li className="is-locked">
                                 <time>{formatStopTime(selectedNextFixedStop.time)}</time>
                                 <strong>{selectedNextFixedStop.title}</strong>
-                                <small>잠금 유지</small>
+                                <small>{tr("잠금 유지", "Lock preserved")}</small>
                               </li>
                             </ol>
                           </div>
@@ -3077,61 +3678,69 @@ export function ProductApp() {
 
                         <div className="continuity-proof-facts">
                           <dl>
-                            <dt>잠긴 일정 보존</dt>
+                            <dt>{tr("잠긴 일정 보존", "Locked stops preserved")}</dt>
                             <dd>
                               {readText(appliedProof, ["lockedNodesPreserved"]) ||
                                 appliedScheduleDiff?.preservedLockedNodeIds?.length ||
-                                "확인 중"}
+                                tr("확인 중", "Being verified")}
                               {readText(appliedProof, ["lockedNodesTotal"])
                                 ? ` / ${readText(appliedProof, ["lockedNodesTotal"])}`
                                 : ""}
                             </dd>
                           </dl>
                           <dl>
-                            <dt>실제 경로 근거</dt>
+                            <dt>{tr("실제 경로 근거", "Real-route evidence")}</dt>
                             <dd>
                               {readText(appliedRouteEvidence, [
                                 "status",
                                 "provider",
                                 "method",
-                              ]) || "구간별 경로 확인"}
+                              ]) || tr("구간별 경로 확인", "Every route leg verified")}
                             </dd>
                           </dl>
                           <dl>
-                            <dt>다음 일정 도착</dt>
+                            <dt>{tr("다음 일정 도착", "Arrival at next appointment")}</dt>
                             <dd>
                               {readText(appliedRouteEvidence, [
                                 "arrivalAt",
                                 "estimatedArrivalAt",
                               ]) ||
                                 appliedScheduleDiff?.arrivalTime ||
-                                "도착 시각 확인"}
+                                tr("도착 시각 확인", "Arrival time verified")}
                             </dd>
                           </dl>
                           <dl>
-                            <dt>안전 여유</dt>
+                            <dt>{tr("안전 여유", "Safety buffer")}</dt>
                             <dd>
                               {typeof appliedScheduleDiff?.safetyBufferMinutes === "number"
-                                ? `${appliedScheduleDiff.safetyBufferMinutes}분`
-                                : `${safetyBufferMinutes}분 기준`}
+                                ? tr(
+                                    `${appliedScheduleDiff.safetyBufferMinutes}분`,
+                                    `${appliedScheduleDiff.safetyBufferMinutes} min`,
+                                  )
+                                : tr(`${safetyBufferMinutes}분 기준`, `${safetyBufferMinutes} min minimum`) }
                             </dd>
                           </dl>
                           {appliedWeatherEvidence && (
                             <dl>
-                              <dt>현재 기상 근거</dt>
+                              <dt>{tr("현재 기상 근거", "Current weather evidence")}</dt>
                               <dd>
-                                <a
-                                  href="https://open-meteo.com/"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  Open-Meteo
-                                </a>
+                                {weatherSourceInfo(appliedWeatherEvidence, language).url ? (
+                                  <a
+                                    href={weatherSourceInfo(appliedWeatherEvidence, language).url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {weatherSourceInfo(appliedWeatherEvidence, language).label}
+                                  </a>
+                                ) : (
+                                  weatherSourceInfo(appliedWeatherEvidence, language).label
+                                )}
                                 {" · "}
                                 {formatIsoTime(
                                   readText(appliedWeatherEvidence, [
                                     "observedAt",
                                   ]),
+                                  language,
                                 )}
                               </dd>
                             </dl>
@@ -3144,7 +3753,7 @@ export function ProductApp() {
                             target="_blank"
                             rel="noreferrer"
                           >
-                            현재 위치 → 대체 일정 길찾기
+                            {tr("현재 위치 → 대체 일정 길찾기", "Directions: current location → recovery stop")}
                           </a>
                           {typeof selectedNextFixedStop.latitude === "number" &&
                             typeof selectedNextFixedStop.longitude === "number" && (
@@ -3153,43 +3762,26 @@ export function ProductApp() {
                                 target="_blank"
                                 rel="noreferrer"
                               >
-                                대체 일정 → 다음 예약 길찾기
+                                {tr("대체 일정 → 다음 예약 길찾기", "Directions: recovery stop → next booking")}
                               </a>
                             )}
                         </div>
                         <p className="route-attribution">
-                          적용 경로 출처 ·{" "}
-                          {readText(appliedRouteEvidence, ["attribution"]) ||
-                            "경로 제공자 출처 확인 필요"}
+                          {tr("적용 경로 출처", "Applied-route source")} ·{" "}
+                          {readText(appliedRouteEvidence, ["attribution"])
+                            ? contributionSourceText(
+                                readText(appliedRouteEvidence, ["attribution"]),
+                                language,
+                              )
+                            : tr("경로 제공자 출처 확인 필요", "Routing source not recorded")}
                           {readText(appliedRouteEvidence, ["calculatedAt"])
-                            ? ` · 확인 ${formatDate(readText(appliedRouteEvidence, ["calculatedAt"]))}`
+                            ? tr(
+                                ` · 확인 ${formatDate(readText(appliedRouteEvidence, ["calculatedAt"]))}`,
+                                ` · checked ${formatLocalizedDateTime(readText(appliedRouteEvidence, ["calculatedAt"]), language)}`,
+                              )
                             : ""}
                         </p>
 
-                        <div className="arrival-check">
-                          <div>
-                            <strong>다음 고정 일정까지 여행이 이어졌나요?</strong>
-                            <span>도착 결과가 있어야 복구가 실제로 성공했는지 확인할 수 있습니다.</span>
-                          </div>
-                          <div>
-                            <button
-                              type="button"
-                              className={recoveryOutcome === "arrived" ? "is-selected" : ""}
-                              onClick={() => void recordRecoveryOutcome(appliedOption, "arrived")}
-                              disabled={!recoveryPersisted}
-                            >
-                              도착했어요
-                            </button>
-                            <button
-                              type="button"
-                              className={recoveryOutcome === "not_arrived" ? "is-selected is-negative" : ""}
-                              onClick={() => void recordRecoveryOutcome(appliedOption, "abandoned")}
-                              disabled={!recoveryPersisted}
-                            >
-                              도착하지 못했어요
-                            </button>
-                          </div>
-                        </div>
                         {outcomeMessage && (
                           <p className="outcome-message" role="status">
                             {outcomeMessage}
@@ -3255,8 +3847,7 @@ export function ProductApp() {
                           className={[
                             "option-card",
                             appliedOptionId === option.id ? "is-applied" : "",
-                            option.confirmationRequired ||
-                            (option.evidenceGaps?.length ?? 0) > 0
+                            !optionApplicationSafety(option, language).canApply
                               ? "is-unverified"
                               : "",
                           ]
@@ -3291,55 +3882,47 @@ export function ProductApp() {
                                       option.strategyLabel}
                                   </span>
                                 )}
-                                <p>{option.address || "주소 정보 확인 필요"}</p>
-                                <h3>{option.title}</h3>
+                                <p lang={language === "en" ? "ko" : undefined}>
+                                  {option.address || tr("주소 정보 확인 필요", "Address not provided")}
+                                </p>
+                                <h3 lang={language === "en" ? "ko" : undefined}>
+                                  {option.title}
+                                </h3>
+                                {language === "en" && (
+                                  <small>KTO official Korean place name and address</small>
+                                )}
                               </div>
                               {typeof option.score === "number" && (
                                 <span className="option-score">
                                   <b>{Math.round(option.score)}</b>
-                                  <small>복구 적합도</small>
+                                  <small>{tr("기초 적합도", "Base fit")}</small>
                                 </span>
                               )}
                             </div>
-                            {(option.confirmationRequired ||
-                              (option.evidenceGaps?.length ?? 0) > 0) && (
+                            {!optionApplicationSafety(option, language).canApply && (
                               <section
                                 className="evidence-gap-alert"
                                 role="alert"
-                                aria-label="출발 전 직접 확인할 항목"
+                                aria-label={tr(
+                                  "출발 전 직접 확인할 항목",
+                                  "Conditions to verify before leaving",
+                                )}
                               >
-                                {/* 예전 문구는 "검증된 복구안이 아닙니다 /
-                                    적용할 수 없습니다"였다. 둘 다 사실과 달라
-                                    졌다 — 적용은 이제 여행자가 정한다. 그리고
-                                    "검증된 복구안이 아니다"는 후보 전체를
-                                    부정하는 말이어서, 실제로는 한 가지 항목만
-                                    확인이 안 된 경우에도 대안 자체를 못 믿게
-                                    만든다. 확인한 것과 못 한 것을 구분해 적는다. */}
                                 <strong>
-                                  출발 전에 직접 확인할 것이 있어요
+                                  {language === "en"
+                                    ? "Unavailable until every safety condition is verified"
+                                    : "모든 안전 조건을 확인하기 전에는 적용할 수 없어요"}
                                 </strong>
                                 <p>
-                                  아래는 공식 데이터에서 확인하지 못한 항목입니다.
-                                  나머지 경로·시간은 검증했고, 갈지 말지는 직접
-                                  정하실 수 있어요.
+                                  {language === "en"
+                                    ? "IEOGA blocks closed and unverified options to prevent a wasted trip or a missed appointment."
+                                    : "헛걸음이나 다음 약속 지연을 막기 위해 휴무·미확인 후보는 일정에 적용하지 않습니다."}
                                 </p>
                                 <ul>
-                                  {(option.evidenceGaps ?? []).map(
-                                    (gap, gapIndex) => (
-                                      <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
-                                        {(language === "en"
-                                          ? gap.noteEn
-                                          : "") ||
-                                          gap.note ||
-                                          (gap.code === "INDOOR_UNVERIFIED"
-                                            ? "실내 이용 가능 여부 미확인"
-                                            : gap.code ===
-                                                "ACCESSIBILITY_UNVERIFIED"
-                                              ? "요청한 접근성 조건 미확인"
-                                              : gap.code ===
-                                                  "CONCENTRATION_UNVERIFIED"
-                                                ? "관광 집중률 예측 미확인"
-                                                : "필수 조건 근거 미확인")}
+                                  {optionApplicationSafety(option, language).reasons.map(
+                                    (reason, reasonIndex) => (
+                                      <li key={`${option.id}-safety-${reasonIndex}`}>
+                                        {reason}
                                       </li>
                                     ),
                                   )}
@@ -3358,7 +3941,7 @@ export function ProductApp() {
                               const markers: RouteMapMarker[] = [
                                 {
                                   point: geometry[0],
-                                  label: "현재 위치",
+                                  label: tr("현재 위치", "Current location"),
                                   kind: "origin",
                                 },
                                 {
@@ -3382,7 +3965,7 @@ export function ProductApp() {
                                   point: geometry[geometry.length - 1],
                                   label:
                                     readText(nextFixed, ["title"]) ||
-                                    "다음 고정 일정",
+                                    tr("다음 고정 일정", "Next fixed appointment"),
                                   kind: "destination",
                                 });
                               }
@@ -3403,7 +3986,10 @@ export function ProductApp() {
                                     "attribution",
                                   ])}
                                   language={language}
-                                  summary={`현재 위치에서 ${option.title}까지의 경로 개요입니다. 약 ${option.estimatedTravelMinutes ?? 0}분, ${(option.distanceMeters ?? 0).toLocaleString("ko-KR")}m.`}
+                                  summary={tr(
+                                    `현재 위치에서 ${option.title}까지의 경로 개요입니다. 약 ${option.estimatedTravelMinutes ?? 0}분, ${(option.distanceMeters ?? 0).toLocaleString("ko-KR")}m.`,
+                                    `Route overview from your current location to the KTO official Korean place named ${option.title}. About ${option.estimatedTravelMinutes ?? 0} minutes and ${(option.distanceMeters ?? 0).toLocaleString("en-US")} metres.`,
+                                  )}
                                 />
                               );
                             })()}
@@ -3433,56 +4019,75 @@ export function ProductApp() {
                                         : "여행 목적 유지"}
                                 </span>
                                 <strong>
-                                  {option.purposePreservation.originalPurpose ||
-                                    "원래 여행 경험"}
+                                  {purposeLabelText(
+                                    option.purposePreservation.originalPurpose,
+                                    language,
+                                  )}
                                   <i aria-hidden="true">→</i>
-                                  {option.purposePreservation
-                                    .replacementPurpose || "대체 경험"}
+                                  {purposeLabelText(
+                                    option.purposePreservation.replacementPurpose,
+                                    language,
+                                  )}
                                 </strong>
                                 <p>
                                   {(language === "en" &&
                                     option.purposePreservation.statementEn) ||
                                     option.purposePreservation.statement ||
-                                    "장소만 바꾸고 원래 하려던 여행 경험은 이어갑니다."}
+                                    tr(
+                                      "장소만 바꾸고 원래 하려던 여행 경험은 이어갑니다.",
+                                      "Only the place changes; the intended travel experience continues.",
+                                    )}
                                 </p>
                                 <small>
                                   {option.purposePreservation.evidenceSource ===
                                   "TarRlteTarService1"
-                                    ? `한국관광공사 연계 방문 근거${
-                                        typeof option.purposePreservation
-                                          .relatedRank === "number"
-                                          ? ` · ${option.purposePreservation.relatedRank}위`
-                                          : ""
-                                      }`
-                                    : "한국관광공사 관광 콘텐츠 유형 근거"}
+                                    ? tr(
+                                        `한국관광공사 연계 방문 근거${
+                                          typeof option.purposePreservation.relatedRank === "number"
+                                            ? ` · ${option.purposePreservation.relatedRank}위`
+                                            : ""
+                                        }`,
+                                        `KTO related-destination evidence${
+                                          typeof option.purposePreservation.relatedRank === "number"
+                                            ? ` · rank ${option.purposePreservation.relatedRank}`
+                                            : ""
+                                        }`,
+                                      )
+                                    : tr(
+                                        "한국관광공사 관광 콘텐츠 유형 근거",
+                                        "KTO official Korean tourism-content type evidence",
+                                      )}
                                 </small>
                               </div>
                             )}
                             <div className="option-facts">
                               <dl>
-                                <dt>거리</dt>
+                                <dt>{tr("거리", "Distance")}</dt>
                                 <dd>
                                   {typeof option.distanceMeters === "number"
                                     ? option.distanceMeters >= 1000
                                       ? `${(option.distanceMeters / 1000).toFixed(1)}km`
                                       : `${Math.round(option.distanceMeters)}m`
-                                    : "미확인"}
+                                    : tr("미확인", "Not verified")}
                                 </dd>
                               </dl>
                               <dl>
-                                <dt>이동 추정</dt>
+                                <dt>{tr("이동 추정", "Travel estimate")}</dt>
                                 <dd>
                                   {typeof option.estimatedTravelMinutes === "number"
-                                    ? `약 ${Math.ceil(option.estimatedTravelMinutes)}분`
-                                    : compactValue(option.travelEstimate)}
+                                    ? tr(
+                                        `약 ${Math.ceil(option.estimatedTravelMinutes)}분`,
+                                        `About ${Math.ceil(option.estimatedTravelMinutes)} min`,
+                                      )
+                                    : compactLocalizedValue(option.travelEstimate, language)}
                                 </dd>
                               </dl>
                               <dl>
-                                <dt>접근성</dt>
-                                <dd>{compactValue(option.accessibility)}</dd>
+                                <dt>{tr("접근성", "Accessibility")}</dt>
+                                <dd>{compactLocalizedValue(option.accessibility, language)}</dd>
                               </dl>
                               <dl>
-                                <dt>붐빔 정도</dt>
+                                <dt>{tr("붐빔 정도", "Crowding")}</dt>
                                 <dd>{formatCrowd(option.crowd, language)}</dd>
                               </dl>
                             </div>
@@ -3499,38 +4104,69 @@ export function ProductApp() {
                             />
                             {option.indoorSuitability !== undefined && (
                               <div className="verification-tags">
-                                <span>실내 적합성 · {compactValue(option.indoorSuitability)}</span>
+                                <span>
+                                  {tr("실내 적합성", "Indoor suitability")} ·{" "}
+                                  {compactLocalizedValue(option.indoorSuitability, language)}
+                                </span>
                                 <span>
                                   {asRecord(option.continuityProof)?.routeEvidence
-                                    ? "현재→대안→다음 예약 경로 확인"
-                                    : "경로 근거 확인 필요"}
+                                    ? tr(
+                                        "현재→대안→다음 예약 경로 확인",
+                                        "Current location → recovery stop → next booking route verified",
+                                      )
+                                    : tr("경로 근거 확인 필요", "Route evidence needs verification")}
                                 </span>
                               </div>
                             )}
                             <p className="route-attribution">
-                              추천 경로 출처 ·{" "}
+                              {tr("추천 경로 출처", "Recommended-route source")} ·{" "}
                               {readText(
-                                asRecord(
-                                  asRecord(option.continuityProof)?.routeEvidence,
-                                ),
+                                asRecord(asRecord(option.continuityProof)?.routeEvidence),
                                 ["attribution"],
-                              ) || "경로 제공자 출처 확인 필요"}
+                              )
+                                ? contributionSourceText(
+                                    readText(
+                                      asRecord(asRecord(option.continuityProof)?.routeEvidence),
+                                      ["attribution"],
+                                    ),
+                                    language,
+                                  )
+                                : tr("경로 제공자 출처 확인 필요", "Routing source not recorded")}
                             </p>
                             {asRecord(
                               asRecord(option.continuityProof)
                                 ?.weatherEvidence,
                             ) && (
                               <p className="route-attribution">
-                                현재 기상 원자료 ·{" "}
-                                <a
-                                  href="https://open-meteo.com/"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  Open-Meteo
-                                </a>
+                                {tr("현재 기상 원자료", "Current weather source")} ·{" "}
+                                {weatherSourceInfo(
+                                  asRecord(asRecord(option.continuityProof)?.weatherEvidence),
+                                  language,
+                                ).url ? (
+                                  <a
+                                    href={weatherSourceInfo(
+                                      asRecord(asRecord(option.continuityProof)?.weatherEvidence),
+                                      language,
+                                    ).url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {weatherSourceInfo(
+                                      asRecord(asRecord(option.continuityProof)?.weatherEvidence),
+                                      language,
+                                    ).label}
+                                  </a>
+                                ) : (
+                                  weatherSourceInfo(
+                                    asRecord(asRecord(option.continuityProof)?.weatherEvidence),
+                                    language,
+                                  ).label
+                                )}
                                 {" · "}
-                                강수 여부는 이어가가 원자료에서 판정
+                                {tr(
+                                  "강수 여부는 이어가가 원자료에서 판정",
+                                  "IEOGA derives precipitation status from the source data",
+                                )}
                               </p>
                             )}
                             {/* `변경 일정 1개 / 잠금 보존 1 / 다음 예약 보존`
@@ -3553,21 +4189,25 @@ export function ProductApp() {
                                         }
                                       >
                                         <span>
-                                          {waypoint.title ?? "보존 일정"}
+                                          {waypoint.title ?? tr("보존 일정", "Preserved stop")}
                                         </span>
                                         <small>
                                           {formatIsoTime(
                                             waypoint.estimatedArrivalAt,
+                                            language,
                                           )}
                                           {typeof waypoint.arrivalBufferMinutes ===
                                           "number"
-                                            ? ` 도착 · 여유 ${waypoint.arrivalBufferMinutes}분`
-                                            : " 도착 검증"}
+                                            ? tr(
+                                                ` 도착 · 여유 ${waypoint.arrivalBufferMinutes}분`,
+                                                ` arrival · ${waypoint.arrivalBufferMinutes} min buffer`,
+                                              )
+                                            : tr(" 도착 검증", " arrival verified")}
                                         </small>
                                         <b>
                                           {waypoint.status === "preserved"
-                                            ? "보존"
-                                            : "재확인"}
+                                            ? tr("보존", "Preserved")
+                                            : tr("재확인", "Re-check")}
                                         </b>
                                       </li>
                                     ),
@@ -3599,37 +4239,49 @@ export function ProductApp() {
                                 <button
                                   type="button"
                                   className="apply-option-button"
-                                  onClick={() => void recordRecoveryOutcome(option, "applied")}
-                                  /* 확인하지 못한 조건이 있어도 **막지 않는다.**
-                                     대안을 보고 결정하는 것은 여행자다. 우리가
-                                     할 일은 무엇을 확인했고 무엇을 못 했는지
-                                     알리는 것이고, 갈지 말지는 그 사람이
-                                     정한다. 예전에는 버튼이 아예 비활성이라
-                                     "이 앱은 확인된 것만 시켜 준다"는 뜻이
-                                     됐다 — 여행 중 위기 순간에 선택지를
-                                     빼앗는 셈이다. */
+                                  onClick={() => void applyRecoveryOption(option)}
+                                  /* 적용은 서버와 화면에서 모두 fail-closed다.
+                                     운영·경로·필수 조건 중 하나라도 확인되지
+                                     않으면 설명은 보여 주되 실행 계약은 만들지
+                                     않는다. */
                                   disabled={
+                                    Boolean(applyingOptionId) ||
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
-                                    !option.id
+                                    !option.id ||
+                                    !optionApplicationSafety(option, language).canApply
                                   }
+                                  aria-busy={applyingOptionId === option.id}
                                 >
-                                  {appliedOptionId === option.id
-                                    ? "현재 적용 중"
-                                    : option.confirmationRequired ||
-                                        (option.evidenceGaps?.length ?? 0) > 0
-                                      ? "확인 못 한 것 알고 이어가기"
-                                      : "이 일정으로 이어가기"}
+                                  {applyingOptionId === option.id
+                                    ? language === "en"
+                                      ? "Verifying active itinerary…"
+                                      : "서버 활성 일정 확인 중…"
+                                    : applyingOptionId
+                                      ? language === "en"
+                                        ? "Another itinerary is being applied"
+                                        : "다른 일정 적용 확인 중"
+                                    : appliedOptionId === option.id
+                                    ? language === "en"
+                                      ? "Currently applied"
+                                      : "현재 적용 중"
+                                    : !optionApplicationSafety(option, language).canApply
+                                      ? language === "en"
+                                        ? "Cannot apply until verified"
+                                        : "안전 확인 전 적용 불가"
+                                      : language === "en"
+                                        ? "Continue with this itinerary"
+                                        : "이 일정으로 이어가기"}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => void shareRecoveryOption(option)}
                                   disabled={
+                                    Boolean(applyingOptionId) ||
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
                                     !option.id ||
-                                    option.confirmationRequired ||
-                                    (option.evidenceGaps?.length ?? 0) > 0
+                                    !optionApplicationSafety(option, language).canApply
                                   }
                                 >
                                   {shareMessages[option.id] ??
@@ -3688,8 +4340,11 @@ export function ProductApp() {
                         }
                       >
                         {showAllOptions
-                          ? "최우선 복구안만 보기"
-                          : `다른 검증안 ${recovery.options.length - 1}개 비교`}
+                          ? tr("최우선 복구안만 보기", "Show only the top recovery")
+                          : tr(
+                              `다른 검증안 ${recovery.options.length - 1}개 비교`,
+                              `Compare ${recovery.options.length - 1} other verified option${recovery.options.length - 1 === 1 ? "" : "s"}`,
+                            )}
                       </button>
                     )}
 
@@ -3698,21 +4353,33 @@ export function ProductApp() {
                         <div>
                           {/* "최소 완화 반사실 증명"은 사람이 쓰는 말이 아니다.
                               뜻은 "조건 하나만 이만큼 풀면 갈 수 있는 곳"이다. */}
-                          <span>조건을 조금만 풀면 갈 수 있는 곳</span>
-                          <h3>{recovery.counterfactual.title}</h3>
+                          <span>
+                            {tr(
+                              "조건을 조금만 풀면 갈 수 있는 곳",
+                              "Possible with one small condition change",
+                            )}
+                          </span>
+                          <h3 lang={language === "en" ? "ko" : undefined}>
+                            {recovery.counterfactual.title}
+                          </h3>
+                          {language === "en" && (
+                            <small>KTO official Korean place name</small>
+                          )}
                         </div>
                         <div>
                           <p>
-                            {recovery.counterfactual.reason ||
-                              "다음 예약은 그대로 지키면서, 조건 하나만 이만큼 바꾸면 이 곳에 갈 수 있어요."}
+                            {counterfactualReasonText(recovery.counterfactual, language)}
                           </p>
                           {recovery.counterfactual.requiredRelaxation?.description && (
                             <strong className="counterfactual-relaxation">
-                              {recovery.counterfactual.requiredRelaxation.description}
+                              {relaxationDescriptionText(recovery.counterfactual, language)}
                             </strong>
                           )}
                           <small>
-                            잠금 일정·다음 예약 보존 · 자동 적용하지 않음
+                            {tr(
+                              "잠금 일정·다음 예약 보존 · 자동 적용하지 않음",
+                              "Locked stops and next booking preserved · never applied automatically",
+                            )}
                           </small>
                         </div>
                         <button
@@ -3722,7 +4389,10 @@ export function ProductApp() {
                             !recovery.counterfactual.requiredRelaxation
                           }
                         >
-                          이 한 조건만 적용해 재계산
+                          {tr(
+                            "이 한 조건만 적용해 재계산",
+                            "Apply this one condition and verify again",
+                          )}
                         </button>
                       </aside>
                     )}
@@ -3732,41 +4402,62 @@ export function ProductApp() {
                       <div className="decision-contribution-intro">
                         <span>{language === "en" ? "Why this place was chosen" : "이 곳을 고른 이유"}</span>
                         <h3>{language === "en" ? "What each data source decided" : "각 데이터가 바꾼 판단"}</h3>
-                        <p>어떤 데이터가 이 곳을 남기고 다른 곳을 제외했는지 그대로 보여 드립니다.</p>
+                        <p>
+                          {tr(
+                            "어떤 데이터가 이 곳을 남기고 다른 곳을 제외했는지 그대로 보여 드립니다.",
+                            "See which source kept this place, changed its order or excluded another option.",
+                          )}
+                        </p>
                       </div>
                       <ul>
                         {recovery.dataContributions && recovery.dataContributions.length > 0
                           ? recovery.dataContributions.map((contribution, index) => (
                               <li key={`${contribution.source ?? "source"}-${index}`}>
-                                <strong>{contribution.source || "공식 데이터"}</strong>
-                                <span>{contribution.effect || contribution.decision || "복구 조건 판정"}</span>
-                                <b>{humanizeStatus(contribution.status || "used")}</b>
+                                <strong>
+                                  {contributionSourceText(contribution.source, language)}
+                                </strong>
+                                <span>{contributionDecisionText(contribution, language)}</span>
+                                <b>
+                                  {contributionEffectText(
+                                    contribution.effect || contribution.status || "used",
+                                    language,
+                                  )}
+                                </b>
                               </li>
                             ))
                           : (recovery.sourceLedger ?? []).map((source, index) => (
                               <li key={`${sourceName(source)}-effect-${index}`}>
-                                <strong>{sourceName(source)}</strong>
-                                <span>{sourceDecisionEffect(source)}</span>
-                                <b>{humanizeStatus(sourceStatus(source))}</b>
+                                <strong>
+                                  {contributionSourceText(sourceName(source), language)}
+                                </strong>
+                                <span>
+                                  {language === "en"
+                                    ? "Used to verify or bound a required recovery condition."
+                                    : sourceDecisionEffect(source)}
+                                </span>
+                                <b>{humanizeStatus(sourceStatus(source), language)}</b>
                               </li>
                             ))}
                       </ul>
                     </details>
 
                     <details className="source-ledger">
-                      <summary>요청·출처 원장 자세히 보기</summary>
+                      <summary>
+                        {tr("요청·출처 원장 자세히 보기", "View request and source ledger")}
+                      </summary>
                       <ul>
                         {(recovery.sourceLedger ?? []).map((source, index) => (
                           <li key={`${sourceName(source)}-${index}`}>
-                            <span>{sourceName(source)}</span>
+                            <span>{contributionSourceText(sourceName(source), language)}</span>
                             <b className={`status-badge ${statusTone(sourceStatus(source))}`}>
-                              {humanizeStatus(sourceStatus(source))}
+                              {humanizeStatus(sourceStatus(source), language)}
                             </b>
                           </li>
                         ))}
                       </ul>
                       <p>
-                        요청 ID {recovery.requestId || "미제공"} · 생성 시각 {formatDate(recovery.generatedAt)}
+                        {tr("요청 ID", "Request ID")} {recovery.requestId || tr("미제공", "not provided")} ·{" "}
+                        {tr("생성 시각", "Generated")} {formatLocalizedDateTime(recovery.generatedAt, language)}
                       </p>
                     </details>
                   </div>
@@ -3867,8 +4558,7 @@ export function ProductApp() {
         {activeTab === "insights" && (
           <section
             id="panel-insights"
-            role="tabpanel"
-            aria-labelledby="tab-insights"
+            aria-label={tr("지역 회복력 정책 정보", "Regional resilience policy")}
             className="page-section insights-section"
           >
             <PolicyMissionPanel className="policy-mission-embed" />
@@ -4154,13 +4844,12 @@ export function ProductApp() {
         {activeTab === "transparency" && (
           <section
             id="panel-transparency"
-            role="tabpanel"
-            aria-labelledby="tab-transparency"
+            aria-labelledby="transparency-title"
             className="page-section transparency-section"
           >
             <div className="section-intro">
               <p className="section-kicker">{language === "en" ? "Data sources" : "데이터 출처"}</p>
-              <h1>
+              <h1 id="transparency-title">
                 {language === "en"
                   ? "Evidence first, recommendation second."
                   : "추천보다 먼저, 근거를 공개합니다."}
@@ -4179,33 +4868,51 @@ export function ProductApp() {
                   <p>{language === "en" ? "Service readiness" : "서비스 준비 상태"}</p>
                   <strong>
                     {healthState === "loading"
-                      ? "운영 점검 기록을 불러오는 중"
+                      ? tr(
+                          "운영 점검 기록을 불러오는 중",
+                          "Loading the latest readiness check",
+                        )
                       : healthState === "error"
-                        ? "지금은 확인할 수 없음"
+                        ? tr("지금은 확인할 수 없음", "Unavailable right now")
                         : humanizeStatus(health?.overall, language)}
                   </strong>
                   <small>
                     {health?.checkedAt
-                      ? `마지막 운영 점검 ${formatDate(health.checkedAt)}${health.stale ? " · 오래된 점검" : ""}`
-                      : "아직 저장된 운영 점검이 없습니다."}
+                      ? tr(
+                          `마지막 운영 점검 ${formatDate(health.checkedAt)}${health.stale ? " · 오래된 점검" : ""}`,
+                          `Last readiness check ${formatDate(health.checkedAt, "en")}${health.stale ? " · stale" : ""}`,
+                        )
+                      : tr(
+                          "아직 저장된 운영 점검이 없습니다.",
+                          "No saved readiness check is available yet.",
+                        )}
                   </small>
                 </div>
               </div>
               <button type="button" onClick={loadHealth} disabled={healthState === "loading"}>
-                저장 상태 다시 불러오기
+                {tr("저장 상태 다시 불러오기", "Reload readiness status")}
               </button>
             </div>
             {healthError && (
               <div className="notice is-error" role="alert">
                 <strong>
-                  운영 점검 기록을 지금 불러오지 못했습니다. 여행 복구 기능은
-                  그대로 사용할 수 있습니다.
+                  {tr(
+                    "운영 점검 기록을 지금 불러오지 못했습니다. 여행 복구 기능은 그대로 사용할 수 있습니다.",
+                    "The readiness record is unavailable right now. Trip recovery remains available.",
+                  )}
                 </strong>
-                <p>{healthError}</p>
+                <p>
+                  {localizedErrorText(
+                    healthError ? new Error(healthError) : undefined,
+                    language,
+                    "The readiness check did not return a usable response.",
+                    "연결 상태를 확인하지 못했습니다.",
+                  )}
+                </p>
               </div>
             )}
 
-            <LaunchEvidencePanel />
+            <LaunchEvidencePanel language={language} />
 
             <div className="api-board" data-testid="health-source-list">
               <div className="board-heading">
@@ -4242,12 +4949,14 @@ export function ProductApp() {
                     <article key={api.id}>
                       <span className="api-index">{String(index + 1).padStart(2, "0")}</span>
                       <div>
-                        <strong>{api.label}</strong>
+                        <strong>{language === "en" ? api.labelEn : api.label}</strong>
                         <code>{api.id}</code>
                       </div>
-                      <p>{api.use}</p>
+                      <p>{language === "en" ? api.useEn : api.use}</p>
                       <b className={`status-badge ${statusTone(currentStatus)}`}>
-                        {healthState === "loading" ? "확인 중" : humanizeStatus(currentStatus)}
+                        {healthState === "loading"
+                          ? tr("확인 중", "Checking")
+                          : humanizeStatus(currentStatus, language)}
                       </b>
                     </article>
                   );
@@ -4258,85 +4967,100 @@ export function ProductApp() {
             <div className="principle-grid">
               <article>
                 <span>01</span>
-                <h2>없는 후보를 만들지 않습니다</h2>
+                <h2>{tr("없는 후보를 만들지 않습니다", "Never invent an option")}</h2>
                 <p>
-                  필수 조건을 통과한 후보가 0개라면 0개라고 답합니다. 데이터가 줄면 신뢰도가 높아지지
-                  않으며, 확인되지 않은 정보는 적용 가능으로 표시하지 않습니다.
+                  {tr(
+                    "필수 조건을 통과한 후보가 0개라면 0개라고 답합니다. 데이터가 줄면 신뢰도가 높아지지 않으며, 확인되지 않은 정보는 적용 가능으로 표시하지 않습니다.",
+                    "If no place passes every required condition, IEOGA returns zero options. Missing data never raises confidence, and an unverified place is never marked as applicable.",
+                  )}
                 </p>
               </article>
               <article>
                 <span>02</span>
-                <h2>정확한 위치를 저장하지 않습니다</h2>
+                <h2>{tr("정확한 위치를 저장하지 않습니다", "Do not retain your live location")}</h2>
                 <p>
-                  현재 좌표는 주변 후보를 찾는 한 번의 요청에서만 사용합니다. 데이터베이스, 분석 로그,
-                  정책 대시보드에는 정확한 좌표나 이동 경로를 남기지 않습니다.
+                  {tr(
+                    "현재 좌표는 주변 후보를 찾는 한 번의 요청에서만 사용합니다. 데이터베이스, 분석 로그, 정책 대시보드에는 정확한 좌표나 이동 경로를 남기지 않습니다.",
+                    "Live coordinates are used only for the current nearby search. Exact coordinates and routes are excluded from the database, analytics logs and policy dashboard.",
+                  )}
                 </p>
               </article>
               <article>
                 <span>03</span>
-                <h2>추정과 사실을 구분합니다</h2>
+                <h2>{tr("추정과 사실을 구분합니다", "Separate facts from estimates")}</h2>
                 <p>
-                  관광지 정보는 출처와 기준일을 표시하고, 이동 경로는 경로 제공자의 구간별 근거와
-                  확인 시각을 함께 표시합니다. 응답이 없으면 도착 가능을 단정하지 않습니다.
+                  {tr(
+                    "관광지 정보는 출처와 기준일을 표시하고, 이동 경로는 경로 제공자의 구간별 근거와 확인 시각을 함께 표시합니다. 응답이 없으면 도착 가능을 단정하지 않습니다.",
+                    "Attraction facts include their source and reference date. Routes show segment evidence and calculation time. Without a provider response, IEOGA never claims that arrival is feasible.",
+                  )}
                 </p>
               </article>
             </div>
 
-            <div className="data-flow" aria-label="데이터 처리 흐름">
+            <div
+              className="data-flow"
+              aria-label={tr("데이터 처리 흐름", "Data-processing flow")}
+            >
               <div>
-                <span>요청</span>
-                <strong>현재 위치·여행 조건</strong>
-                <small>메모리에서만 처리</small>
+                <span>{tr("요청", "Request")}</span>
+                <strong>{tr("현재 위치·여행 조건", "Live location and trip conditions")}</strong>
+                <small>{tr("메모리에서만 처리", "Processed in memory only")}</small>
               </div>
               <i aria-hidden="true">→</i>
               <div>
-                <span>검증</span>
-                <strong>OpenAPI 8종·하드 필터</strong>
-                <small>불확실성 분리</small>
+                <span>{tr("검증", "Verify")}</span>
+                <strong>{tr("OpenAPI 8종·하드 필터", "8 OpenAPIs and hard filters")}</strong>
+                <small>{tr("불확실성 분리", "Uncertainty kept explicit")}</small>
               </div>
               <i aria-hidden="true">→</i>
               <div>
-                <span>결과</span>
-                <strong>적용 가능 후보·근거</strong>
-                <small>요청 ID로 재현</small>
+                <span>{tr("결과", "Result")}</span>
+                <strong>{tr("적용 가능 후보·근거", "Applicable options and evidence")}</strong>
+                <small>{tr("요청 ID로 재현", "Traceable by request ID")}</small>
               </div>
               <i aria-hidden="true">→</i>
               <div>
-                <span>정책 집계</span>
-                <strong>시군구·시간대 단위</strong>
-                <small>k ≥ 30만 공개</small>
+                <span>{tr("정책 집계", "Policy aggregate")}</span>
+                <strong>{tr("시군구·시간대 단위", "District and time-window level")}</strong>
+                <small>{tr("k ≥ 30만 공개", "Published only when k ≥ 30")}</small>
               </div>
             </div>
 
             <div className="legal-grid">
               <article id="privacy">
                 <p className="section-kicker">PRIVACY</p>
-                <h2>개인정보 처리 원칙</h2>
+                <h2>{tr("개인정보 처리 원칙", "Privacy principles")}</h2>
                 <ul>
                   <li>
-                    정확한 현재 위치는 저장하지 않지만 행정구역·경로·날씨 확인을 위해 관련 제공자에
-                    일시 전송됩니다.
+                    {tr(
+                      "정확한 현재 위치는 저장하지 않지만 행정구역·경로·날씨 확인을 위해 관련 제공자에 일시 전송됩니다.",
+                      "Your exact live location is not retained, but is sent temporarily to the providers needed to resolve the district, route and weather.",
+                    )}
                   </li>
                   <li>
-                    사용자가 저장한 일정 장소 좌표는 여행 복구를 위해 세션에 보관하며, 내 데이터 삭제
-                    또는 보관기간 만료 시 삭제합니다.
+                    {tr(
+                      "사용자가 저장한 일정 장소 좌표는 여행 복구를 위해 세션에 보관하며, 내 데이터 삭제 또는 보관기간 만료 시 삭제합니다.",
+                      "Coordinates for places you explicitly save in an itinerary remain in the session for recovery, then are deleted on request or expiry.",
+                    )}
                   </li>
-                  <li>유아차·휠체어·고령자 조건은 추천 필터이며 건강정보로 추론하지 않습니다.</li>
-                  <li>정책 통계는 시군구·시간대 단위로 일반화하고 30건 미만 집계는 공개하지 않습니다.</li>
-                  <li>선택 동의가 없는 분석 식별자를 만들지 않으며, 만료된 익명 세션은 삭제합니다.</li>
+                  <li>{tr("유아차·휠체어·고령자 조건은 추천 필터이며 건강정보로 추론하지 않습니다.", "Stroller, wheelchair and older-traveller selections are recommendation filters and are never used to infer health information.")}</li>
+                  <li>{tr("정책 통계는 시군구·시간대 단위로 일반화하고 30건 미만 집계는 공개하지 않습니다.", "Policy statistics are generalized to district and time windows; aggregates below 30 records are not published.")}</li>
+                  <li>{tr("선택 동의가 없는 분석 식별자를 만들지 않으며, 만료된 익명 세션은 삭제합니다.", "No analytics identifier is created without opt-in consent, and expired anonymous sessions are deleted.")}</li>
                 </ul>
               </article>
               <article id="terms">
                 <p className="section-kicker">TERMS</p>
-                <h2>이용 시 확인사항</h2>
+                <h2>{tr("이용 시 확인사항", "Before you rely on a result")}</h2>
                 <ul>
-                  <li>관광지 운영시간·휴무·현장 접근성은 방문 전 해당 시설에서 최종 확인해야 합니다.</li>
+                  <li>{tr("관광지 운영시간·휴무·현장 접근성은 방문 전 해당 시설에서 최종 확인해야 합니다.", "Confirm opening hours, closure notices and on-site accessibility with the venue before visiting.")}</li>
                   <li>
-                    이동 시간은 경로 제공자의 응답과 확인 시각을 표시하며, 응답이 없거나 오래되면
-                    도착 가능을 보증하지 않습니다.
+                    {tr(
+                      "이동 시간은 경로 제공자의 응답과 확인 시각을 표시하며, 응답이 없거나 오래되면 도착 가능을 보증하지 않습니다.",
+                      "Travel times identify the routing provider and calculation time. A missing or stale response never guarantees arrival.",
+                    )}
                   </li>
-                  <li>이어가는 예약·결제·운송을 제공하지 않으며 여행 중 의사결정을 돕는 정보 서비스입니다.</li>
-                  <li>OpenAPI 장애 또는 데이터 부족 시 일부 기능이 제한될 수 있으며 이를 화면에 표시합니다.</li>
+                  <li>{tr("이어가는 예약·결제·운송을 제공하지 않으며 여행 중 의사결정을 돕는 정보 서비스입니다.", "IEOGA is an information service for travel decisions; it does not provide booking, payment or transport.")}</li>
+                  <li>{tr("OpenAPI 장애 또는 데이터 부족 시 일부 기능이 제한될 수 있으며 이를 화면에 표시합니다.", "OpenAPI outages or data gaps can limit a feature, and that limitation is shown in the interface.")}</li>
                 </ul>
               </article>
             </div>

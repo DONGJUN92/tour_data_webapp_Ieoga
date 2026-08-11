@@ -389,10 +389,15 @@ test("0009 migration and Drizzle snapshot contain only provider probe evidence",
   assert.match(sql, /`checked_at` text NOT NULL/);
   assert.match(sql, /`error_code` text/);
   assert.ok(snapshot.tables.provider_probe_snapshots);
-  assert.equal(
-    journal.entries.at(-1)?.tag,
-    "0009_provider_readiness_probes",
+  /* Later migrations must not make the provider-readiness contract fail.
+     What matters here is that 0009 remains registered exactly once and still
+     points at its own immutable snapshot, not that it stays the final entry
+     forever. */
+  const journalEntries = journal.entries.filter(
+    (entry) => entry.tag === "0009_provider_readiness_probes",
   );
+  assert.equal(journalEntries.length, 1);
+  assert.equal(journalEntries[0].idx, 9);
 });
 
 test("capabilities names the provider that actually answers", async () => {

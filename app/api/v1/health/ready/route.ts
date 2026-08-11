@@ -13,6 +13,8 @@ import {
 import { sessionSigningStatus } from "@/lib/session-cookie";
 import { releaseAuditorStatus } from "@/lib/release/auditor";
 import { releaseSecretTopologyStatus } from "@/lib/secret-policy";
+import { deploymentVersionStatus } from "@/lib/release/version";
+import { embedPolicyStatus } from "@/lib/embed-policy";
 import {
   currentProviderConfigurations,
   evaluateProviderReadiness,
@@ -28,6 +30,8 @@ export async function GET() {
   const sessionSigning = sessionSigningStatus();
   const independentAuditor = releaseAuditorStatus();
   const releaseSecrets = releaseSecretTopologyStatus();
+  const deploymentVersion = deploymentVersionStatus();
+  const embedPolicy = embedPolicyStatus();
   const configured = ktoServiceKeyConfigured();
   let sources: Awaited<ReturnType<typeof getStoredHealthSnapshot>> = [];
   let providerProbeStorageReadable = bindings.d1;
@@ -77,7 +81,9 @@ export async function GET() {
           !providerProbes.allReady ||
           !sessionSigning.releaseReady ||
           !independentAuditor.releaseReady ||
-          !releaseSecrets.releaseReady
+          !releaseSecrets.releaseReady ||
+          !deploymentVersion.releaseReady ||
+          !embedPolicy.releaseReady
         ? "degraded"
         : "ready";
 
@@ -93,6 +99,8 @@ export async function GET() {
       sessionSigning,
       independentAuditor,
       releaseSecrets,
+      deploymentVersion,
+      embedPolicy,
       externalProviders: {
         ...externalProviders,
         sharedPublicProviders,

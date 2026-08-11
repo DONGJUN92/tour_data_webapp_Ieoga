@@ -3,6 +3,7 @@ import type { JourneyDrift } from "./drift";
 export type JourneyExecutionStatus =
   | "active"
   | "contract_met"
+  | "contract_missed"
   | "completed"
   | "abandoned"
   | "superseded";
@@ -51,6 +52,7 @@ export type JourneyExecution = {
   activatedAt: string;
   outcomePromptAt: string;
   contractMetAt?: string;
+  contractMissedAt?: string;
   completedAt?: string;
   updatedAt: string;
   expiresAt: string;

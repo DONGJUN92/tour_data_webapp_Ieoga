@@ -92,6 +92,13 @@ export const itineraryNodeSchema = z
         message: "일정 종료 시각은 시작 시각보다 뒤여야 합니다.",
       });
     }
+    if (node.endAt && !node.startAt) {
+      context.addIssue({
+        code: "custom",
+        path: ["startAt"],
+        message: "일정 종료 시각을 입력하려면 시작 시각도 필요합니다.",
+      });
+    }
     if ((node.locked || node.reservation) && !node.startAt) {
       context.addIssue({
         code: "custom",
@@ -118,9 +125,119 @@ const itineraryCoreSchema = z.object({
   nodes: z.array(itineraryNodeSchema).min(2).max(30),
 });
 
+type ItineraryCore = z.infer<typeof itineraryCoreSchema>;
+
+type ItineraryContractIssue = {
+  path: Array<string | number>;
+  message: string;
+};
+
+const KOREA_UTC_OFFSET_MS = 9 * 60 * 60 * 1_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+function koreaDayIndex(value: Date): number {
+  return Math.floor((value.getTime() + KOREA_UTC_OFFSET_MS) / DAY_MS);
+}
+
+/* One temporal contract is used by registration and recovery. This keeps a
+   plan that was accepted at save time from turning into
+   ITINERARY_CONTRACT_CHANGED only when recovery begins.
+
+   Flexible nodes may omit a time, but every supplied time must increase in
+   itinerary order and timed nodes may not overlap. At least one hard stop
+   (locked or reserved) with a destination must still be in the future. That
+   rejects accidentally submitted past-day plans without preventing an
+   already-running itinerary from containing completed earlier stops. */
+export function itineraryTemporalContractIssues(
+  itinerary: ItineraryCore,
+  now = new Date(),
+): ItineraryContractIssue[] {
+  const issues: ItineraryContractIssue[] = [];
+  const ordered = itinerary.nodes
+    .map((node, index) => ({
+      node,
+      index,
+      sequence: node.sequence ?? index,
+    }))
+    .sort((a, b) => a.sequence - b.sequence);
+
+  let previousTimed: { startAt: number; endAt?: number } | undefined;
+  for (const entry of ordered) {
+    if (!entry.node.startAt) continue;
+    const startAt = Date.parse(entry.node.startAt);
+    const endAt = entry.node.endAt
+      ? Date.parse(entry.node.endAt)
+      : undefined;
+    if (previousTimed && startAt <= previousTimed.startAt) {
+      issues.push({
+        path: ["nodes", entry.index, "startAt"],
+        message:
+          "일정 시작 시각은 이동 순서에 따라 반드시 증가해야 합니다.",
+      });
+    }
+    if (
+      previousTimed?.endAt !== undefined &&
+      startAt < previousTimed.endAt
+    ) {
+      issues.push({
+        path: ["nodes", entry.index, "startAt"],
+        message:
+          "앞 일정이 끝나기 전에 다음 일정을 시작할 수 없습니다.",
+      });
+    }
+    previousTimed = { startAt, endAt };
+  }
+
+  const hardStops = itinerary.nodes.filter(
+    (node) => node.locked || node.reservation,
+  );
+  if (!hardStops.length) {
+    issues.push({
+      path: ["nodes"],
+      message:
+        "최소 한 개의 잠금 또는 예약 일정과 목적지를 등록해 주세요.",
+    });
+    return issues;
+  }
+
+  const actionableHardStop = hardStops.some(
+    (node) =>
+      Boolean(node.location) &&
+      Boolean(node.startAt) &&
+      Date.parse(node.startAt!) > now.getTime(),
+  );
+  if (!actionableHardStop) {
+    issues.push({
+      path: ["nodes"],
+      message:
+        "현재 시각 이후의 잠금 또는 예약 일정과 목적지가 최소 한 개 필요합니다.",
+    });
+  }
+
+  /* Earlier stops from *today* are valid for an itinerary already in
+     progress. A node from a previous Korea calendar day is not: mixing an
+     old day into a new plan otherwise passes merely because one later locked
+     stop exists. */
+  for (const [index, node] of itinerary.nodes.entries()) {
+    const scheduledAt = node.startAt ?? node.endAt;
+    if (
+      scheduledAt &&
+      koreaDayIndex(new Date(scheduledAt)) < koreaDayIndex(now)
+    ) {
+      issues.push({
+        path: ["nodes", index, node.startAt ? "startAt" : "endAt"],
+        message:
+          "이미 지난 날짜의 일정은 저장하거나 복구할 수 없습니다.",
+      });
+    }
+  }
+  return issues;
+}
+
 function validateItineraryNodes(
-  itinerary: z.infer<typeof itineraryCoreSchema>,
+  itinerary: ItineraryCore,
   context: z.RefinementCtx,
+  now = new Date(),
 ) {
   const ids = new Set<string>();
   const sequences = new Set<number>();
@@ -143,11 +260,11 @@ function validateItineraryNodes(
     }
     sequences.add(sequence);
   }
-  if (!itinerary.nodes.some((node) => node.locked || node.reservation)) {
+  for (const issue of itineraryTemporalContractIssues(itinerary, now)) {
     context.addIssue({
       code: "custom",
-      path: ["nodes"],
-      message: "최소 한 개의 다음 고정 또는 예약 일정을 등록해 주세요.",
+      path: issue.path,
+      message: issue.message,
     });
   }
 }
@@ -208,7 +325,8 @@ export const recoveryItinerarySchema = itineraryCoreSchema
     nextFixedNodeId: z.string().trim().min(1).max(64).optional(),
   })
   .superRefine((itinerary, context) => {
-    validateItineraryNodes(itinerary, context);
+    const validationNow = new Date();
+    validateItineraryNodes(itinerary, context, validationNow);
     const orderedNodes = [...itinerary.nodes].sort(
       (a, b) =>
         (a.sequence ?? itinerary.nodes.indexOf(a)) -
@@ -268,7 +386,15 @@ export const recoveryItinerarySchema = itineraryCoreSchema
           itinerary.occurredAt ??
           disrupted?.startAt ??
           new Date(0).toISOString();
-        if (Date.parse(nextFixed.startAt) <= Date.parse(baseline)) {
+        if (Date.parse(nextFixed.startAt) <= validationNow.getTime()) {
+          context.addIssue({
+            code: "custom",
+            path: ["nextFixedNodeId"],
+            message: "다음 고정 일정은 현재 시각보다 뒤여야 합니다.",
+          });
+        } else if (
+          Date.parse(nextFixed.startAt) <= Date.parse(baseline)
+        ) {
           context.addIssue({
             code: "custom",
             path: ["nextFixedNodeId"],
@@ -286,9 +412,16 @@ export const recoveryItinerarySchema = itineraryCoreSchema
           orderedNodes,
           disruptedIndex,
           nextFixedIndex,
-          itinerary.occurredAt ??
-            disrupted.startAt ??
-            new Date(0).toISOString(),
+          new Date(
+            Math.max(
+              validationNow.getTime(),
+              Date.parse(
+                itinerary.occurredAt ??
+                  disrupted.startAt ??
+                  new Date(0).toISOString(),
+              ),
+            ),
+          ).toISOString(),
           context,
         );
       }
@@ -307,6 +440,10 @@ export const recoveryItinerarySchema = itineraryCoreSchema
         itinerary.occurredAt ??
         disrupted.startAt ??
         new Date(0).toISOString();
+      const effectiveBaseline = Math.max(
+        validationNow.getTime(),
+        Date.parse(baseline),
+      );
       const automaticNext = orderedNodes
         .slice(disruptedIndex + 1)
         .find(
@@ -314,7 +451,7 @@ export const recoveryItinerarySchema = itineraryCoreSchema
             (node.locked || node.reservation) &&
             Boolean(node.startAt) &&
             Boolean(node.location) &&
-            Date.parse(node.startAt!) > Date.parse(baseline),
+            Date.parse(node.startAt!) > effectiveBaseline,
         );
       if (!automaticNext) {
         context.addIssue({
@@ -328,7 +465,7 @@ export const recoveryItinerarySchema = itineraryCoreSchema
           orderedNodes,
           disruptedIndex,
           orderedNodes.indexOf(automaticNext),
-          baseline,
+          new Date(effectiveBaseline).toISOString(),
           context,
         );
       }

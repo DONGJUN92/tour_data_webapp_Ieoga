@@ -6,6 +6,7 @@ import {
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 
@@ -16,38 +17,46 @@ function validToken(token: string): boolean {
 }
 
 export async function GET(
-  _request: NextRequest,
-  context: { params: Promise<{ token: string }> },
+  request: NextRequest,
 ) {
-  const { token } = await context.params;
+  const token = request.nextUrl.pathname.split("/").filter(Boolean).at(-1) ?? "";
   if (!validToken(token)) {
     return jsonResponse(
       { error: { code: "INVALID_TOKEN", message: "공유 링크를 확인해주세요." } },
       { status: 400 },
     );
   }
-  const proof = await getProofShare(token);
-  if (!proof) {
+  const result = await getProofShare(token);
+  if (!result.found) {
     return jsonResponse(
       {
         error: {
-          code: "PROOF_NOT_FOUND",
-          message: "만료됐거나 취소된 복구 증명서입니다.",
+          code:
+            result.reason === "DB_UNAVAILABLE"
+              ? "DB_UNAVAILABLE"
+              : "PROOF_NOT_FOUND",
+          message:
+            result.reason === "DB_UNAVAILABLE"
+              ? "현재 복구 증명서를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요."
+              : "만료됐거나 취소된 복구 증명서입니다.",
         },
       },
-      { status: 404 },
+      { status: result.reason === "DB_UNAVAILABLE" ? 503 : 404 },
     );
   }
-  return jsonResponse({ status: "available", proof });
+  return jsonResponse({ status: "available", proof: result.proof });
 }
 
 export async function DELETE(
   request: NextRequest,
-  context: { params: Promise<{ token: string }> },
 ) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
-  const { token } = await context.params;
+  const unsafeMutation = requireSameOriginJsonMutation(request, {
+    requireJson: false,
+  });
+  if (unsafeMutation) return unsafeMutation;
+  const token = request.nextUrl.pathname.split("/").filter(Boolean).at(-1) ?? "";
   const sessionId = readSessionId(request);
   if (
     !validToken(token) ||
@@ -58,16 +67,28 @@ export async function DELETE(
       { status: 401 },
     );
   }
-  const revoked = await revokeProofShare({ token, sessionId });
+  const result = await revokeProofShare({ token, sessionId });
   return jsonResponse(
-    revoked
+    result.revoked
       ? { status: "revoked", revokedAt: new Date().toISOString() }
       : {
           error: {
-            code: "PROOF_NOT_FOUND",
-            message: "취소할 공유 증명서를 찾지 못했습니다.",
+            code:
+              result.reason === "DB_UNAVAILABLE"
+                ? "DB_UNAVAILABLE"
+                : "PROOF_NOT_FOUND",
+            message:
+              result.reason === "DB_UNAVAILABLE"
+                ? "현재 공유 취소 상태를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요."
+                : "취소할 공유 증명서를 찾지 못했습니다.",
           },
         },
-    { status: revoked ? 200 : 404 },
+    {
+      status: result.revoked
+        ? 200
+        : result.reason === "DB_UNAVAILABLE"
+          ? 503
+          : 404,
+    },
   );
 }

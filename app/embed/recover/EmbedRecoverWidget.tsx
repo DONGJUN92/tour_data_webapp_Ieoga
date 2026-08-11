@@ -10,6 +10,10 @@
  *   축소판에서도 그대로 표시한다. 위젯이라서 관대해지면 그게 곧 신뢰 손실이다. */
 
 import { useCallback, useMemo, useState } from "react";
+import {
+  verifiedTravelerOrigin,
+  windowEndIsoFromMinutes,
+} from "@/app/traveler-safety";
 import styles from "./embed.module.css";
 
 type Option = {
@@ -28,6 +32,7 @@ type Option = {
       travelToMinutes: number;
       appliedStayMinutes: number;
       returnMinutes: number;
+      requiredBufferMinutes: number;
       leftoverMinutes: number;
     };
   };
@@ -54,20 +59,14 @@ type State =
     };
 
 const WINDOWS = [60, 90, 120, 180] as const;
+/* 60분 창에도 왕복 이동이 들어갈 자리를 남긴다. 스키마가 30분 단위 체류를
+   요구하므로 20분 같은 임의 축소 대신 검증 가능한 최솟값 30분을 쓴다. */
+const EMBED_STAY_MINUTES = 30;
 const MODES = [
   { value: "walk", label: "걸어서" },
   { value: "transit", label: "대중교통" },
   { value: "car", label: "자차·택시" },
 ] as const;
-
-/* 30분 격자에 올린다. 본 화면과 같은 규칙이다 — 여행자는 분 단위로 계획하지
-   않는다. */
-function windowEnd(minutes: number): string {
-  const target = new Date(Date.now() + minutes * 60_000);
-  target.setSeconds(0, 0);
-  target.setMinutes(target.getMinutes() - (target.getMinutes() % 30));
-  return target.toISOString();
-}
 
 export function EmbedRecoverWidget({
   hostName,
@@ -84,16 +83,25 @@ export function EmbedRecoverWidget({
   const [originNote, setOriginNote] = useState(
     partnerOrigin ? "파트너 사이트가 알려 준 위치를 사용합니다." : "",
   );
+  const [originState, setOriginState] = useState<
+    "idle" | "loading" | "success" | "error"
+  >(partnerOrigin ? "success" : "idle");
   const [minutes, setMinutes] = useState<number>(120);
+  const [availableUntil, setAvailableUntil] = useState(() =>
+    windowEndIsoFromMinutes(120),
+  );
   const [mode, setMode] = useState<(typeof MODES)[number]["value"]>("walk");
   const [state, setState] = useState<State>({ kind: "idle" });
   const host = hostName;
 
   const detect = useCallback(() => {
     if (!navigator.geolocation) {
+      setOriginState("error");
       setOriginNote("이 브라우저에서는 위치를 확인할 수 없습니다.");
       return;
     }
+    setOrigin(null);
+    setOriginState("loading");
     setOriginNote("현재 위치를 확인하고 있습니다.");
     navigator.geolocation.getCurrentPosition(
       async (position) => {
@@ -107,31 +115,69 @@ export function EmbedRecoverWidget({
             body: JSON.stringify({ latitude, longitude }),
           });
           const payload = (await response.json()) as {
+            label?: string;
+            areaCode?: string;
+            sigunguCode?: string;
             location?: {
               areaCode?: string;
               sigunguCode?: string;
               label?: string;
             };
+            data?: {
+              areaCode?: string;
+              sigunguCode?: string;
+              label?: string;
+            };
+            error?: { message?: string };
           };
-          setOrigin({
+          if (!response.ok) {
+            throw new Error(
+              payload.error?.message ||
+                "행정구역을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            );
+          }
+          const verified = verifiedTravelerOrigin(payload, {
             latitude,
             longitude,
-            label: payload.location?.label ?? "내 현재 위치",
-            areaCode: payload.location?.areaCode,
-            sigunguCode: payload.location?.sigunguCode,
           });
+          if (!verified) {
+            throw new Error(
+              "공식 행정구역을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            );
+          }
+          setOrigin(verified);
+          setOriginState("success");
           setOriginNote("현재 위치를 확인했습니다.");
-        } catch {
-          setOriginNote("행정구역을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        } catch (error) {
+          setOrigin(null);
+          setOriginState("error");
+          setOriginNote(
+            error instanceof Error
+              ? error.message
+              : "행정구역을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          );
         }
       },
-      () => setOriginNote("위치 권한이 없어 확인하지 못했습니다."),
+      () => {
+        setOrigin(null);
+        setOriginState("error");
+        setOriginNote("위치 권한이 없어 확인하지 못했습니다.");
+      },
     );
   }, []);
 
   const radius = useMemo(
     () => (mode === "walk" ? 8_000 : mode === "transit" ? 20_000 : 20_000),
     [mode],
+  );
+  const availableUntilLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat("ko-KR", {
+        timeZone: "Asia/Seoul",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(availableUntil)),
+    [availableUntil],
   );
 
   async function run() {
@@ -144,9 +190,36 @@ export function EmbedRecoverWidget({
     }
     setState({ kind: "loading" });
     try {
+      const bootstrap = await fetch("/api/v1/embed/session", {
+        method: "POST",
+        credentials: "omit",
+        headers: { "X-IEOGA-Embed-Bootstrap": "1" },
+      });
+      if (!bootstrap.ok) {
+        throw new Error("EMBED_SESSION_UNAVAILABLE");
+      }
+      const bootstrapPayload = (await bootstrap.json()) as {
+        embedSessionToken?: string;
+      };
+      const embedSessionToken = bootstrapPayload.embedSessionToken;
+      if (
+        typeof embedSessionToken !== "string" ||
+        !/^ev1\.[A-Za-z0-9._-]{80,200}$/.test(embedSessionToken)
+      ) {
+        throw new Error("EMBED_SESSION_UNAVAILABLE");
+      }
+      const requestAvailableUntil = windowEndIsoFromMinutes(
+        minutes,
+        Date.now(),
+      );
+      setAvailableUntil(requestAvailableUntil);
       const response = await fetch("/api/v1/recover", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        headers: {
+          "Content-Type": "application/json",
+          "X-IEOGA-Embed-Session": embedSessionToken,
+        },
         body: JSON.stringify({
           origin,
           incident: "delay",
@@ -157,11 +230,11 @@ export function EmbedRecoverWidget({
           travelMode: mode,
           radiusMeters: radius,
           safetyBufferMinutes: 15,
-          minimumStayMinutes: 60,
+          minimumStayMinutes: EMBED_STAY_MINUTES,
           analyticsConsent: false,
           openWindow: {
-            availableUntil: windowEnd(minutes),
-            plannedStayMinutes: 60,
+            availableUntil: requestAvailableUntil,
+            plannedStayMinutes: EMBED_STAY_MINUTES,
           },
         }),
       });
@@ -187,10 +260,14 @@ export function EmbedRecoverWidget({
         warnings: payload.warnings ?? [],
         requestId: payload.requestId ?? "",
       });
-    } catch {
+    } catch (error) {
       setState({
         kind: "error",
-        message: "연결 문제로 결과를 받지 못했습니다.",
+        message:
+          error instanceof Error &&
+          error.message === "EMBED_SESSION_UNAVAILABLE"
+            ? "보호된 위젯 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요."
+            : "연결 문제로 결과를 받지 못했습니다.",
       });
     }
   }
@@ -211,16 +288,33 @@ export function EmbedRecoverWidget({
         {origin ? (
           <p className={styles.originReady}>
             <strong>{origin.label}</strong>
-            <button type="button" onClick={detect}>
+            <button
+              type="button"
+              onClick={detect}
+              disabled={originState === "loading"}
+            >
               다시 확인
             </button>
           </p>
         ) : (
-          <button type="button" className={styles.primary} onClick={detect}>
-            현재 위치 확인
+          <button
+            type="button"
+            className={styles.primary}
+            onClick={detect}
+            disabled={originState === "loading"}
+          >
+            {originState === "loading" ? "위치 확인 중…" : "현재 위치 확인"}
           </button>
         )}
-        {originNote && <small className={styles.note}>{originNote}</small>}
+        {originNote && (
+          <small
+            className={styles.note}
+            role={originState === "error" ? "alert" : "status"}
+            aria-live={originState === "error" ? "assertive" : "polite"}
+          >
+            {originNote}
+          </small>
+        )}
       </div>
 
       <fieldset className={styles.field}>
@@ -233,12 +327,19 @@ export function EmbedRecoverWidget({
               role="radio"
               aria-checked={minutes === value}
               className={minutes === value ? styles.chipOn : styles.chip}
-              onClick={() => setMinutes(value)}
+              onClick={() => {
+                setMinutes(value);
+                setAvailableUntil(windowEndIsoFromMinutes(value));
+              }}
             >
               {value % 60 === 0 ? `${value / 60}시간` : `${value}분`}
             </button>
           ))}
         </div>
+        <small className={styles.note}>
+          {availableUntilLabel}까지 · 한 곳에서 {EMBED_STAY_MINUTES}분 체류 ·
+          왕복 이동시간 별도 검증
+        </small>
       </fieldset>
 
       <fieldset className={styles.field}>
@@ -301,7 +402,9 @@ export function EmbedRecoverWidget({
                     이동 {window.travelToMinutes}분 · 머무르기{" "}
                     {window.appliedStayMinutes}분 · 복귀 {window.returnMinutes}분
                     <br />
-                    <b>여유 {window.leftoverMinutes}분</b>
+                    <b>
+                      여유 {window.leftoverMinutes}분 · 안전여유 기준 {window.requiredBufferMinutes}분
+                    </b>
                   </p>
                 )}
                 {unverified && (

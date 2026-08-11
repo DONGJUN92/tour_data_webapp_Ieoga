@@ -248,8 +248,12 @@ test("대중교통은 카카오로 계산하고 요금·환승·배차 한계를
       assert.equal(evidence.transfers, 1);
       assert.equal(evidence.scheduleDependent, true);
       assert.ok(
-        option.why.some((line) => line.includes("대중교통 요금")),
+        option.why.some((line) => line.includes("대중교통 경로 기준 요금")),
         `요금이 문장에 없다: ${JSON.stringify(option.why)}`,
+      );
+      assert.ok(
+        option.why.some((line) => line.includes("복구 전체 대중교통 경로")),
+        `요금·환승의 구간 기준이 없다: ${JSON.stringify(option.why)}`,
       );
       assert.ok(
         option.why.some((line) => line.includes("배차 간격에 따라")),

@@ -3,6 +3,7 @@ import { deleteSessionData } from "@/lib/db/repository";
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 
@@ -11,6 +12,10 @@ export const dynamic = "force-dynamic";
 export async function DELETE(request: NextRequest) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
+  const unsafeMutation = requireSameOriginJsonMutation(request, {
+    requireJson: false,
+  });
+  if (unsafeMutation) return unsafeMutation;
   const sessionId = readSessionId(request);
   if (sessionId) {
     const result = await deleteSessionData(sessionId);

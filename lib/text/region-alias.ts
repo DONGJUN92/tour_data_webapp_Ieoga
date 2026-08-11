@@ -58,6 +58,23 @@ function normalize(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
 }
 
+/**
+ * 공식 지역명을 유지하면서 여행자가 익숙하게 찾는 별칭을 함께 표시한다.
+ * 영어 UI에서도 근거 없는 영문 번역을 만들지 않고 한국어 공식명임을 밝힌다.
+ */
+export function regionDisplayName(
+  officialName: string,
+  language: "ko" | "en" = "ko",
+): string {
+  const familiar = officialName.replace(
+    "전남광주통합특별시",
+    "전남광주통합특별시 (광주·전남)",
+  );
+  return language === "en" && familiar
+    ? `Official Korean region: ${familiar}`
+    : familiar;
+}
+
 /** 이 시도 이름에 대해 사용자에게 알려 줄 통합·개칭 안내. 없으면 undefined. */
 export function regionNameNote(officialName: string): string | undefined {
   return ALIASES[officialName]?.note;

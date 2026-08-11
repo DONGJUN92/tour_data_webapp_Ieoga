@@ -276,18 +276,22 @@ test("place query never coerces blank coordinates to zero", async () => {
   );
 });
 
-test("current-origin coordinates are accepted only in JSON POST and costly searches fail closed", async () => {
-  const [placeRoute, recoverRoute, limiter] = await Promise.all([
+test("all place keywords and current-origin coordinates are accepted only in JSON POST and costly searches fail closed", async () => {
+  const [placeRoute, recoverRoute, limiter, discover, product, picker] = await Promise.all([
     readFile(
       path.join(ROOT, "app/api/v1/places/search/route.ts"),
       "utf8",
     ),
     readFile(path.join(ROOT, "app/api/v1/recover/route.ts"), "utf8"),
     readFile(path.join(ROOT, "lib/durable-rate-limit.ts"), "utf8"),
+    readFile(path.join(ROOT, "app/DiscoverWindowPanel.tsx"), "utf8"),
+    readFile(path.join(ROOT, "app/ProductApp.tsx"), "utf8"),
+    readFile(path.join(ROOT, "app/ManualLocationPicker.tsx"), "utf8"),
   ]);
   assert.match(placeRoute, /SENSITIVE_QUERY_PARAMETERS_FORBIDDEN/);
-  assert.match(placeRoute, /searchParams\.has\("latitude"\)/);
-  assert.match(placeRoute, /searchParams\.has\("longitude"\)/);
+  assert.match(placeRoute, /status: 405/);
+  assert.match(placeRoute, /Allow", "POST"/);
+  assert.match(placeRoute, /JSON_CONTENT_TYPE_REQUIRED/);
   assert.match(placeRoute, /export async function POST[\s\S]*request\.json\(\)/);
   assert.match(placeRoute, /allowDurableRequest\(/);
   assert.match(placeRoute, /isKnownAdministrativeScope\(/);
@@ -296,15 +300,30 @@ test("current-origin coordinates are accepted only in JSON POST and costly searc
   assert.match(recoverRoute, /allowDurableRequest\(/);
   assert.match(limiter, /unavailable:\s*true/);
   assert.match(limiter, /allowed:\s*false/);
+  for (const source of [discover, product, picker]) {
+    assert.doesNotMatch(source, /\/api\/v1\/places\/search\?/);
+  }
+  assert.match(
+    discover,
+    /fetchJson\("\/api\/v1\/places\/search",\s*\{[\s\S]*method: "POST"/,
+  );
+  assert.match(
+    product,
+    /fetchJson\("\/api\/v1\/places\/search",\s*\{[\s\S]*method: "POST"/,
+  );
 });
 
-test("normal user UI contains no latitude or longitude input fields", async () => {
-  const product = await readFile(
-    path.join(ROOT, "app/ProductApp.tsx"),
-    "utf8",
-  );
+test("normal UI has one purpose-aware POST place picker and no coordinate fields", async () => {
+  const [product, picker, wizard] = await Promise.all([
+    readFile(path.join(ROOT, "app/ProductApp.tsx"), "utf8"),
+    readFile(path.join(ROOT, "app/ManualLocationPicker.tsx"), "utf8"),
+    readFile(path.join(ROOT, "app/plan/PlanWizard.tsx"), "utf8"),
+  ]);
   assert.doesNotMatch(product, /좌표 직접 입력|placeholder="37\.5665"|placeholder="126\.9780"/);
-  assert.match(product, /purpose=saved_stop/);
-  assert.match(product, /purpose:\s*"current_origin"/);
-  assert.match(product, /다른 지도에서/);
+  assert.match(picker, /purpose\?: "current_origin" \| "saved_stop"/);
+  assert.match(picker, /purpose = "current_origin"/);
+  assert.match(picker, /postJson\("\/api\/v1\/places\/search"/);
+  assert.doesNotMatch(picker, /\/api\/v1\/places\/search\?/);
+  assert.equal((wizard.match(/purpose="saved_stop"/g) ?? []).length, 2);
+  assert.equal((product.match(/<ManualLocationPicker/g) ?? []).length, 1);
 });

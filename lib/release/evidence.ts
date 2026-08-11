@@ -21,17 +21,21 @@ export type LaunchEvidenceReport = {
   generatedAt: string;
 };
 
-/* 출시 보고서가 추적하는 현장 증거. 사람 참여자와 실제 이동을 전제로 하던
-   네 종류(초행 사용자 20명, 실무자 3인, 첫 사용 위치 흐름, 6개 권역 현장
-   감사)는 운영 주체의 결정으로 이 보고서의 범위에서 제외했다. 임계값을
-   낮추거나 다른 근거로 대체하지 않고 항목 자체를 뺐다. 남겨 두면 채워질 수
-   없는 칸이 영구히 미충족으로 남고, 낮추면 채워졌다는 잘못된 사실이
-   남는다. 여기 남은 네 종류는 모두 실행 원장으로 측정할 수 있는 것이다. */
+/* 사람·현장·비교·실무·법적 승인은 코드 테스트나 AI 페르소나로 대체할 수
+   없다. 수집이 어렵더라도 유형이나 임계값을 제거하지 않고 release report가
+   계속 미충족으로 표시하게 한다. */
 export const FIELD_EVIDENCE_TYPES = [
   "journey_completion_contract",
   "travel_purpose_preservation",
   "tripbreak_100",
   "recovery_speed_and_false_positive",
+  "real_user_usability",
+  "field_journeys_six_regions",
+  "comparative_benchmark_20",
+  "practitioner_review",
+  "legal_and_operational_approvals",
+  "partner_embed_pilot",
+  "participant_consent_ledger",
 ] as const;
 
 export type FieldEvidenceType =
@@ -46,6 +50,8 @@ export type FieldEvidenceSummary = {
   reviewerCount: number;
   measuredAt: string;
   approvedAt?: string;
+  artifactVerified?: boolean;
+  artifactSha256?: string;
 };
 
 export function buildLaunchEvidenceReport(params: {
@@ -60,6 +66,8 @@ export function buildLaunchEvidenceReport(params: {
   sessionSigningReady: boolean;
   independentAuditorReady: boolean;
   releaseSecretsReady: boolean;
+  deploymentVersionReady: boolean;
+  embedAllowlistReady: boolean;
   fieldEvidence?: Partial<
     Record<FieldEvidenceType, FieldEvidenceSummary>
   >;
@@ -80,6 +88,13 @@ export function buildLaunchEvidenceReport(params: {
     params.fieldEvidence?.[id]?.independentAuditStatus === "approved"
       ? "verified"
       : "needs_field_evidence";
+  const blockingFieldStatus = (
+    id: FieldEvidenceType,
+  ): LaunchEvidenceStatus =>
+    params.fieldEvidence?.[id]?.validated &&
+    params.fieldEvidence?.[id]?.independentAuditStatus === "approved"
+      ? "verified"
+      : "release_blocker";
   const fieldSummary = (
     id: FieldEvidenceType,
     missingEvidence: string,
@@ -87,12 +102,36 @@ export function buildLaunchEvidenceReport(params: {
     const evidence = params.fieldEvidence?.[id];
     return evidence
       ? evidence.independentAuditStatus === "approved"
-        ? `독립 감사 승인 증거: 표본 ${evidence.sampleSize}건, 지역 ${evidence.regionCount}곳, 검토자 ${evidence.reviewerCount}명, 측정일 ${evidence.measuredAt}, 승인일 ${evidence.approvedAt ?? "미기록"}.`
+        ? evidence.artifactVerified
+          ? `독립 감사 승인 및 원본 해시 검증 증거: 표본 ${evidence.sampleSize}건, 지역 ${evidence.regionCount}곳, 검토자 ${evidence.reviewerCount}명, 측정일 ${evidence.measuredAt}, 승인일 ${evidence.approvedAt ?? "미기록"}.`
+          : "독립 감사 결정은 있으나 원본 파일의 현재 존재 여부와 SHA-256 해시를 검증하지 못했습니다."
         : `증거가 등록되었지만 독립 감사 상태는 ${evidence.independentAuditStatus}입니다. 승인 전에는 검증 완료로 계산하지 않습니다.`
       : missingEvidence;
   };
 
   const items: LaunchEvidenceItem[] = [
+    {
+      id: "deployment_commit_traceability",
+      title: "배포본과 제출 커밋 SHA 추적성",
+      status: params.deploymentVersionReady ? "verified" : "release_blocker",
+      evidence: params.deploymentVersionReady
+        ? "Cloudflare 활성 Worker 버전의 metadata tag와 제출 Git SHA assertion이 정확히 일치합니다."
+        : "Cloudflare version metadata의 ID·tag·timestamp가 없거나 tag가 DEPLOYMENT_COMMIT_SHA assertion과 일치하지 않습니다.",
+      nextAction: params.deploymentVersionReady
+        ? undefined
+        : "정확한 Git HEAD를 `wrangler versions upload --tag <40자리 SHA>`로 올리고, 활성 version ID와 control-plane 배포 영수증을 제출 원장과 대조하세요.",
+    },
+    {
+      id: "partner_embed_origin_policy",
+      title: "파트너 iframe 정확한 origin 허용 정책",
+      status: params.embedAllowlistReady ? "verified" : "release_blocker",
+      evidence: params.embedAllowlistReady
+        ? "하나 이상의 외부 파트너 HTTPS origin이 와일드카드 없이 등록되어 있습니다."
+        : "외부 파트너 origin 허용목록이 비어 있거나 유효하지 않아 실제 임베드를 출시할 수 없습니다.",
+      nextAction: params.embedAllowlistReady
+        ? undefined
+        : "계약된 파트너의 정확한 HTTPS origin을 EMBED_ALLOWED_ORIGINS에 등록하세요.",
+    },
     {
       id: "journey_completion_contract",
       title: "복구 적용부터 원래 여행 완주까지",
@@ -194,7 +233,7 @@ export function buildLaunchEvidenceReport(params: {
     },
     {
       id: "recovery_speed_and_false_positive",
-      title: "복구 중앙값 5초 이내·치명적 오추천 0건",
+      title: "복구 p50 4초·p95 8초 이내, 치명적 오추천 0건",
       status: fieldStatus("recovery_speed_and_false_positive"),
       evidence: fieldSummary(
         "recovery_speed_and_false_positive",
@@ -202,6 +241,83 @@ export function buildLaunchEvidenceReport(params: {
       ),
       nextAction:
         "100개 시나리오에서 중앙값·p95와 폐업, 목적불일치, 예약미도착 오추천을 함께 측정하세요.",
+    },
+    {
+      id: "real_user_usability",
+      title: "독립 실사용자 20명·3개 로케일 사용성",
+      status: fieldStatus("real_user_usability"),
+      evidence: fieldSummary(
+        "real_user_usability",
+        "AI 페르소나가 아닌 독립 실사용자 20명의 실제 과업 원장이 없습니다.",
+      ),
+      nextAction:
+        "한국어·영어를 포함한 3개 로케일, 초행자와 이동약자 표본에서 완료율 90%, 명확성·신뢰도 4.2/5, 치명적 사고 0건을 검증하세요.",
+    },
+    {
+      id: "field_journeys_six_regions",
+      title: "6개 권역 실제 이동 12회·부산 5회",
+      status: fieldStatus("field_journeys_six_regions"),
+      evidence: fieldSummary(
+        "field_journeys_six_regions",
+        "6개 권역 유형 실제 이동 12회와 부산 현장 5회의 독립 원장이 없습니다.",
+      ),
+      nextAction:
+        "실제 이동에서 고정 일정 훼손·휴무지 추천·예약 미준수·치명적 오추천이 모두 0건인지 확인하세요.",
+    },
+    {
+      id: "comparative_benchmark_20",
+      title: "동일 20상황·4개 방법 비교실험",
+      status: fieldStatus("comparative_benchmark_20"),
+      evidence: fieldSummary(
+        "comparative_benchmark_20",
+        "이어가·수작업·범용 AI·일반 재생성기를 같은 입력과 제한시간으로 비교한 80행 원장이 없습니다.",
+      ),
+      nextAction:
+        "20개 상황마다 네 방법을 모두 실행하고 실패를 삭제하지 않은 원본 원장을 독립 감사받으세요.",
+    },
+    {
+      id: "practitioner_review",
+      title: "관광·지자체·접근성 실무자 독립 검토",
+      status: fieldStatus("practitioner_review"),
+      evidence: fieldSummary(
+        "practitioner_review",
+        "서로 다른 역할의 독립 실무자 3명 승인과 치명적 미해결 0건 증거가 없습니다.",
+      ),
+      nextAction:
+        "관광·지자체·접근성 역할별 실무자 검토를 받고 제출자와 다른 감사자가 승인하세요.",
+    },
+    {
+      id: "legal_and_operational_approvals",
+      title: "법률·데이터·운영 통제 8종 승인",
+      status: blockingFieldStatus("legal_and_operational_approvals"),
+      evidence: fieldSummary(
+        "legal_and_operational_approvals",
+        "위치기반서비스, OpenAPI 저장, KTO 명칭, 개인정보, 관리형 제공자와 모니터링의 유효한 승인 8종이 없습니다.",
+      ),
+      nextAction:
+        "필수 운영 통제 8종의 승인 주체·유효기간·원본 해시를 확보하기 전에는 출시하지 마세요.",
+    },
+    {
+      id: "partner_embed_pilot",
+      title: "외부 파트너 사이트 iframe 실증",
+      status: fieldStatus("partner_embed_pilot"),
+      evidence: fieldSummary(
+        "partner_embed_pilot",
+        "실제 외부 파트너 origin에서 위치 권한·메모리 전용 embed bearer·복구 요청을 끝까지 완료한 독립 증거가 없습니다.",
+      ),
+      nextAction:
+        "최소 1개 계약 파트너와 Safari·Firefox·Chrome 모바일 브라우저 3종에서 타사 쿠키 없이 iframe 로드·위치 위임·bearer bootstrap·복구 요청을 100% 성공시키고 치명적 실패 0건을 감사받으세요.",
+    },
+    {
+      id: "participant_consent_ledger",
+      title: "실사용자 동의·철회 통제 원장",
+      status: blockingFieldStatus("participant_consent_ledger"),
+      evidence: fieldSummary(
+        "participant_consent_ledger",
+        "실사용자 표본과 연결되는 가명 동의 원장, 철회 반영, 독립 개인정보 검토 증거가 없습니다.",
+      ),
+      nextAction:
+        "개인정보 원문은 공개하지 말고 가명 참여자 20명 이상의 동의 범위와 철회 반영을 기록한 원장을 독립 감사받아 원장 SHA-256만 제출 증거와 교차검증하세요.",
     },
   ];
 

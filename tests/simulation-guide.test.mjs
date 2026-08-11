@@ -31,7 +31,7 @@ test("simulation guide has accessible dialog and loading contracts", async () =>
   assert.match(component, /aria-modal="true"/);
   assert.match(component, /aria-labelledby=\{titleId\}/);
   assert.match(component, /aria-describedby=\{descriptionId\}/);
-  assert.match(component, /event\.key === "Escape"/);
+  assert.match(component, /event\.key !== "Escape"/);
   assert.match(component, /event\.key !== "Tab"/);
   assert.match(component, /aria-busy=\{isLoading\}/);
   assert.match(component, /disabled=\{isLoading\}/);

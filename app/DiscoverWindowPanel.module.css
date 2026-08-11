@@ -500,6 +500,104 @@
   line-height: 1.6;
 }
 
+.rejectionPanel,
+.counterfactual {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--cream);
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.rejectionPanel > strong,
+.counterfactual > strong {
+  color: var(--ink);
+}
+
+.rejectionPanel ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rejectionPanel li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rejectionPanel li b {
+  flex: 0 0 auto;
+  color: var(--ink);
+}
+
+.counterfactual p,
+.returnEvidence {
+  margin: 0;
+}
+
+.sourceLedger {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.sourceLedger summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sourceLedger p {
+  margin: 4px 0 10px;
+  line-height: 1.55;
+}
+
+.sourceLedger ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceLedger li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sourceLedger li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sourceLedger li b {
+  flex: 0 0 auto;
+  color: var(--ink);
+  text-align: right;
+}
+
+.returnEvidence {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
 .visuallyHidden {
   position: absolute;
   width: 1px;
@@ -526,9 +624,16 @@
   margin: 0 0 14px;
 }
 
+.sortNote {
+  margin: -6px 0 14px;
+  color: #5b6675;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .sortChip,
 .sortActive {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 14px;
   border-radius: 999px;
   font-size: 14px;
@@ -571,6 +676,13 @@
 
 .planFromPlace:hover {
   background: #f2f9f8;
+}
+
+.planFromPlace:disabled {
+  border-color: var(--line-strong);
+  background: var(--canvas);
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .planFromPlace:focus-visible {

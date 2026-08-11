@@ -286,11 +286,11 @@ test("minimum-change engine routes through every original waypoint and proves pr
     );
     assert.deepEqual(nearMiss.counterfactual?.requiredRelaxation, {
       constraint: "minimum_stay",
-      amount: 5,
+      amount: 10,
       unit: "minutes",
       currentLimit: 20,
-      requiredLimit: 15,
-      description: "최소 체류 20분 → 15분",
+      requiredLimit: 10,
+      description: "최소 체류 20분 → 10분",
       preservesLockedNodes: true,
       preservesNextFixedAppointment: true,
     });
@@ -382,6 +382,24 @@ test("indoor hard evidence rejects parks even when their broad type looks cultur
       title: "두가헌",
     }),
     true,
+  );
+  /* 실사용 조사에서 실제 오추천된 5일장 두 곳. 쇼핑 content type만으로
+     우천 대피처가 되어서는 안 되며, 장날 여부와 무관하게 실내 필터에서
+     실패 폐쇄해야 한다. */
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "38",
+      title: "원통장 (2, 7일)",
+    }),
+    false,
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      contenttypeid: "38",
+      title: "영양시장 (4, 9일)",
+      cat3: "A04010200",
+    }),
+    false,
   );
 });
 

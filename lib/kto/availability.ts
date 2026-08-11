@@ -182,12 +182,19 @@ export function evaluateAvailabilityItem(
   const contact = text(item, [...CONTACT_FIELDS]);
   const eventStart = compactDate(text(item, ["eventstartdate"]));
   const eventEnd = compactDate(text(item, ["eventenddate"]));
-  const today = currentDateNumber(visitStart);
+  const visitStartDay = currentDateNumber(visitStart);
+  const visitEndDay = currentDateNumber(visitEnd);
+  const beginsBeforeEvent =
+    eventStart !== null && visitStartDay < eventStart;
+  const endsAfterEvent = eventEnd !== null && visitEndDay > eventEnd;
+  const closedDuringStay =
+    isRestDay(restDate, visitStart) ||
+    (visitEndDay !== visitStartDay && isRestDay(restDate, visitEnd));
 
   if (
-    (eventStart !== null && today < eventStart) ||
-    (eventEnd !== null && today > eventEnd) ||
-    isRestDay(restDate, visitStart)
+    beginsBeforeEvent ||
+    endsAfterEvent ||
+    closedDuringStay
   ) {
     return {
       status: "confirmed_closed",
@@ -196,17 +203,38 @@ export function evaluateAvailabilityItem(
       contact: contact || undefined,
       checkedAt,
       note:
-        eventEnd !== null && today > eventEnd
-          ? "한국관광공사 행사 종료일이 지났습니다."
-          : eventStart !== null && today < eventStart
+        endsAfterEvent
+          ? "제안한 체류가 한국관광공사 행사 종료일을 넘습니다."
+          : beginsBeforeEvent
             ? "한국관광공사 행사 시작일 전입니다."
-            : `한국관광공사 휴무 정보에 방문일(${DAY_NAMES[koreaDate(visitStart).getDay()]})이 포함됩니다.`,
+            : "한국관광공사 휴무 정보가 제안한 체류 구간과 겹칩니다.",
       noteEn:
-        eventEnd !== null && today > eventEnd
-          ? "The official event end date has already passed."
-          : eventStart !== null && today < eventStart
+        endsAfterEvent
+          ? "The proposed stay extends beyond the official event end date."
+          : beginsBeforeEvent
             ? "The official event has not started yet."
-            : "The official closing days include your visit date.",
+            : "The official closing days overlap the proposed stay.",
+      audit,
+    };
+  }
+
+  /* "상시 개방" is itself structured operating evidence, not an ambiguous
+     prose field. When the same official record has no closing-day rule (or
+     explicitly says year-round), the entire proposed stay is confirmed open.
+     A non-empty closing rule still goes through the conservative parser
+     below; we do not let an always-open hours label erase a holiday. */
+  if (
+    ALWAYS_OPEN.test(operatingHours) &&
+    (!restDate || /연중\s*무휴/u.test(restDate))
+  ) {
+    return {
+      status: "confirmed_open",
+      operatingHours,
+      restDate: restDate || undefined,
+      contact: contact || undefined,
+      checkedAt,
+      note: hoursLine(operatingHours, restDate),
+      noteEn: hoursLineEn(operatingHours, restDate),
       audit,
     };
   }

@@ -126,6 +126,9 @@ SESSION_SIGNING_KEY=32바이트_이상_별도_임의값
 PARTNER_API_KEY=파트너_복구_API용_별도_긴_임의값
 OPS_API_KEY=운영_제어_API용_별도_긴_임의값
 RELEASE_AUDITOR_API_KEY=독립_증거_감사용_별도_긴_임의값
+DEPLOYMENT_COMMIT_SHA=현재_배포에_포함된_40자리_Git_SHA
+EMBED_ALLOWED_ORIGINS=https://partner.example.org
+EVIDENCE_ARTIFACT_ALLOWED_ORIGINS=https://evidence.example.org
 REVERSE_GEOCODE_URL=관리형_역지오코딩_엔드포인트
 ROUTING_BASE_URL=관리형_OSRM_호환_보행경로_엔드포인트
 ```
@@ -379,15 +382,32 @@ ROUTING_BASE_URL=https://api.mapbox.com/directions/v5/mapbox/walking?access_toke
 ### 배포 절차
 
 ```powershell
-npm.cmd run build
 npx.cmd wrangler d1 migrations apply site-creator-d1 --remote
-cd dist/server
-npx.cmd wrangler deploy --config wrangler.json
 ```
 
-빌드가 `dist/server/wrangler.json`에 바인딩·크론 설정을 생성하므로 배포는
-루트가 아니라 해당 파일을 사용합니다. 배포 직후 수 분간 자산 전파가
-끝나지 않아 일부 요청이 404로 응답할 수 있으며, 전파가 끝나면 해소됩니다.
+운영 D1 마이그레이션과 백업을 확인한 뒤 GitHub Actions의
+`Release production worker` workflow를 `main`에서 실행합니다. 제출 후보를
+로컬 `wrangler deploy`로 직접 배포하면 서명된 단일 빌드 영수증이 없으므로
+출시 게이트를 통과할 수 없습니다.
+
+workflow는 clean HEAD에서 `npm run build`를 정확히 한 번 실행하고,
+`dist/server` 전체의 canonical worker digest와 `dist/client` 정적 파일
+manifest digest를 계산합니다. 같은 빌드에 대해 coverage 임계값,
+증거 구조, Chromium 360·390·768·1280px E2E를 모두 통과한 뒤에만 같은
+디렉터리를 재번들링 없이
+`--no-bundle --tag $GITHUB_SHA`로 배포하고, 런타임 version metadata와
+Cloudflare control plane의 100% traffic·tag·timestamp·script ETag를 확인한
+뒤 `outputs/release/release-receipt.json`을 만듭니다. 이 receipt는
+worker/static manifest의 고정 로컬 경로와 canonical digest까지 포함하며,
+immutable commit SHA로 고정한 `actions/attest@v4`의 GitHub-hosted
+OIDC/Sigstore provenance로 서명됩니다. checkout·Node setup·artifact upload
+action도 모두 full commit SHA로 고정합니다.
+
+GitHub `production` environment에는 required reviewer, `main` 전용 deployment
+branch policy, 관리자 우회 금지를 설정합니다. 현재 릴리스는 보호된 수동 승인
+뒤 pre-deploy 품질 게이트를 모두 통과한 단일 `wrangler deploy`로 100%를
+전환합니다. workflow 외부의 직접 배포는 receipt를 만들지 못하므로 제출본으로
+인정하지 않습니다.
 
 ### Secret 등록
 
@@ -400,6 +420,14 @@ npx.cmd wrangler secret put PARTNER_API_KEY --name ieoga-national-travel-resilie
 npx.cmd wrangler secret put OPS_API_KEY --name ieoga-national-travel-resilience
 npx.cmd wrangler secret put RELEASE_AUDITOR_API_KEY --name ieoga-national-travel-resilience
 ```
+
+GitHub의 `production` environment에는 최소 권한의
+`CLOUDFLARE_ACCOUNT_ID`와 Workers Scripts Edit/Read 전용
+`CLOUDFLARE_API_TOKEN`을 등록합니다. workflow가 정확한 HEAD를
+`DEPLOYMENT_COMMIT_SHA`와 Worker version tag에 함께 주입합니다. 배포 후
+런타임 SHA·Cloudflare version ID/ETag·서명 receipt·로컬 HEAD·현장 원장의
+SHA가 모두 같아야 하며 하나라도 다르면 출시 게이트가 실패합니다. iframe
+파트너는 `EMBED_ALLOWED_ORIGINS`에 정확한 HTTPS origin을 쉼표로 등록합니다.
 
 `KTO_SERVICE_KEY`가 없으면 `/api/v1/health/ready`가 `configured: false`와
 함께 `unavailable`을 반환하고, 후보를 지어내지 않고 조회 실패로 종료합니다.
@@ -421,3 +449,34 @@ npx.cmd wrangler secret put RELEASE_AUDITOR_API_KEY --name ieoga-national-travel
 7. API 호출량·오류율·지연시간·D1/R2 저장 실패를 모니터링합니다.
 8. 개인정보 처리방침, 이용약관, 데이터 출처, 세션 삭제 흐름을
    운영 주체 정보와 함께 최종 법무 검토합니다.
+9. release workflow artifact를 저장소 안의 ignored 경로인
+   `outputs/release/`에 내려받고, `evidence/submission-manifest.example.json`을
+   복사한 실제 manifest에 receipt path·SHA-256·bundle digest·asset manifest
+   digest·두 canonical manifest path를 기록합니다.
+10. GitHub CLI 인증 후 `npm run release:gate`로 제출 SHA·배포 SHA·Cloudflare
+    control plane·Sigstore provenance·원장 SHA와 모든 현장 임계값을
+    대조합니다. 게이트는 exact repository, exact signer workflow,
+    `refs/heads/main`, source HEAD를 강제하고 self-hosted runner 증명을
+    거부합니다. 또한 운영 origin에서 redirect 없이 모든 `.js`·`.css`·`.wasm`,
+    `sw.js`, `manifest.webmanifest`의 실제 바이트를 다시 해시하고 `/`, `/app`,
+    `/flow`, `/plan`, `/embed/recover` HTML의 same-origin JS/CSS 참조가 서명
+    manifest에 모두 포함됐는지 확인합니다. 마지막으로
+    `/api/v1/health/ready`가 `ready`인지 확인합니다.
+
+### 배포 실패·롤백 runbook
+
+배포 뒤 receipt 생성, attestation, 원격 바이트 검증 중 하나라도 실패하면 해당
+실행의 receipt를 제출하거나 수동으로 재작성하지 않습니다. `production`
+environment 승인권자가 Cloudflare 배포 이력과 직전 제출 게이트 통과 version ID를
+확인한 뒤 다음과 같이 그 단일 known-good version으로 100% 복귀합니다.
+
+```powershell
+npx.cmd wrangler versions list --name ieoga-national-travel-resilience
+npx.cmd wrangler versions deploy "KNOWN_GOOD_VERSION_ID@100%" --name ieoga-national-travel-resilience --yes
+```
+
+복귀 후 `/api/v1/release/version`의 version ID/tag/timestamp와 Cloudflare control
+plane의 100% traffic·script ETag가 known-good receipt와 일치하는지 확인합니다.
+실패한 version의 receipt는 폐기하고, 원인을 수정해 `main`에 반영한 다음 새
+`Release production worker` 실행으로 새 attestation을 발급합니다. 롤백 자체를
+새 제출 증명으로 재사용하지 않습니다.

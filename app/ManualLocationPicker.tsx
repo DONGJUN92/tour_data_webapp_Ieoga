@@ -20,6 +20,8 @@
  * 근사치**라는 사실을 화면에 적는다. */
 
 import { useEffect, useState } from "react";
+import { sourceLabelText } from "@/lib/text/status-labels";
+import { regionDisplayName } from "@/lib/text/region-alias";
 
 export type ManualPlace = {
   title: string;
@@ -34,6 +36,19 @@ export type ManualPlace = {
 
 type RegionOption = { code: string; name: string };
 
+function pickerErrorText(
+  error: unknown,
+  language: "ko" | "en",
+  ko: string,
+  en: string,
+): string {
+  const message = error instanceof Error ? error.message.trim() : "";
+  if (language === "ko") return message || ko;
+  if (message && !/[가-힣]/u.test(message)) return message;
+  const requestId = message.match(/(?:Request ID|요청 ID)\s*[:·]?\s*([\w-]+)/i)?.[1];
+  return requestId ? `${en} · Request ID ${requestId}` : en;
+}
+
 type Props = {
   /* 검색 결과나 시·군·구 선택이 끝나면 호출된다. */
   onPick: (place: ManualPlace) => void;
@@ -41,6 +56,10 @@ type Props = {
   onRetryGeolocation?: () => void;
   geoBusy?: boolean;
   language?: "ko" | "en";
+  /* 현재 위치는 ephemeral 계약, 저장할 일정 장소는 saved_stop 계약으로
+     조회한다. 검색어는 위치를 드러낼 수 있으므로 두 목적 모두 POST body로만
+     전송한다. */
+  purpose?: "current_origin" | "saved_stop";
   /* 이 고르개는 세 자리에서 쓴다: 지금 있는 곳, 출발지, 지켜야 할 약속.
      문구를 `현재 장소`로 고정해 두었더니 약속을 고르는 화면에도 `현재 장소
      직접 입력`이 떴다 — 무엇을 묻는지가 화면마다 다른데 안내가 하나였다. */
@@ -50,6 +69,26 @@ type Props = {
 
 async function getJson(url: string): Promise<Record<string, unknown>> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const payload = (await response.json()) as Record<string, unknown>;
+  if (!response.ok) {
+    const error = payload.error as { message?: string } | undefined;
+    throw new Error(error?.message || "요청을 처리하지 못했습니다.");
+  }
+  return payload;
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
   const payload = (await response.json()) as Record<string, unknown>;
   if (!response.ok) {
     const error = payload.error as { message?: string } | undefined;
@@ -93,6 +132,7 @@ export function ManualLocationPicker({
   onRetryGeolocation,
   geoBusy = false,
   language = "ko",
+  purpose = "current_origin",
   heading,
   areaHint,
 }: Props) {
@@ -172,17 +212,22 @@ export function ManualLocationPicker({
     setSearchState("loading");
     setSearchError("");
     try {
-      const payload = await getJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(trimmed)}&purpose=current_origin&fallback=auto`,
-      );
+      const payload = await postJson("/api/v1/places/search", {
+        keyword: trimmed,
+        purpose,
+        fallback: "auto",
+      });
       setResults(asPlaces(payload).slice(0, 8));
       setSearchState("success");
     } catch (error) {
       setSearchState("error");
       setSearchError(
-        error instanceof Error
-          ? error.message
-          : tr("장소를 찾지 못했습니다.", "Could not find that place."),
+        pickerErrorText(
+          error,
+          language,
+          "장소를 찾지 못했습니다.",
+          "Could not find that place.",
+        ),
       );
     }
   }
@@ -195,9 +240,13 @@ export function ManualLocationPicker({
     setAreaError("");
     try {
       const label = `${region.name} ${district.name}`;
-      const payload = await getJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(label)}&purpose=current_origin&fallback=auto`,
-      );
+      const payload = await postJson("/api/v1/places/search", {
+        keyword: label,
+        purpose,
+        fallback: "auto",
+        areaCode: regionCode,
+        sigunguCode: districtCode,
+      });
       const [first] = asPlaces(payload);
       if (!first) {
         setAreaState("error");
@@ -221,9 +270,12 @@ export function ManualLocationPicker({
     } catch (error) {
       setAreaState("error");
       setAreaError(
-        error instanceof Error
-          ? error.message
-          : tr("지역을 확인하지 못했습니다.", "Could not resolve that area."),
+        pickerErrorText(
+          error,
+          language,
+          "지역을 확인하지 못했습니다.",
+          "Could not resolve that area.",
+        ),
       );
     }
   }
@@ -300,9 +352,20 @@ export function ManualLocationPicker({
             {results.map((place) => (
               <li key={`${place.title}-${place.latitude}-${place.longitude}`}>
                 <button type="button" onClick={() => onPick(place)}>
-                  <strong>{place.title}</strong>
-                  {place.address && <span>{place.address}</span>}
-                  {place.sourceLabel && <em>{place.sourceLabel}</em>}
+                  <strong lang={language === "en" ? "ko" : undefined}>
+                    {place.title}
+                  </strong>
+                  {place.address && (
+                    <span lang={language === "en" ? "ko" : undefined}>
+                      {place.address}
+                    </span>
+                  )}
+                  {language === "en" && place.sourceLabel?.includes("한국관광공사") && (
+                    <em>KTO official Korean place name and address</em>
+                  )}
+                  {place.sourceLabel && (
+                    <em>{sourceLabelText(place.sourceLabel, language)}</em>
+                  )}
                 </button>
               </li>
             ))}
@@ -322,6 +385,11 @@ export function ManualLocationPicker({
         <span className="manual-picker-area-title">
           {tr("또는 시·군·구로 고르기", "Or pick a city and district")}
         </span>
+        {language === "en" && (
+          <p className="manual-picker-hint">
+            Region and district choices preserve the official Korean names used by the tourism API.
+          </p>
+        )}
         <div className="manual-picker-area-fields">
           <label>
             <span>{tr("시·도", "City / province")}</span>
@@ -340,7 +408,7 @@ export function ManualLocationPicker({
               <option value="">{tr("선택", "Select")}</option>
               {regions.map((region) => (
                 <option key={region.code} value={region.code}>
-                  {region.name}
+                  {regionDisplayName(region.name)}
                 </option>
               ))}
             </select>

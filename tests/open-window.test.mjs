@@ -52,7 +52,7 @@ function nearbyItems() {
   ];
 }
 
-function installFetch({ legSecondsByCandidate }) {
+function installFetch({ legSecondsByCandidate, routePaths }) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(
@@ -67,10 +67,20 @@ function installFetch({ legSecondsByCandidate }) {
       /* OSRM 호환 경로는 좌표를 path에 붙인다. 두 번째 좌표의 경도로 어느
          후보에 대한 호출인지 구분한다. */
       const coordinates = url.pathname.split("/").pop() ?? "";
-      const isFar = coordinates.includes("126.995");
-      const durations = isFar
+      routePaths.push(coordinates);
+      const routeCoordinates = coordinates.replace(/^[^:]+:/, "");
+      const isFar = routeCoordinates.includes("126.995");
+      const configured = isFar
         ? legSecondsByCandidate.far
         : legSecondsByCandidate.near;
+      const candidateLongitude = isFar ? "126.995" : "126.98";
+      const isOriginReturn = routeCoordinates.startsWith(candidateLongitude);
+      const durations = Array.isArray(configured)
+        ? configured
+        : configured?.[isOriginReturn ? "return" : "outbound"];
+      if (!durations) {
+        return Response.json({ code: "NoRoute", routes: [] });
+      }
       return Response.json({
         code: "Ok",
         routes: [
@@ -115,7 +125,17 @@ function installFetch({ legSecondsByCandidate }) {
     if (service === "KorService2" && operation === "locationBasedList2") {
       items = nearbyItems();
     } else if (service === "KorService2" && operation === "detailIntro2") {
-      items = [{ usetimeculture: "00:00~23:59", infocenter: "02-000-0000" }];
+      const availabilityMode =
+        legSecondsByCandidate.availability ?? "confirmed_open";
+      if (availabilityMode === "upstream_error") {
+        return new Response("upstream unavailable", { status: 503 });
+      }
+      items =
+        availabilityMode === "confirmed_closed"
+          ? [{ eventenddate: "20000101", infocenter: "02-000-0000" }]
+          : availabilityMode === "unconfirmed"
+            ? [{ infocenter: "02-000-0000" }]
+            : [{ usetimeculture: "00:00~23:59", infocenter: "02-000-0000" }];
     }
     return Response.json(ktoEnvelope(items));
   };
@@ -151,9 +171,10 @@ async function withMockedEnvironment(legSecondsByCandidate, run) {
   process.env.KTO_SERVICE_KEY = "open-window-test-key";
   process.env.ROUTING_BASE_URL = "https://managed-routing.test/route";
   process.env.WEATHER_API_URL = "https://managed-weather.test/forecast";
-  const originalFetch = installFetch({ legSecondsByCandidate });
+  const routePaths = [];
+  const originalFetch = installFetch({ legSecondsByCandidate, routePaths });
   try {
-    return await run();
+    return await run(routePaths);
   } finally {
     globalThis.fetch = originalFetch;
     process.env.KTO_SERVICE_KEY = originalKey;
@@ -166,8 +187,8 @@ async function withMockedEnvironment(legSecondsByCandidate, run) {
 
 test("빈 시간 추천은 일정 없이 실행되고 창 안에 들어가는 후보만 제시한다", async () => {
   await withMockedEnvironment(
-    /* 가까운 후보는 왕복 10분+10분, 먼 후보는 왕복 50분+50분. 창은 90분,
-       체류 60분이므로 먼 후보만 넘친다. */
+    /* 가까운 후보는 왕복 10분+10분, 먼 후보는 왕복 50분+50분. 창은 105분,
+       체류 60분과 안전여유 15분을 더해도 가까운 후보만 통과한다. */
     { near: [600], far: [3_000] },
     async () => {
       const { recoverTrip } = await import("../lib/recovery/engine.ts");
@@ -175,7 +196,7 @@ test("빈 시간 추천은 일정 없이 실행되고 창 안에 들어가는 �
       const result = await recoverTrip(
         openWindowRequest({
           openWindow: {
-            availableUntil: new Date(now + 90 * 60_000).toISOString(),
+            availableUntil: new Date(now + 105 * 60_000).toISOString(),
             plannedStayMinutes: 60,
           },
         }),
@@ -211,10 +232,14 @@ test("빈 시간 추천은 일정 없이 실행되고 창 안에 들어가는 �
         assert.ok(window, "창 증명이 있어야 한다");
         assert.equal(window.status, "fits");
         assert.ok(
-          window.leftoverMinutes >= 0,
-          "창을 넘긴 후보가 제시되어서는 안 된다",
+          window.leftoverMinutes >= window.requiredBufferMinutes,
+          "복귀 뒤 안전여유를 확보하지 못한 후보가 제시되어서는 안 된다",
         );
-        assert.equal(window.returnBasis, "same_route_reversed");
+        assert.equal(window.requiredBufferMinutes, 15);
+        assert.equal(window.returnBasis, "origin_return_route");
+        assert.equal(window.returnProvider, "openstreetmap_osrm");
+        assert.ok(window.returnDistanceMeters > 0);
+        assert.ok(Number.isFinite(Date.parse(window.returnCalculatedAt)));
       }
 
       const overflow = result.rejectionSummary.find(
@@ -226,6 +251,188 @@ test("빈 시간 추천은 일정 없이 실행되고 창 안에 들어가는 �
       );
     },
   );
+});
+
+test("왕복 빈시간은 경계 도착이 아니라 선언한 안전여유까지 남아야 통과한다", async () => {
+  await withMockedEnvironment(
+    { near: [300], far: [3_000] },
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const tight = await recoverTrip(
+        openWindowRequest({
+          origin: {
+            ...openWindowRequest().origin,
+            latitude: 37.5672,
+          },
+          openWindow: {
+            /* 왕복 10분 + 체류 30분 뒤 약 4분만 남는다. 예전의 >=0
+               계약에서는 실행 가능한 추천으로 잘못 통과했다. */
+            availableUntil: new Date(Date.now() + 45 * 60_000).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "open-window-zero-slack-rejected",
+      );
+      assert.equal(tight.options.length, 0);
+      assert.ok(
+        tight.rejectionSummary.some(
+          (entry) => entry.reasonCode === "OPEN_WINDOW_OVERFLOW",
+        ),
+      );
+
+      const safe = await recoverTrip(
+        openWindowRequest({
+          origin: {
+            ...openWindowRequest().origin,
+            latitude: 37.5673,
+          },
+          openWindow: {
+            availableUntil: new Date(Date.now() + 56 * 60_000).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "open-window-buffer-preserved",
+      );
+      const near = safe.options.find((option) => option.contentId === "near-1");
+      assert.ok(near);
+      assert.equal(near.scheduleDiff.openWindow?.requiredBufferMinutes, 15);
+      assert.ok((near.scheduleDiff.openWindow?.leftoverMinutes ?? 0) >= 15);
+    },
+  );
+});
+
+test("왕복 빈시간은 비대칭 역방향 경로를 별도 조회해 실제 복귀시간을 사용한다", async () => {
+  await withMockedEnvironment(
+    {
+      near: { outbound: [300], return: [2_400] },
+      far: { outbound: [3_000], return: [3_000] },
+    },
+    async (routePaths) => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const now = Date.now();
+      const result = await recoverTrip(
+        openWindowRequest({
+          origin: {
+            ...openWindowRequest().origin,
+            latitude: 37.5666,
+          },
+          openWindow: {
+            availableUntil: new Date(now + 120 * 60_000).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "open-window-asymmetric-return",
+      );
+
+      const option = result.options.find(
+        (candidate) => candidate.contentId === "near-1",
+      );
+      assert.ok(option);
+      assert.equal(option.scheduleDiff.openWindow?.travelToMinutes, 5);
+      assert.equal(option.scheduleDiff.openWindow?.returnMinutes, 40);
+      assert.equal(
+        option.scheduleDiff.openWindow?.returnBasis,
+        "origin_return_route",
+      );
+      assert.ok(routePaths.length >= 2);
+      assert.ok(
+        routePaths.every((path) => !/^(?:walk|car|transit|bicycle):/.test(path)),
+        "경로 공급자 URL에 내부 캐시 네임스페이스가 유출되면 안 된다",
+      );
+    },
+  );
+});
+
+test("역방향 복귀 경로가 없으면 왕복 빈시간 후보를 실패 폐쇄한다", async () => {
+  await withMockedEnvironment(
+    {
+      near: { outbound: [300], return: null },
+      far: { outbound: [600], return: null },
+    },
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const result = await recoverTrip(
+        openWindowRequest({
+          origin: {
+            ...openWindowRequest().origin,
+            latitude: 37.5667,
+          },
+          openWindow: {
+            availableUntil: new Date(Date.now() + 180 * 60_000).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "open-window-return-unavailable",
+      );
+
+      assert.equal(result.options.length, 0);
+      assert.ok(
+        result.rejectionSummary.some(
+          (entry) => entry.reasonCode === "ROUTE_UNAVAILABLE",
+        ),
+      );
+    },
+  );
+});
+
+test("운영정보의 휴무·데이터 공백·제공자 장애를 구분하고 모두 안전 추천에서 제외한다", async () => {
+  const scenarios = [
+    {
+      mode: "confirmed_closed",
+      latitude: 37.5668,
+      reasonCode: "OFFICIALLY_CLOSED",
+      status: "no_valid_candidate",
+    },
+    {
+      mode: "unconfirmed",
+      latitude: 37.5669,
+      reasonCode: "OPERATING_STATUS_UNCONFIRMED",
+      status: "no_valid_candidate",
+    },
+    {
+      mode: "upstream_error",
+      latitude: 37.5671,
+      reasonCode: "OPERATING_STATUS_UPSTREAM_UNAVAILABLE",
+      status: "upstream_unavailable",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await withMockedEnvironment(
+      {
+        near: [300],
+        far: [600],
+        availability: scenario.mode,
+      },
+      async () => {
+        const { recoverTrip } = await import("../lib/recovery/engine.ts");
+        const result = await recoverTrip(
+          openWindowRequest({
+            origin: {
+              ...openWindowRequest().origin,
+              latitude: scenario.latitude,
+            },
+            openWindow: {
+              availableUntil: new Date(
+                Date.now() + 180 * 60_000,
+              ).toISOString(),
+              plannedStayMinutes: 30,
+            },
+          }),
+          `availability-${scenario.mode}`,
+        );
+
+        assert.equal(result.options.length, 0, scenario.mode);
+        assert.equal(result.status, scenario.status, scenario.mode);
+        assert.ok(
+          result.rejectionSummary.some(
+            (entry) => entry.reasonCode === scenario.reasonCode,
+          ),
+          scenario.mode,
+        );
+      },
+    );
+  }
 });
 
 test("다음 장소를 알려 주면 그 도착까지 검증하고 목적 근거를 그 장소로 삼는다", async () => {
@@ -413,15 +620,35 @@ test("새 탭이 링크·키보드·탭목록 어디에서도 빠지지 않는�
   assert.match(product, /aria-labelledby="tab-discover"/);
 });
 
-test("빈 시간 화면은 30분 격자만 제공하고 이동시간을 입력받지 않는다", async () => {
-  const panel = await readFile(
-    new URL("../app/DiscoverWindowPanel.tsx", import.meta.url),
-    "utf8",
-  );
+test("빈 시간 화면은 30분 단위 선택을 줄이지 않고 이동시간을 입력받지 않는다", async () => {
+  const [panel, safety] = await Promise.all([
+    readFile(new URL("../app/DiscoverWindowPanel.tsx", import.meta.url), "utf8"),
+    import("../app/traveler-safety.ts"),
+  ]);
   assert.match(panel, /STAY_CHOICES = \[30, 60, 90, 120, 150, 180\]/);
   assert.match(panel, /WINDOW_CHOICES = \[60, 90, 120, 150, 180, 240\]/);
-  /* 30분 격자에 올리는 계산이 실제로 있어야 한다. */
-  assert.match(panel, /getMinutes\(\) % 30/);
+  /* 선택지는 30분 단위지만 deadline을 시계 격자로 내리면 60분 선택이
+     30~59분으로 줄어든다. 분 경계에서도 정확한 선택 길이를 보존한다. */
+  for (const now of [
+    Date.parse("2026-08-11T00:00:00.001Z"),
+    Date.parse("2026-08-11T00:29:59.999Z"),
+    Date.parse("2026-08-11T00:59:59.999Z"),
+  ]) {
+    assert.equal(
+      Date.parse(safety.windowEndIsoFromMinutes(60, now)) - now,
+      60 * 60_000,
+    );
+  }
+  assert.match(panel, /const requestWindowEndIso = windowEndIsoFromMinutes/);
+  assert.match(panel, /setWindowEndIso\(requestWindowEndIso\)/);
+  assert.match(panel, /availableUntil: requestWindowEndIso/);
+  assert.match(panel, /arriveBy: requestWindowEndIso/);
+  assert.match(
+    panel,
+    /formatIsoTime\([\s\S]*?replacementNode\?\.startAt,[\s\S]*?language,[\s\S]*?\)/,
+    "English free-time results must not fall back to Korean 오전/오후 formatting",
+  );
+  assert.doesNotMatch(panel, /getMinutes\(\) % 30/);
   /* 여행자가 분 단위 숫자를 타이핑하는 입력이 새로 생기면 이 화면의 목적이
      사라진다. 숫자·시간 입력 필드를 두지 않는다. */
   assert.ok(
@@ -444,17 +671,22 @@ test("빈 시간 화면은 확인하지 못한 조건과 복귀 기준을 숨기
     new URL("../app/DiscoverWindowPanel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(panel, /공식 정보로 확인하지 못한 조건/);
+  assert.match(panel, /공식 확인 전에는 선택할 수 없습니다/);
   assert.match(panel, /cardUnverified/);
-  /* 복귀 시간의 근거를 밝히되, 수단에 따라 "보행"·"자동차"가 갈린다. 자차로
-     계산한 결과에 "보행 경로 기준"이라고 적히면 근거 표기가 거짓이 된다. */
+  assert.match(panel, /disabled=\{isBlocked\}/);
+  assert.match(panel, /safety\.canApply/);
+  assert.match(panel, /origin_return_route/);
+  assert.match(panel, /복귀 근거/);
+  /* outbound를 뒤집어 썼다고 오인할 수 없도록 별도 복귀 조회의 제공자와
+     거리·확인 시각을 근거로 밝힌다. */
   assert.match(
     panel,
-    /돌아오는 시간은 같은 \$\{modeVerb\.noun\} 경로 기준입니다/,
+    /복귀는 \$\{returnProviderLabel\(window\.returnProvider, language\)\}로 별도 확인했습니다/,
   );
   assert.match(panel, /존재하지 않는 장소를 만들어 추천하지는 않습니다/);
-  /* 통과하지 못한 후보 수를 결과 아래에 밝혀야 한다. */
-  assert.match(panel, /조건을 통과하지 못한 후보/);
+  /* 실패 폐쇄로 제외한 후보의 이유와 수를 결과 아래에 밝혀야 한다. */
+  assert.match(panel, /목록에서 제외된 이유/);
+  assert.match(panel, /rejectionSummary/);
   assert.match(panel, /aria-live="polite"/);
 });
 

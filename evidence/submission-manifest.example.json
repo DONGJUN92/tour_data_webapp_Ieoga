@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "commitSha": "REPLACE_WITH_40_CHARACTER_GIT_SHA",
+  "deploymentUrl": "https://ieoga-national-travel-resilience.sans5-poems-5045.workers.dev",
+  "cloudflare": {
+    "versionId": "REPLACE_WITH_WRANGLER_VERSION_ID",
+    "scriptEtag": "REPLACE_WITH_CLOUDFLARE_SCRIPT_ETAG"
+  },
+  "releaseReceipt": {
+    "path": "outputs/release/release-receipt.json",
+    "sha256": "REPLACE_WITH_RELEASE_RECEIPT_SHA256",
+    "bundleDigest": "REPLACE_WITH_CANONICAL_WORKER_BUNDLE_SHA256",
+    "assetManifestDigest": "REPLACE_WITH_CANONICAL_STATIC_ASSET_MANIFEST_SHA256",
+    "bundleManifestPath": "outputs/release/worker-bundle-manifest.json",
+    "assetManifestPath": "outputs/release/static-asset-manifest.json"
+  },
+  "artifacts": {
+    "tripbreak": {
+      "path": "evidence/verified/tripbreak-runs.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "performance": {
+      "path": "evidence/verified/performance-runs.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "realUsers": {
+      "path": "evidence/verified/real-user-runs.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "fieldJourneys": {
+      "path": "evidence/verified/field-journeys.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "comparisons": {
+      "path": "evidence/verified/comparison-runs.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "practitionerReviews": {
+      "path": "evidence/verified/practitioner-reviews.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "partnerEmbedPilot": {
+      "path": "evidence/verified/partner-embed-pilot.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "operationsApprovals": {
+      "path": "evidence/verified/operations-approvals.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    },
+    "consentLedger": {
+      "path": "evidence/verified/consent-ledger.csv",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256"
+    }
+  }
+}

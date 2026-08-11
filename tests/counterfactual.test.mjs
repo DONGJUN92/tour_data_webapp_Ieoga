@@ -81,6 +81,13 @@ async function withOutdoorOnly(run) {
           modifiedtime: "20260716",
         },
       ];
+    } else if (
+      service === "KorService2" &&
+      operation === "detailIntro2"
+    ) {
+      /* 거리 반사실 테스트가 운영정보 미확인이라는 두 번째 필수 조건에
+         막히지 않도록 체류 구간 전체가 열려 있음을 명시한다. */
+      items = [{ usetimeculture: "00:00~23:59" }];
     }
     return Response.json(envelope(items));
   };

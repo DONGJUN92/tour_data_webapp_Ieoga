@@ -24,6 +24,11 @@ type FlowMockState = {
   itineraryBodies: unknown[];
   placeSearchBodies: unknown[];
   shareCalls: number;
+  lockedAppointment?: {
+    id: string;
+    title: string;
+    startAt: string;
+  };
 };
 
 const verifiedOption = {
@@ -86,6 +91,11 @@ const evidenceGapOption = {
 function execution(
   currentStepSequence: number,
   status: "active" | "contract_met" = "active",
+  lockedAppointment: NonNullable<FlowMockState["lockedAppointment"]> = {
+    id: "next",
+    title: "세종문화회관",
+    startAt: new Date(Date.now() + 150 * 60_000).toISOString(),
+  },
 ) {
   const now = new Date().toISOString();
   return {
@@ -126,11 +136,12 @@ function execution(
       },
       {
         id: "fixed-step",
+        originalNodeId: lockedAppointment.id,
         sequence: 1,
         role: "next_fixed",
-        title: "세종문화회관",
+        title: lockedAppointment.title,
         type: "reservation",
-        scheduledAt: now,
+        scheduledAt: lockedAppointment.startAt,
         estimatedArrivalAt: now,
         locationLabel: "서울특별시 종로구 세종대로 175",
         latitude: 37.5726,
@@ -172,6 +183,7 @@ async function mockFlowApis(
     placeSearchBodies: [],
     shareCalls: 0,
   };
+  let activeExecution: ReturnType<typeof execution> | null = null;
 
   await page.route("**/api/v1/places/search", async (route) => {
     expect(route.request().method()).toBe("POST");
@@ -211,8 +223,28 @@ async function mockFlowApis(
     await fulfillJson(route, { places: [place] });
   });
   await page.route("**/api/v1/itineraries", async (route) => {
-    const body = route.request().postDataJSON();
+    const body = route.request().postDataJSON() as {
+      itinerary?: {
+        nodes?: Array<{
+          id?: string;
+          title?: string;
+          startAt?: string;
+          locked?: boolean;
+          reservation?: boolean;
+        }>;
+      };
+    };
     state.itineraryBodies.push(body);
+    const locked = body.itinerary?.nodes?.find(
+      (node) => node.locked === true && node.reservation === true,
+    );
+    if (locked?.id && locked.title && locked.startAt) {
+      state.lockedAppointment = {
+        id: locked.id,
+        title: locked.title,
+        startAt: locked.startAt,
+      };
+    }
     await fulfillJson(route, { itinerary: { id: "itinerary-1" } }, 201);
   });
   await page.route("**/api/v1/recover", async (route) => {
@@ -229,16 +261,33 @@ async function mockFlowApis(
   });
   await page.route("**/api/v1/recover/run-1/apply", async (route) => {
     state.applyBodies.push(route.request().postDataJSON());
-    await fulfillJson(route, { execution: execution(0) }, 201);
+    activeExecution = execution(0, "active", state.lockedAppointment);
+    await fulfillJson(route, {
+      execution: activeExecution,
+    }, 201);
   });
   await page.route("**/api/v1/journey/active", async (route) => {
+    if (route.request().method() === "GET") {
+      if (!activeExecution) {
+        await fulfillJson(
+          route,
+          { error: { code: "NO_ACTIVE_JOURNEY", message: "No active journey" } },
+          404,
+        );
+        return;
+      }
+      await fulfillJson(route, { execution: activeExecution });
+      return;
+    }
+    expect(route.request().method()).toBe("PATCH");
     const body = route.request().postDataJSON();
     state.arrivalBodies.push(body);
+    activeExecution =
+      state.arrivalBodies.length === 1
+        ? execution(1, "active", state.lockedAppointment)
+        : execution(1, "contract_met", state.lockedAppointment);
     await fulfillJson(route, {
-      execution:
-        state.arrivalBodies.length === 1
-          ? execution(1)
-          : execution(1, "contract_met"),
+      execution: activeExecution,
     });
   });
   await page.route("**/api/v1/share", async (route) => {
@@ -412,6 +461,58 @@ test("editing a selected appointment invalidates it and blocks recovery", async 
   expect(state.itineraryBodies).toEqual([]);
 });
 
+test("changing an appointment after failure clears stale recovery state", async ({
+  page,
+}) => {
+  await mockFlowApis(page, [verifiedOption]);
+  await page.unroute("**/api/v1/recover");
+  await page.route("**/api/v1/recover", (route) =>
+    fulfillJson(
+      route,
+      {
+        error: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "운영정보 연결을 확인하지 못했습니다.",
+        },
+      },
+      503,
+    ),
+  );
+
+  await reachAppointmentSelection(page);
+  await pressEnter(
+    page.getByRole("button", { name: "예약을 지키는 복구안 찾기" }),
+  );
+  await expect(
+    page.getByRole("heading", { name: "복구안을 만들지 못했어요" }),
+  ).toBeVisible();
+
+  await pressEnter(page.getByRole("button", { name: "조건 바꾸기" }));
+  const future = new Date(Date.now() + 180 * 60_000);
+  const futureDate = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(future);
+  const futureTime = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(future);
+  await page.getByLabel("도착 날짜").fill(futureDate);
+  await page.getByLabel("도착 시각").fill(futureTime);
+
+  await expect(
+    page.getByRole("heading", { name: "복구안을 만들지 못했어요" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(/조건이 바뀌었습니다.*이전 실패.*폐기했어요/),
+  ).toBeVisible();
+  await expect(page.getByText("검증 결과", { exact: true })).toHaveCount(0);
+});
+
 test("keyboard-only bridge recovery selects, applies, arrives, and resumes", async ({
   page,
 }) => {
@@ -454,7 +555,7 @@ test("keyboard-only bridge recovery selects, applies, arrives, and resumes", asy
   await pressEnter(verifiedSelection);
   await pressEnter(
     page.getByRole("button", {
-      name: `${verifiedOption.title}(으)로 이어가기`,
+      name: new RegExp(`${verifiedOption.title}.*이어가기`),
     }),
   );
 
@@ -501,10 +602,10 @@ test("an evidence-gap-only result cannot be selected, applied, or shared", async
     page.getByRole("button", { name: "공식 확인 전 적용 불가" }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "검증된 복구안을 선택해 주세요" }),
+    page.getByRole("button", { name: "복구안을 선택해 주세요" }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "선택한 복구 증명 공유" }),
+    page.getByRole("button", { name: "출발 전 판정 증명 링크 만들기" }),
   ).toBeDisabled();
   expect(state.applyBodies).toEqual([]);
   expect(state.shareCalls).toBe(0);
@@ -520,6 +621,9 @@ test("policy region selection and result review work with keyboard only", async 
         { code: "26", name: "부산광역시" },
       ],
     }),
+  );
+  await page.route("**/api/v1/regions/11/districts", (route) =>
+    fulfillJson(route, { districts: [] }),
   );
   await page.route("**/api/v1/insights/regions/11", (route) =>
     fulfillJson(route, {
@@ -561,6 +665,9 @@ test("policy region selection and result review work with keyboard only", async 
   const seoul = page.getByRole("button", { name: "서울특별시" });
   await expect(seoul).toBeVisible();
   await pressEnter(seoul);
+  await pressEnter(
+    page.getByRole("button", { name: /^서울특별시 전체로 보기/ }),
+  );
   await expect(
     page.getByRole("heading", { name: "서울특별시" }),
   ).toBeVisible();
@@ -569,7 +676,7 @@ test("policy region selection and result review work with keyboard only", async 
   await expectNoBlockingAccessibilityIssues(page, "policy results");
   await pressEnter(page.getByRole("button", { name: "다른 지역 보기" }));
   await expect(
-    page.getByRole("heading", { name: /어느 지역의.*빈틈을 보시겠어요/ }),
+    page.getByRole("heading", { name: /어느 지역을.*살펴볼까요/ }),
   ).toBeVisible();
 });
 

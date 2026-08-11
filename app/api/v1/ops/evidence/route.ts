@@ -34,7 +34,7 @@ const evidenceSchema = z
       .max(500)
       .refine(
         validArtifactReference,
-        "https://, r2:// 또는 sha256:<64 hex> 증빙 참조가 필요합니다.",
+        "https:// 또는 r2:// 원본 주소와 #sha256=<64 hex> 증빙 참조가 필요합니다.",
       ),
     reviewers: z
       .array(z.string().trim().min(2).max(120))
@@ -135,6 +135,8 @@ export async function POST(request: NextRequest) {
         status: evidence.validated
           ? "validated_pending_independent_audit"
           : "recorded_not_validated",
+        artifactRequirement:
+          "independent approval requires a reachable allowlisted artifact whose bytes match the sha256 fragment",
         evidence,
       },
       { status: evidence.validated ? 201 : 202 },

@@ -25,13 +25,36 @@ type EvidenceReport = {
   generatedAt: string;
 };
 
-const STATUS_META: Record<
-  EvidenceStatus,
-  { label: string; symbol: string }
-> = {
-  verified: { label: "확보", symbol: "✓" },
-  needs_field_evidence: { label: "현장 검증 필요", symbol: "·" },
-  release_blocker: { label: "출시 차단", symbol: "!" },
+const STATUS_META: Record<EvidenceStatus, { ko: string; en: string; symbol: string }> = {
+  verified: { ko: "확보", en: "Verified", symbol: "✓" },
+  needs_field_evidence: {
+    ko: "현장 검증 필요",
+    en: "Field evidence required",
+    symbol: "·",
+  },
+  release_blocker: { ko: "출시 차단", en: "Release blocker", symbol: "!" },
+};
+
+const EVIDENCE_TITLES_EN: Record<string, string> = {
+  deployment_commit_traceability: "Deployment-to-commit traceability",
+  partner_embed_origin_policy: "Exact-origin policy for partner iframes",
+  journey_completion_contract: "End-to-end journey completion",
+  travel_purpose_preservation: "Preservation of travel intent",
+  platform_runtime: "Itinerary and regional-evidence storage",
+  stable_session_signing: "Stable anonymous-session signing",
+  release_secret_separation: "Release-secret quality and separation",
+  independent_field_evidence_auditor: "Independent approval of field evidence",
+  eight_kto_openapis: "All 8 KTO OpenAPIs in production",
+  managed_external_providers: "Production routing, mapping and weather providers",
+  tripbreak_100: "K-TRIPBREAK 100 disruption scenarios",
+  recovery_speed_and_false_positive: "Recovery latency and zero critical false positives",
+  real_user_usability: "Independent usability evidence across 3 locales",
+  field_journeys_six_regions: "Observed field journeys across 6 region types",
+  comparative_benchmark_20: "20-scenario, 4-method comparison",
+  practitioner_review: "Independent tourism, municipal and accessibility review",
+  legal_and_operational_approvals: "Legal, data and operational approvals",
+  partner_embed_pilot: "External partner iframe pilot",
+  participant_consent_ledger: "Participant consent and withdrawal ledger",
 };
 
 /* 이 화면의 상태가 언제 확인된 것인지는 상태 자체만큼 중요하다. 예약 점검이
@@ -64,7 +87,12 @@ function oldestProbeCheckedAt(runtime: EvidenceRuntime | null): string | undefin
   return label;
 }
 
-export function LaunchEvidencePanel() {
+export function LaunchEvidencePanel({
+  language = "ko",
+}: {
+  language?: "ko" | "en";
+}) {
+  const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [report, setReport] = useState<EvidenceReport | null>(null);
   const [runtime, setRuntime] = useState<EvidenceRuntime | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">(
@@ -136,13 +164,18 @@ export function LaunchEvidencePanel() {
     >
       <div className={styles.heading}>
         <div>
-          <p>서비스 준비 현황</p>
+          <p>{tr("서비스 준비 현황", "Release evidence")}</p>
           <h2 id="launch-evidence-title">
-            무엇이 준비됐고 무엇이 남았는지 그대로 적었어요
+            {tr(
+              "무엇이 준비됐고 무엇이 남았는지 그대로 적었어요",
+              "What is verified—and what still blocks release",
+            )}
           </h2>
           <span>
-            구현 완료와 현장 검증을 섞어 표시하지 않습니다. 아직 없는
-            증거는 그대로 ‘필요’로 남깁니다.
+            {tr(
+              "구현 완료와 현장 검증을 섞어 표시하지 않습니다. 아직 없는 증거는 그대로 ‘필요’로 남깁니다.",
+              "Implementation and independently approved field evidence are reported separately. Missing proof stays visibly incomplete.",
+            )}
           </span>
         </div>
         {report && (
@@ -150,25 +183,27 @@ export function LaunchEvidencePanel() {
             <strong>
               {report.verifiedCount}/{report.totalCount}
             </strong>
-            <small>확보된 증거</small>
+            <small>{tr("확보된 증거", "verified controls")}</small>
           </div>
         )}
       </div>
 
       {state === "loading" && (
         <div className={styles.state} role="status">
-          준비 현황을 확인하고 있어요.
+          {tr("준비 현황을 확인하고 있어요.", "Checking release evidence.")}
         </div>
       )}
 
       {state === "error" && (
         <div className={`${styles.state} ${styles.error}`} role="alert">
           <span>
-            준비 현황을 지금 불러오지 못했어요. 여행 복구 기능은 그대로
-            사용할 수 있습니다.
+            {tr(
+              "준비 현황을 지금 불러오지 못했어요. 여행 복구 기능은 그대로 사용할 수 있습니다.",
+              "Release evidence is unavailable right now. Trip recovery remains available.",
+            )}
           </span>
           <button type="button" onClick={() => void load()}>
-            다시 확인
+            {tr("다시 확인", "Try again")}
           </button>
         </div>
       )}
@@ -178,13 +213,22 @@ export function LaunchEvidencePanel() {
           <div className={styles.summary} data-overall={report.overall}>
             <strong>
               {report.overall === "ready"
-                ? "출시 증거가 모두 확보됐어요"
+                ? tr("출시 증거가 모두 확보됐어요", "Every release control is verified")
                 : report.overall === "blocked"
-                  ? "운영 설정 차단 항목부터 해결해야 해요"
-                  : "제품은 동작하지만 현장 증거 수집이 남았어요"}
+                  ? tr(
+                      "운영 설정 차단 항목부터 해결해야 해요",
+                      "A release-blocking control must be resolved first",
+                    )
+                  : tr(
+                      "제품은 동작하지만 현장 증거 수집이 남았어요",
+                      "The product runs, but independent field evidence is incomplete",
+                    )}
             </strong>
             <span>
-              각 항목의 다음 행동까지 완료해야 ‘확보’로 바뀝니다.
+              {tr(
+                "각 항목의 다음 행동까지 완료해야 ‘확보’로 바뀝니다.",
+                "A control changes to verified only after its evidence and approval requirements are complete.",
+              )}
             </span>
           </div>
 
@@ -198,12 +242,33 @@ export function LaunchEvidencePanel() {
                   </span>
                   <div>
                     <div className={styles.itemHeading}>
-                      <strong>{item.title}</strong>
-                      <b>{meta.label}</b>
+                      <strong>
+                        {language === "en"
+                          ? EVIDENCE_TITLES_EN[item.id] ?? "Release evidence control"
+                          : item.title}
+                      </strong>
+                      <b>{language === "en" ? meta.en : meta.ko}</b>
                     </div>
-                    <p>{item.evidence}</p>
+                    <p>
+                      {language === "en"
+                        ? item.status === "verified"
+                          ? "The currently published release record verifies this control."
+                          : item.status === "release_blocker"
+                            ? "This control is not verified, so the deployment remains blocked for release."
+                            : "Independent field evidence has not yet been approved for this control."
+                        : item.evidence}
+                    </p>
+                    {language === "en" && (
+                      <small lang="ko">
+                        Official Korean audit detail · {item.evidence}
+                      </small>
+                    )}
                     {item.nextAction && (
-                      <small>다음 행동 · {item.nextAction}</small>
+                      <small lang={language === "en" ? "ko" : undefined}>
+                        {language === "en"
+                          ? `Official Korean required action · ${item.nextAction}`
+                          : `다음 행동 · ${item.nextAction}`}
+                      </small>
                     )}
                   </div>
                 </li>
@@ -215,26 +280,29 @@ export function LaunchEvidencePanel() {
             <dl className={styles.checkedAt}>
               {sourceCheckedAt && (
                 <div>
-                  <dt>관광정보 8종 마지막 점검</dt>
+                   <dt>{tr("관광정보 8종 마지막 점검", "Oldest check across the 8 tourism APIs")}</dt>
                   <dd>
                     <time dateTime={sourceCheckedAt}>
-                      {formatDate(sourceCheckedAt)}
+                       {formatDate(sourceCheckedAt, language)}
                     </time>
                   </dd>
                 </div>
               )}
               {probeCheckedAt && (
                 <div>
-                  <dt>외부 제공자 마지막 점검</dt>
+                   <dt>{tr("외부 제공자 마지막 점검", "Oldest external-provider check")}</dt>
                   <dd>
                     <time dateTime={probeCheckedAt}>
-                      {formatDate(probeCheckedAt)}
+                       {formatDate(probeCheckedAt, language)}
                     </time>
                   </dd>
                 </div>
               )}
               <p>
-                매시 예약 점검이 갱신합니다. 위 판정은 이 시각 기준입니다.
+                 {tr(
+                   "매시 예약 점검이 갱신합니다. 위 판정은 이 시각 기준입니다.",
+                   "Scheduled checks refresh hourly. The status above is valid only for these timestamps.",
+                 )}
               </p>
             </dl>
           )}

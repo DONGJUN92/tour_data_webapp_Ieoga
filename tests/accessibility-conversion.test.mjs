@@ -205,30 +205,23 @@ test("상세 조회가 확인하지 못하면 공백은 유지되되 후보는 �
   );
 });
 
-test("확인되지 않은 조건은 하드 차단이 아니라 명시적 동의로 열린다", async () => {
+test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·공유를 막는다", async () => {
   const flow = await readFile(
     new URL("../app/flow/FlowApp.tsx", import.meta.url),
     "utf8",
   );
-  /* 기획 5.4는 "제외하거나 사용자 확인을 요구한다"이고, 예전 구현은 후자가
-     없어 전환율이 구조적으로 0이었다. */
-  assert.match(flow, /acknowledgedOptionId/);
-  assert.match(flow, /selectedNeedsAcknowledgement/);
-  assert.match(flow, /확인되지 않은 조건을 알고 이어갑니다/);
-  /* 동의 없이는 여전히 막혀야 한다. */
-  assert.match(
-    flow,
-    /needsAcknowledgement && acknowledgedOptionId !== selectedOption\.id/,
-  );
-  /* 후보를 바꾸면 동의가 따라가서는 안 된다. */
-  assert.match(flow, /setAcknowledgedOptionId\(""\)/);
-  /* 공유는 완전 검증된 결과에만 허용한다 — 증명서는 다른 등급의 산출물이다. */
+  /* 운영·접근성 등 필수 근거가 빠진 후보를 사용자의 동의만으로 검증된 것처럼
+     승격하지 않는다. 같은 공용 안전 판정을 선택·적용·공유가 모두 사용한다. */
+  assert.match(flow, /optionApplicationSafety\(option, language\)/);
+  assert.match(flow, /disabled=\{isBlocked\}/);
+  const apply = flow.slice(flow.indexOf("const applySelectedOption"));
+  assert.match(apply.slice(0, 1_200), /if \(!safety\.canApply\)/);
   const share = flow.slice(flow.indexOf("const shareSelectedOption"));
   assert.match(
-    share.slice(0, 600),
-    /confirmationRequired \|\|/,
-    "공유 게이트가 함께 풀려 미확인 결과의 증명서가 공유된다",
+    share.slice(0, 1_200),
+    /!optionApplicationSafety\(selectedOption, language\)\.canApply/,
   );
+  assert.match(flow, /공식 확인 전에는 선택할 수 없습니다/);
 });
 
 test("대여 정보만 있는 값은 내부 동선 확인으로 승격되지 않는다", async () => {

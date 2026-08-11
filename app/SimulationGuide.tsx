@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
   useId,
   useRef,
@@ -14,28 +15,41 @@ export type SimulationGuideProps = {
   onClose: () => void;
   onDismiss?: () => void;
   onLoadPracticeItinerary: () => void;
+  language?: "ko" | "en";
 };
 
 const GUIDE_STEPS = [
   {
-    title: "원래 여행을 먼저 저장해요",
-    description:
+    titleKo: "원래 여행을 먼저 저장해요",
+    titleEn: "Save the original trip first",
+    descriptionKo:
       "꼭 지켜야 할 예약과 바꿔도 되는 장소를 알려주면, 이어가가 원래 여행의 기준을 기억해요.",
+    descriptionEn:
+      "Tell us which bookings must stay fixed and which stops may change. IEOGA keeps that original contract.",
   },
   {
-    title: "지금 있는 곳을 편하게 찾아요",
-    description:
+    titleKo: "지금 있는 곳을 편하게 찾아요",
+    titleEn: "Confirm where you are",
+    descriptionKo:
       "위치를 허용하면 자동으로 입력하고, 허용하지 않으면 장소 이름만 검색해요. 위·경도는 입력하지 않아도 돼요.",
+    descriptionEn:
+      "Use device location or search by place name. You never need to type coordinates.",
   },
   {
-    title: "여행이 끊긴 이유를 한 번만 눌러요",
-    description:
+    titleKo: "여행이 끊긴 이유를 한 번만 눌러요",
+    titleEn: "Choose what disrupted the trip",
+    descriptionKo:
       "비, 이동 지연, 혼잡, 걷기 어려움 중 지금 상황과 가장 가까운 항목을 선택해요.",
+    descriptionEn:
+      "Choose rain, delay, crowding or reduced walking—whichever best describes the disruption.",
   },
   {
-    title: "복구한 여행을 끝까지 이어가요",
-    description:
+    titleKo: "복구한 여행을 끝까지 이어가요",
+    titleEn: "Follow the recovery through",
+    descriptionKo:
       "복구안 적용, 길찾기, 도착 확인을 차례로 진행하면 다음 예약과 남은 원래 일정까지 완주할 수 있어요.",
+    descriptionEn:
+      "Apply the verified option, follow navigation and continue through the protected appointment and remaining itinerary.",
   },
 ] as const;
 
@@ -55,6 +69,7 @@ export function SimulationGuide({
   onClose,
   onDismiss,
   onLoadPracticeItinerary,
+  language = "ko",
 }: SimulationGuideProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -63,72 +78,56 @@ export function SimulationGuide({
 
   useEffect(() => {
     if (!isOpen) return;
-
     const previouslyFocused =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
     const previousOverflow = document.body.style.overflow;
-    const focusTimer = window.setTimeout(() => {
-      closeButtonRef.current?.focus();
-    }, 0);
-
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
     document.body.style.overflow = "hidden";
 
-    function handleDocumentKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-
-      if (event.key !== "Tab") return;
-
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-
-      const focusableElements = Array.from(
-        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter(
-        (element) =>
-          !element.hasAttribute("disabled") &&
-          element.getAttribute("aria-hidden") !== "true",
-      );
-
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-
-      const first = focusableElements[0];
-      const last = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-
-      if (
-        event.shiftKey &&
-        (activeElement === first || !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last || !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
     }
 
-    document.addEventListener("keydown", handleDocumentKeyDown);
-
+    document.addEventListener("keydown", handleEscape);
     return () => {
       window.clearTimeout(focusTimer);
-      document.removeEventListener("keydown", handleDocumentKeyDown);
+      document.removeEventListener("keydown", handleEscape);
       document.body.style.overflow = previousOverflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, [isOpen, onClose]);
+
+  function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+    ).filter(
+      (element) =>
+        !element.hasAttribute("disabled") &&
+        element.getAttribute("aria-hidden") !== "true" &&
+        element.getClientRects().length > 0,
+    );
+    event.preventDefault();
+    if (!focusable.length) {
+      dialog.focus();
+      return;
+    }
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const direction = event.shiftKey ? -1 : 1;
+    const nextIndex =
+      currentIndex < 0
+        ? event.shiftKey
+          ? focusable.length - 1
+          : 0
+        : (currentIndex + direction + focusable.length) % focusable.length;
+    focusable[nextIndex].focus();
+  }
 
   if (!isOpen) return null;
 
@@ -149,32 +148,47 @@ export function SimulationGuide({
         aria-describedby={descriptionId}
         aria-busy={isLoading}
         tabIndex={-1}
+        onKeyDown={handleDialogKeyDown}
       >
         <header className={styles.header}>
           <div>
-            <p className={styles.kicker}>처음이라면 1분이면 충분해요</p>
-            <h2 id={titleId}>여행이 끊겼을 때, 이렇게 이어가요</h2>
+            <p className={styles.kicker}>
+              {language === "en" ? "A one-minute introduction" : "처음이라면 1분이면 충분해요"}
+            </p>
+            <h2 id={titleId}>
+              {language === "en"
+                ? "When travel changes, keep what matters"
+                : "여행이 끊겼을 때, 이렇게 이어가요"}
+            </h2>
           </div>
           <button
             ref={closeButtonRef}
             type="button"
             className={styles.closeButton}
             onClick={onClose}
-            aria-label="사용 가이드 닫기"
+            aria-label={
+              language === "en"
+                ? "Close getting-started guide"
+                : "사용 가이드 닫기"
+            }
           >
             <span aria-hidden="true">×</span>
           </button>
         </header>
 
         <p id={descriptionId} className={styles.introduction}>
-          이어가는 전체 일정을 다시 짜지 않아요. 지금 바꿔야 할 한 곳만
-          복구하고, 다음 예약부터 원래 여행으로 돌아가게 도와줘요.
+          {language === "en"
+            ? "IEOGA does not rebuild your whole day. It changes only the disrupted stop and protects the next fixed appointment."
+            : "이어가는 전체 일정을 다시 짜지 않아요. 지금 바꿔야 할 한 곳만 복구하고, 다음 예약부터 원래 여행으로 돌아가게 도와줘요."}
         </p>
 
-        <ol className={styles.steps} aria-label="이어가 사용 순서">
+        <ol
+          className={styles.steps}
+          aria-label={language === "en" ? "How to use IEOGA" : "이어가 사용 순서"}
+        >
           {GUIDE_STEPS.map((step, index) => (
             <li
-              key={step.title}
+              key={step.titleKo}
               className={styles.step}
               data-guide-step={index + 1}
             >
@@ -182,8 +196,10 @@ export function SimulationGuide({
                 {index + 1}
               </span>
               <div>
-                <h3>{step.title}</h3>
-                <p>{step.description}</p>
+                <h3>{language === "en" ? step.titleEn : step.titleKo}</h3>
+                <p>
+                  {language === "en" ? step.descriptionEn : step.descriptionKo}
+                </p>
               </div>
             </li>
           ))}
@@ -205,23 +221,29 @@ export function SimulationGuide({
             {isLoading ? (
               <>
                 <span className={styles.spinner} aria-hidden="true" />
-                실제 장소를 찾는 중…
+                {language === "en" ? "Finding real places…" : "실제 장소를 찾는 중…"}
               </>
+            ) : language === "en" ? (
+              "Load a practice trip with real places"
             ) : (
               "실제 장소로 연습 일정 불러오기"
             )}
           </button>
           <p className={styles.actionNote} aria-live="polite">
             {isLoading
-              ? "연결된 장소 검색에서 연습할 여행지를 확인하고 있어요."
-              : "연결된 장소 검색 결과를 불러오며, 장소와 시간은 언제든 바꿀 수 있어요."}
+              ? language === "en"
+                ? "Checking connected place search for a practice itinerary."
+                : "연결된 장소 검색에서 연습할 여행지를 확인하고 있어요."
+              : language === "en"
+                ? "This loads connected search results; you can change every place and time."
+                : "연결된 장소 검색 결과를 불러오며, 장소와 시간은 언제든 바꿀 수 있어요."}
           </p>
           <button
             type="button"
             className={styles.dismissButton}
             onClick={onDismiss ?? onClose}
           >
-            다음에 볼게요
+            {language === "en" ? "Not now" : "다음에 볼게요"}
           </button>
         </div>
       </div>

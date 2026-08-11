@@ -1,0 +1,1 @@
+pilot_id,partner_id,partner_origin,browser,device_class,run_at,iframe_rendered,session_ready,recovery_completed,critical_failure,artifact_reference,reviewer_id,commit_sha,deployment_url

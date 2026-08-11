@@ -241,32 +241,49 @@ test("bridge input rejects blank, zero, and overseas coordinates", async () => {
   assert.equal(parseKoreaCoordinate("126.9780", 124, 132), 126.978);
 });
 
-test("current-origin place search sends optional coordinates only in a POST body", async () => {
-  const product = await source("app/ProductApp.tsx");
-  const searchOrigin =
-    product.match(
-      /async function searchOriginPlace\([\s\S]*?(?=\n  function selectOriginPlace)/,
-    )?.[0] ?? "";
+test("KST evidence times follow the selected interface language", async () => {
+  const { formatDate, formatIsoTime } = await import(
+    "../app/product-app-model.ts"
+  );
+  const instant = "2026-08-09T01:30:00.000Z";
 
-  assert.ok(searchOrigin, "searchOriginPlace source must be present");
-  assert.match(searchOrigin, /purpose:\s*"current_origin"/);
-  assert.match(searchOrigin, /parseKoreaCoordinate\(latitude,\s*32,\s*39\.8\)/);
-  assert.match(searchOrigin, /parseKoreaCoordinate\(longitude,\s*124,\s*132\)/);
+  assert.match(formatIsoTime(instant, "ko"), /오전\s*10:30/);
+  assert.match(formatIsoTime(instant, "en"), /10:30\s*AM/i);
+  assert.doesNotMatch(formatIsoTime(instant, "en"), /[가-힣]/u);
+  assert.equal(formatIsoTime(undefined, "en"), "Arrival time unavailable");
+  assert.doesNotMatch(formatDate(instant, "en"), /[가-힣]/u);
+  assert.equal(formatDate(undefined, "en"), "Reference date unavailable");
+});
+
+test("transparency views use valid landmarks and pass language to evidence UI", async () => {
+  const [product, evidencePanel] = await Promise.all([
+    source("app/ProductApp.tsx"),
+    source("app/LaunchEvidencePanel.tsx"),
+  ]);
+
+  assert.match(product, /<LaunchEvidencePanel language=\{language\} \/>/);
+  assert.match(product, /id="transparency-title"/);
+  assert.doesNotMatch(product, /aria-labelledby="tab-(?:insights|transparency)"/);
+  assert.match(evidencePanel, /EVIDENCE_TITLES_EN/);
+  assert.match(evidencePanel, /formatDate\(sourceCheckedAt, language\)/);
+});
+
+test("current-origin place terms stay out of URLs and use a semantic POST body", async () => {
+  const [picker, wizard] = await Promise.all([
+    source("app/ManualLocationPicker.tsx"),
+    source("app/plan/PlanWizard.tsx"),
+  ]);
+  assert.match(picker, /purpose\?: "current_origin" \| "saved_stop"/);
+  assert.match(picker, /purpose = "current_origin"/);
   assert.match(
-    searchOrigin,
-    /fetchJson\("\/api\/v1\/places\/search",\s*\{[\s\S]*?method:\s*"POST"/,
+    picker,
+    /postJson\("\/api\/v1\/places\/search", \{[\s\S]*?keyword: trimmed,[\s\S]*?purpose,[\s\S]*?fallback: "auto"/,
   );
-  assert.match(searchOrigin, /body:\s*JSON\.stringify\(searchInput\)/);
-  assert.match(searchOrigin, /latitude:\s*currentLatitude/);
-  assert.match(searchOrigin, /longitude:\s*currentLongitude/);
-  assert.doesNotMatch(
-    searchOrigin,
-    /query\.set\(\s*["'](?:latitude|longitude)["']/,
-  );
-  assert.doesNotMatch(
-    searchOrigin,
-    /\/api\/v1\/places\/search\?/,
-  );
+  assert.match(picker, /method: "POST"/);
+  assert.match(picker, /body: JSON\.stringify\(body\)/);
+  assert.doesNotMatch(picker, /\/api\/v1\/places\/search\?/);
+  assert.doesNotMatch(picker, /query\.set\(/);
+  assert.equal((wizard.match(/purpose="saved_stop"/g) ?? []).length, 2);
 });
 
 test("all eight KTO contracts are registered with nationwide source hooks", async () => {
@@ -357,11 +374,12 @@ test("official legal-dong codes normalize between TourAPI and analysis APIs", as
 
 test("recovery request schema enforces Korea bounds and hard input limits", async () => {
   const { recoveryRequestSchema } = await import("../lib/recovery/schema.ts");
+  const base = Date.now() + 60 * 60_000;
   const itinerary = {
     title: "서울 하루 여행",
     timezone: "Asia/Seoul",
     audience: "general",
-    occurredAt: "2026-07-16T10:30:00+09:00",
+    occurredAt: new Date(base + 30 * 60_000).toISOString(),
     disruptedNodeId: "current_visit",
     nextFixedNodeId: "fixed_lunch",
     nodes: [
@@ -370,7 +388,7 @@ test("recovery request schema enforces Korea bounds and hard input limits", asyn
         sequence: 0,
         type: "visit",
         title: "현재 관람",
-        startAt: "2026-07-16T10:00:00+09:00",
+        startAt: new Date(base).toISOString(),
         locked: false,
         reservation: false,
       },
@@ -379,7 +397,7 @@ test("recovery request schema enforces Korea bounds and hard input limits", asyn
         sequence: 1,
         type: "reservation",
         title: "예약 식사",
-        startAt: "2026-07-16T12:30:00+09:00",
+        startAt: new Date(base + 150 * 60_000).toISOString(),
         locked: true,
         reservation: true,
         location: {
@@ -513,14 +531,15 @@ test("registered itinerary requires an unlocked disruption and a future fixed ap
     itineraryRegistrationSchema,
     recoveryRequestSchema,
   } = await import("../lib/recovery/schema.ts");
+  const base = Date.now() + 60 * 60_000;
   const nodes = [
     {
       id: "current_visit",
       sequence: 0,
       type: "visit",
       title: "현재 관람",
-      startAt: "2026-07-16T10:00:00+09:00",
-      endAt: "2026-07-16T11:00:00+09:00",
+      startAt: new Date(base).toISOString(),
+      endAt: new Date(base + 60 * 60_000).toISOString(),
       durationMinutes: 60,
       locked: false,
       reservation: false,
@@ -537,8 +556,8 @@ test("registered itinerary requires an unlocked disruption and a future fixed ap
       sequence: 1,
       type: "reservation",
       title: "예약 식사",
-      startAt: "2026-07-16T12:30:00+09:00",
-      endAt: "2026-07-16T13:30:00+09:00",
+      startAt: new Date(base + 150 * 60_000).toISOString(),
+      endAt: new Date(base + 210 * 60_000).toISOString(),
       locked: true,
       reservation: true,
       location: {
@@ -560,6 +579,57 @@ test("registered itinerary requires an unlocked disruption and a future fixed ap
     itineraryRegistrationSchema.safeParse(registration).success,
     true,
   );
+  assert.equal(
+    itineraryRegistrationSchema.safeParse({
+      ...registration,
+      nodes: nodes.map((node, index) => ({
+        ...node,
+        startAt: new Date(Date.now() - (120 - index * 30) * 60_000).toISOString(),
+        endAt: new Date(Date.now() - (90 - index * 30) * 60_000).toISOString(),
+      })),
+    }).success,
+    false,
+    "이미 지난 일정에는 실행 가능한 잠금 목적지가 없으므로 저장을 거부해야 한다",
+  );
+  const previousDayStart = Date.now() - 25 * 60 * 60_000;
+  assert.equal(
+    itineraryRegistrationSchema.safeParse({
+      ...registration,
+      nodes: [
+        {
+          ...nodes[0],
+          startAt: new Date(previousDayStart).toISOString(),
+          endAt: new Date(previousDayStart + 30 * 60_000).toISOString(),
+        },
+        nodes[1],
+      ],
+    }).success,
+    false,
+    "미래 잠금 일정이 있어도 이전 날짜 노드를 섞어 새 일정으로 저장하면 안 된다",
+  );
+  assert.equal(
+    itineraryRegistrationSchema.safeParse({
+      ...registration,
+      nodes: [
+        { ...nodes[0], startAt: nodes[1].startAt },
+        { ...nodes[1], startAt: nodes[0].startAt },
+      ],
+    }).success,
+    false,
+    "저장과 복구가 같은 단조 증가 시간 계약을 사용해야 한다",
+  );
+  assert.equal(
+    itineraryRegistrationSchema.safeParse({
+      ...registration,
+      nodes: nodes.map((node) => ({
+        ...node,
+        locked: false,
+        reservation: false,
+      })),
+    }).success,
+    false,
+    "목적지가 있는 미래 잠금 일정이 하나도 없으면 저장하지 않아야 한다",
+  );
 
   const request = {
     origin: nodes[0].location,
@@ -571,7 +641,7 @@ test("registered itinerary requires an unlocked disruption and a future fixed ap
     radiusMeters: 5_000,
     itinerary: {
       ...registration,
-      occurredAt: "2026-07-16T10:30:00+09:00",
+      occurredAt: new Date(base + 30 * 60_000).toISOString(),
       disruptedNodeId: "current_visit",
       nextFixedNodeId: "fixed_lunch",
     },
@@ -592,7 +662,7 @@ test("registered itinerary requires an unlocked disruption and a future fixed ap
       ...request,
       itinerary: {
         ...request.itinerary,
-        occurredAt: "2026-07-16T13:00:00+09:00",
+        occurredAt: new Date(base + 180 * 60_000).toISOString(),
       },
     }).success,
     false,

@@ -191,8 +191,12 @@ test("자차를 고르면 자동차 경로 제공자로 계산하고 도보를 �
       "자차 결과에 보행 경로라고 적혀 있다",
     );
     assert.ok(
-      option.why.some((line) => line.includes("예상 택시요금")),
-      "제공자가 준 예상 요금을 표기하지 않았다",
+      option.why.some((line) => line.includes("자차 비용으로 표시하지 않습니다")),
+      "택시 추정값을 자차 비용과 분리해 설명하지 않았다",
+    );
+    assert.ok(
+      !option.why.some((line) => line.includes("8,420원")),
+      "택시 추정값을 자차 비용처럼 숫자로 노출했다",
     );
   });
 });

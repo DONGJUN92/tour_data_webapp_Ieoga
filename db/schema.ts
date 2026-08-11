@@ -143,6 +143,7 @@ export const recoveryRuns = sqliteTable(
     lockedNodesPreserved: integer("locked_nodes_preserved"),
     nextFixedPreserved: integer("next_fixed_preserved", { mode: "boolean" }),
     decisionProofJson: text("decision_proof_json"),
+    itineraryImpactHash: text("itinerary_impact_hash"),
     counterfactualJson: text("counterfactual_json"),
     analyticsEligible: integer("analytics_eligible", { mode: "boolean" })
       .notNull()
@@ -186,6 +187,15 @@ export const recoveryOptions = sqliteTable(
     scheduleDiffJson: text("schedule_diff_json"),
     continuityProofJson: text("continuity_proof_json"),
     applicationSnapshotJson: text("application_snapshot_json"),
+    safetyContractVersion: text("safety_contract_version"),
+    availabilityStatus: text("availability_status"),
+    availabilityCheckedAt: text("availability_checked_at"),
+    visitStartAt: text("visit_start_at"),
+    visitEndAt: text("visit_end_at"),
+    confirmationRequired: integer("confirmation_required", {
+      mode: "boolean",
+    }),
+    evidenceGapCount: integer("evidence_gap_count"),
     createdAt: createdAt(),
   },
   (table) => [
@@ -252,6 +262,7 @@ export const journeyExecutions = sqliteTable(
     activatedAt: text("activated_at").notNull(),
     outcomePromptAt: text("outcome_prompt_at").notNull(),
     contractMetAt: text("contract_met_at"),
+    contractMissedAt: text("contract_missed_at"),
     completedAt: text("completed_at"),
     updatedAt: text("updated_at").notNull(),
     expiresAt: text("expires_at").notNull(),

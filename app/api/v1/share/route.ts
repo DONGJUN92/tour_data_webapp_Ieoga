@@ -5,6 +5,7 @@ import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 
@@ -18,6 +19,8 @@ const shareSchema = z.object({
 export async function POST(request: NextRequest) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) return unsafeMutation;
   const sessionId = readSessionId(request);
   if (!sessionId) {
     return jsonResponse(
@@ -86,12 +89,21 @@ export async function POST(request: NextRequest) {
         error: {
           code: result.reason,
           message:
-            result.reason === "NOT_FOUND"
+            result.reason === "INVALID_STATE"
+              ? "안전 근거가 만료되었거나 일정이 변경되었습니다. 복구안을 다시 생성해 주세요."
+              : result.reason === "NOT_FOUND"
               ? "공유할 수 있는 복구 결과를 찾지 못했습니다."
               : "현재 공유 링크를 만들지 못했습니다.",
         },
       },
-      { status: result.reason === "NOT_FOUND" ? 404 : 503 },
+      {
+        status:
+          result.reason === "NOT_FOUND"
+            ? 404
+            : result.reason === "INVALID_STATE"
+              ? 409
+              : 503,
+      },
     );
   }
 

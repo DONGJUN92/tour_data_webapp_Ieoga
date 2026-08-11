@@ -1,0 +1,1 @@
+journey_id,participant_id,observed_at,region_class,area_code,district_code,city,incident,network_profile,device_class,completed,constraint_preserved,critical_false_positive,actual_closed_recommended,appointment_missed,artifact_reference,reviewer_id,commit_sha,deployment_url

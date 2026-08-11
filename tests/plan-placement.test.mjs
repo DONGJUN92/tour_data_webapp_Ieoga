@@ -142,10 +142,11 @@ test("일정 등록은 한 화면에 한 질문만 묻는다", async () => {
   const wizard = await src("../app/plan/PlanWizard.tsx");
   assert.match(wizard, /const STEPS: Step\[\] = \["date", "start", "appointment", "confirm"\];/);
   /* 언제든 뒤로 갈 수 있어야 한다. 되돌릴 수 없는 마법사는 폼보다 나쁘다. */
-  assert.match(wizard, /const back = \(\) => \{/);
+  assert.match(wizard, /function back\(\) \{/);
   assert.match(wizard, /role="progressbar"/);
-  /* 저장 실패는 삼키지 않는다 — 서버가 실어 보낸 원인까지 보여 준다. */
-  assert.match(wizard, /payload\.error\?\.cause/);
+  /* DB 원문은 노출하지 않고 공개 request id로 운영 로그와 연결한다. */
+  assert.doesNotMatch(wizard, /payload\.error\?\.cause/);
+  assert.match(wizard, /response\.headers\.get\("x-request-id"\)/);
   /* 약속 시각은 30분 단위. 여행자는 분 단위로 계획하지 않는다. */
   assert.match(wizard, /HALF_HOUR_TIMES/);
 });
@@ -154,13 +155,13 @@ test("여행지를 원하는 만큼 이어 붙일 수 있다", async () => {
   const wizard = await src("../app/plan/PlanWizard.tsx");
   /* 약속 하나로 끝나지 않는다. */
   assert.match(wizard, /place: ManualPlace; time: string; locked: boolean/);
-  assert.match(wizard, /더 이상 등록할 여행지가 없어요/);
+  assert.match(wizard, /일정 검토하기/);
   assert.match(wizard, /번째로 갈 곳이 있나요/);
 
   /* 고른 곳과 시각은 **검색창보다 위에** 둔다. 아래에 두었더니 장소를 고른
      뒤에도 화면 끝에 가려 다음에 무엇을 할지 보이지 않았다. */
   assert.ok(
-    wizard.indexOf("몇 시 약속인가요") < wizard.indexOf("onPick={(place) => setPending(place)}"),
+    wizard.indexOf("몇 시 약속인가요") < wizard.indexOf("setPending(place);"),
     "시각 블록이 다시 검색창 아래로 내려갔다",
   );
 
@@ -187,8 +188,9 @@ test("뒤로 가기는 한 걸음씩 되돌린다", async () => {
   );
   /* 담는 중이던 것이 먼저 취소된다. */
   assert.match(wizard, /if \(pending\) \{[\s\S]{0,120}?return;/);
-  /* 나가는 단계의 입력만 비운다. 앞 단계의 답은 건드리지 않는다. */
-  assert.match(wizard, /if \(target === "start"\) setStart\(null\);/);
+  /* 앞 단계의 답을 유지해야 뒤로 갔다 다시 와도 출발지를 재검색하지 않는다. */
+  assert.doesNotMatch(wizard, /setStart\(null\)/);
+  assert.match(wizard, /setStep\(target\);/);
 });
 
 test("여행지 번호가 목록과 제목에서 어긋나지 않는다", async () => {
@@ -227,7 +229,8 @@ test("고르개 문구가 그 화면이 묻는 것과 맞는다", async () => {
   assert.match(picker, /heading \?\? tr\("현재 장소 직접 입력"/);
 
   const wizard = await src("../app/plan/PlanWizard.tsx");
-  assert.match(wizard, /heading="출발지 찾기"/);
+  assert.match(wizard, /heading=\{tr\("출발지 찾기"/);
+  assert.equal((wizard.match(/purpose="saved_stop"/g) ?? []).length, 2);
   assert.match(wizard, /"약속 장소 찾기"/);
   assert.match(wizard, /"갈 곳 찾기"/);
   /* 마법사 어디에도 `현재 장소`가 남으면 안 된다. */

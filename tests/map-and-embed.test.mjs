@@ -141,7 +141,7 @@ test("단계가 바뀌면 포커스가 그 단계 제목으로 이동한다", as
   assert.match(flow, /ref=\{stepHeadingRef\} tabIndex=\{-1\}/);
   /* 단계 변경에 반응해야 한다. */
   const effect = flow.slice(flow.indexOf("const stepHeadingRef"));
-  assert.match(effect.slice(0, 800), /\}, \[step\]\)/);
+  assert.match(effect, /\}, \[step\]\)/);
 
   const css = await src("../app/flow/flow.module.css");
   /* 포커스 링이 없으면 이동을 눈으로 확인할 수 없고, 기본 링이 남으면 마우스

@@ -1,0 +1,1 @@
+participant_id,user_segment,locale,device_class,first_time_visitor,task_id,started_at,completed,completion_seconds,constraint_preserved,critical_safety_incident,clarity_score_1_to_5,trust_score_1_to_5,artifact_reference,consent_reference,commit_sha,deployment_url

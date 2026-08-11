@@ -1,5 +1,6 @@
 import Link from "next/link";
 import styles from "../system-state.module.css";
+import { OfflineJourneySnapshot } from "./OfflineJourneySnapshot";
 
 export const metadata = {
   title: "오프라인",
@@ -18,6 +19,7 @@ export default function OfflinePage() {
           새 관광지와 이동 시간은 실시간 공식 데이터를 확인해야 합니다. 연결이
           복구되면 저장된 화면으로 돌아가 다시 시도해 주세요.
         </p>
+        <OfflineJourneySnapshot />
         <div className={styles.actions}>
           <Link className={styles.primary} href="/">
             홈으로 돌아가기

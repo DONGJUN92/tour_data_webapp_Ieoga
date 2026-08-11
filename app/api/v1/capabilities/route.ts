@@ -11,6 +11,7 @@ import {
   describeProviderCapabilities,
   PROVIDER_PROBE_STALE_AFTER_MS,
 } from "@/lib/provider-readiness";
+import { deploymentVersionStatus } from "@/lib/release/version";
 
 export async function GET() {
   const providers = externalProviderStatus();
@@ -24,8 +25,14 @@ export async function GET() {
     osrmFallbackPresent: routingEndpoints().length > 0,
     openMeteoFallbackPresent: openMeteoEndpoint() !== undefined,
   });
+  const deploymentVersion = deploymentVersionStatus();
   return publicJsonResponse(
     {
+      releaseVersion: {
+        commitSha: deploymentVersion.commitSha,
+        releaseReady: deploymentVersion.releaseReady,
+        statusEndpoint: "/api/v1/release/version",
+      },
       scope: "nationwide",
       regionSource: "KorService2.ldongCode2",
       travelerRecovery: {

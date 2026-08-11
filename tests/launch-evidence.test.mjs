@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
@@ -22,6 +23,8 @@ test("launch evidence never marks missing field proof as verified", async () => 
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",
@@ -30,10 +33,51 @@ test("launch evidence never marks missing field proof as verified", async () => 
     },
   });
 
-  assert.equal(report.overall, "evidence_collection");
+  assert.equal(report.overall, "blocked");
   assert.equal(
     report.items.find((item) => item.id === "tripbreak_100")?.status,
     "needs_field_evidence",
+  );
+  assert.equal(
+    report.items.find(
+      (item) => item.id === "legal_and_operational_approvals",
+    )?.status,
+    "release_blocker",
+  );
+  assert.equal(
+    report.items.find((item) => item.id === "participant_consent_ledger")?.status,
+    "release_blocker",
+  );
+});
+
+test("deployment version requires matching Cloudflare metadata and commit assertion", async () => {
+  const { deploymentVersionStatus } = await import(
+    "../lib/release/version.ts"
+  );
+  const metadata = {
+    id: "11111111-2222-4333-8444-555555555555",
+    tag: "a".repeat(40),
+    timestamp: "2026-08-11T00:00:00.000Z",
+  };
+  const invalid = deploymentVersionStatus({
+    metadata,
+    expectedCommitSha: "b".repeat(40),
+  });
+  assert.equal(invalid.releaseReady, false);
+  assert.equal(invalid.commitSha, null);
+  assert.equal(invalid.versionId, metadata.id);
+
+  const valid = deploymentVersionStatus({
+    metadata,
+    expectedCommitSha: "a".repeat(40),
+  });
+  assert.equal(valid.releaseReady, true);
+  assert.equal(valid.commitSha, "a".repeat(40));
+  assert.equal(valid.versionTag, "a".repeat(40));
+  assert.equal(valid.versionTimestamp, metadata.timestamp);
+  assert.equal(
+    valid.source,
+    "CF_VERSION_METADATA+DEPLOYMENT_COMMIT_SHA_ASSERTION",
   );
 });
 
@@ -52,6 +96,8 @@ test("shared public providers remain an explicit release blocker", async () => {
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "public_shared",
@@ -84,6 +130,8 @@ test("weak or reused release secrets remain an explicit release blocker", async 
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: false,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",
@@ -115,6 +163,8 @@ test("managed endpoint strings remain blocked without fresh active probes", asyn
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",
@@ -147,6 +197,8 @@ test("implementation claims remain unverified without authenticated field eviden
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",
@@ -180,6 +232,8 @@ test("self-reported field evidence cannot become verified before independent app
     sessionSigningReady: true,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",
@@ -327,10 +381,10 @@ test("all release secrets meet minimum quality, remain distinct, and gate auth",
 
     process.env.PARTNER_API_KEY = values.SESSION_SIGNING_KEY;
     const signing = sessionSigningStatus();
-    assert.equal(signing.available, true);
+    assert.equal(signing.available, false);
     assert.equal(signing.releaseReady, false);
-    assert.equal(signing.source, "ops_api_key_fallback");
-    assert.match(signing.warning ?? "", /OPS_API_KEY/);
+    assert.equal(signing.source, "unavailable");
+    assert.match(signing.warning ?? "", /SESSION_SIGNING_KEY/);
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];
@@ -460,9 +514,14 @@ test("field evidence validation is fail-closed and threshold based", async () =>
     regions: ["11", "26", "27", "28", "51", "48"],
     metrics: {
       scenarioSuccessRate: 95,
+      lockedAppointmentPreservationRate: 100,
+      availabilityFailClosedRate: 100,
+      returnRouteVerificationRate: 100,
       criticalFalsePositiveCount: 0,
+      actualClosedRecommendedCount: 0,
+      appointmentMissedCount: 0,
     },
-    artifactReference: `sha256:${"a".repeat(64)}`,
+    artifactReference: `https://evidence.example.org/tripbreak.csv#sha256=${"a".repeat(64)}`,
     reviewers: ["관광 실무자", "지자체 실무자", "접근성 검토자"],
     measuredAt: "2026-07-31T08:00:00.000Z",
   };
@@ -514,6 +573,193 @@ test("field evidence validation is fail-closed and threshold based", async () =>
     ).join(" "),
     /https:\/\//,
   );
+});
+
+test("field evidence approval proof requires reachable bytes with an exact SHA-256", async () => {
+  const { verifyArtifactReference } = await import(
+    "../lib/release/field-evidence.ts"
+  );
+  const body = "immutable field evidence\n";
+  const digest = createHash("sha256").update(body).digest("hex");
+  const reference = `https://evidence.example.org/verified.csv#sha256=${digest}`;
+  const verified = await verifyArtifactReference(reference, {
+    allowedHttpsOrigins: ["https://evidence.example.org"],
+    fetchImpl: async () => new Response(body, { status: 200 }),
+    checkedAt: new Date("2026-08-09T00:00:00.000Z"),
+  });
+  assert.deepEqual(verified, {
+    verified: true,
+    sha256: digest,
+    byteLength: Buffer.byteLength(body),
+    checkedAt: "2026-08-09T00:00:00.000Z",
+  });
+
+  assert.deepEqual(
+    await verifyArtifactReference(reference, {
+      allowedHttpsOrigins: [],
+      fetchImpl: async () => new Response(body, { status: 200 }),
+    }),
+    { verified: false, reason: "UNTRUSTED_ORIGIN" },
+  );
+  assert.deepEqual(
+    await verifyArtifactReference(
+      `https://evidence.example.org/verified.csv#sha256=${"0".repeat(64)}`,
+      {
+        allowedHttpsOrigins: ["https://evidence.example.org"],
+        fetchImpl: async () => new Response(body, { status: 200 }),
+      },
+    ),
+    { verified: false, reason: "HASH_MISMATCH" },
+  );
+  assert.deepEqual(
+    await verifyArtifactReference(`sha256:${digest}`),
+    { verified: false, reason: "DIGEST_ONLY" },
+  );
+});
+
+test("human, field, comparison, practitioner, legal and embed evidence thresholds cannot be omitted", async () => {
+  const { validateFieldEvidence } = await import(
+    "../lib/release/field-evidence.ts"
+  );
+  const measuredAt = "2026-08-09T00:00:00.000Z";
+  const now = new Date("2026-08-09T01:00:00.000Z");
+  const common = {
+    regions: ["11", "26", "27", "28", "51", "48"],
+    artifactReference: `https://evidence.example.org/cohort.csv#sha256=${"b".repeat(64)}`,
+    reviewers: ["reviewer-a", "reviewer-b", "reviewer-c"],
+    measuredAt,
+  };
+  const validInputs = [
+    {
+      ...common,
+      evidenceType: "real_user_usability",
+      sampleSize: 20,
+      metrics: {
+        taskCompletionRate: 90,
+        criticalSafetyIncidentCount: 0,
+        localeCount: 3,
+        clarityMean: 4.2,
+        trustMean: 4.2,
+        firstTimeParticipantCount: 1,
+        mobilityNeedsParticipantCount: 1,
+      },
+    },
+    {
+      ...common,
+      evidenceType: "field_journeys_six_regions",
+      sampleSize: 12,
+      metrics: {
+        completionRate: 90,
+        constraintPreservationRate: 100,
+        criticalFalsePositiveCount: 0,
+        actualClosedRecommendedCount: 0,
+        appointmentMissedCount: 0,
+        busanJourneyCount: 5,
+      },
+    },
+    {
+      ...common,
+      evidenceType: "comparative_benchmark_20",
+      sampleSize: 80,
+      metrics: {
+        scenarioCount: 20,
+        methodCount: 4,
+        ieogaCriticalFalsePositiveCount: 0,
+      },
+    },
+    {
+      ...common,
+      evidenceType: "practitioner_review",
+      sampleSize: 3,
+      metrics: { roleCount: 3, approvalRate: 100, criticalFindingsOpenCount: 0 },
+    },
+    {
+      ...common,
+      evidenceType: "legal_and_operational_approvals",
+      sampleSize: 8,
+      metrics: { controlCount: 8, approvedControlCount: 8, expiredControlCount: 0 },
+    },
+    {
+      ...common,
+      evidenceType: "partner_embed_pilot",
+      sampleSize: 4,
+      metrics: {
+        iframeLoadSuccessRate: 100,
+        sessionBootstrapSuccessRate: 100,
+        recoveryRequestSuccessRate: 100,
+        criticalFailureCount: 0,
+        partnerOriginCount: 1,
+        mobileRunCount: 4,
+        mobileBrowserCount: 3,
+        chromeRunCount: 1,
+        safariRunCount: 1,
+        firefoxRunCount: 1,
+      },
+    },
+    {
+      ...common,
+      evidenceType: "participant_consent_ledger",
+      sampleSize: 20,
+      metrics: {
+        consentedParticipantCount: 20,
+        missingConsentCount: 0,
+        unhonoredWithdrawalCount: 0,
+        consentRecordMatchRate: 100,
+      },
+    },
+  ];
+  for (const input of validInputs) {
+    assert.deepEqual(
+      validateFieldEvidence(input, now),
+      [],
+      input.evidenceType,
+    );
+    assert.ok(
+      validateFieldEvidence({ ...input, sampleSize: 0 }, now).length > 0,
+      `${input.evidenceType} accepted an empty sample`,
+    );
+  }
+});
+
+test("field performance evidence enforces p50, p95 and all three safety invariants", async () => {
+  const { validateFieldEvidence } = await import(
+    "../lib/release/field-evidence.ts"
+  );
+  const input = {
+    evidenceType: "recovery_speed_and_false_positive",
+    sampleSize: 100,
+    regions: ["11", "26", "27", "28", "51", "48"],
+    metrics: {
+      medianMs: 4_000,
+      p95Ms: 8_000,
+      mobileDeviceRunCount: 20,
+      constrainedNetworkRunCount: 16,
+      p75LcpMs: 2_500,
+      p75InpMs: 200,
+      p75Cls: 0.1,
+      lockedAppointmentPreservationRate: 100,
+      availabilityFailClosedRate: 100,
+      returnRouteVerificationRate: 100,
+      criticalFalsePositiveCount: 0,
+    },
+    artifactReference: `https://evidence.example.org/performance.csv#sha256=${"c".repeat(64)}`,
+    reviewers: ["reviewer-a"],
+    measuredAt: "2026-08-09T00:00:00.000Z",
+  };
+  const now = new Date("2026-08-09T01:00:00.000Z");
+  assert.deepEqual(validateFieldEvidence(input, now), []);
+  for (const metrics of [
+    { ...input.metrics, medianMs: 4_001 },
+    { ...input.metrics, p95Ms: 8_001 },
+    { ...input.metrics, lockedAppointmentPreservationRate: 99.99 },
+    { ...input.metrics, availabilityFailClosedRate: 99.99 },
+    { ...input.metrics, returnRouteVerificationRate: 99.99 },
+  ]) {
+    assert.ok(
+      validateFieldEvidence({ ...input, metrics }, now).length > 0,
+      "unsafe performance evidence crossed the release threshold",
+    );
+  }
 });
 
 test("session unavailability is a stable 503 contract instead of an exception", async () => {
@@ -589,7 +835,7 @@ test("a signed session cookie rejects raw and tampered identifiers", async () =>
   }
 });
 
-test("session signing rejects short keys and treats OPS reuse as a release blocker", async () => {
+test("session signing rejects short keys and never falls back to OPS", async () => {
   const previousSession = process.env.SESSION_SIGNING_KEY;
   const previousOps = process.env.OPS_API_KEY;
   const {
@@ -617,10 +863,17 @@ test("session signing rejects short keys and treats OPS reuse as a release block
     delete process.env.SESSION_SIGNING_KEY;
     process.env.OPS_API_KEY =
       "7fA2cE9mQ4xL8vN3rT6pW1yK5dH0sJ2uB9zG4aC";
-    const fallback = sessionSigningStatus();
-    assert.equal(fallback.available, true);
-    assert.equal(fallback.releaseReady, false);
-    assert.equal(fallback.source, "ops_api_key_fallback");
+    const withoutDedicatedKey = sessionSigningStatus();
+    assert.equal(withoutDedicatedKey.available, false);
+    assert.equal(withoutDedicatedKey.releaseReady, false);
+    assert.equal(withoutDedicatedKey.source, "unavailable");
+    assert.throws(
+      () =>
+        createSessionCookieValue(
+          "00000000-0000-4000-8000-000000000111",
+        ),
+      /SESSION_SIGNING_KEY_UNAVAILABLE/,
+    );
   } finally {
     if (previousSession === undefined) {
       delete process.env.SESSION_SIGNING_KEY;
@@ -629,6 +882,97 @@ test("session signing rejects short keys and treats OPS reuse as a release block
     }
     if (previousOps === undefined) delete process.env.OPS_API_KEY;
     else process.env.OPS_API_KEY = previousOps;
+  }
+});
+
+test("embed bootstrap issues a memory-only scoped bearer and no third-party cookie", async () => {
+  const previous = process.env.SESSION_SIGNING_KEY;
+  process.env.SESSION_SIGNING_KEY =
+    "m7Q2vK9xD4pL8rT1wN6cF3hJ0sA5uE2zB7gY4kM";
+  try {
+    const { NextRequest } = await import("next/server");
+    const { POST } = await import("../app/api/v1/embed/session/route.ts");
+    const request = new NextRequest(
+      "https://ieoga.example/api/v1/embed/session",
+      {
+        method: "POST",
+        headers: {
+          origin: "https://ieoga.example",
+          "sec-fetch-site": "same-origin",
+          "x-ieoga-embed-bootstrap": "1",
+        },
+      },
+    );
+    const response = await POST(request);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("set-cookie"), null);
+    const body = await response.json();
+    assert.equal(body.scope, "recover:open-window");
+    assert.match(body.embedSessionToken, /^ev1\./);
+    const { verifyEmbedSessionToken } = await import(
+      "../lib/session-cookie.ts"
+    );
+    assert.match(
+      verifyEmbedSessionToken(body.embedSessionToken) ?? "",
+      /^[a-f0-9-]{36}$/i,
+    );
+
+    const denied = await POST(
+      new NextRequest("https://ieoga.example/api/v1/embed/session", {
+        method: "POST",
+        headers: {
+          origin: "https://attacker.example",
+          "sec-fetch-site": "cross-site",
+          "x-ieoga-embed-bootstrap": "1",
+        },
+      }),
+    );
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get("set-cookie"), null);
+  } finally {
+    if (previous === undefined) delete process.env.SESSION_SIGNING_KEY;
+    else process.env.SESSION_SIGNING_KEY = previous;
+  }
+});
+
+test("embed bearer is tamper-evident, short-lived, and domain-separated from cookies", async () => {
+  const previous = process.env.SESSION_SIGNING_KEY;
+  process.env.SESSION_SIGNING_KEY =
+    "m7Q2vK9xD4pL8rT1wN6cF3hJ0sA5uE2zB7gY4kM";
+  try {
+    const {
+      createEmbedSessionToken,
+      verifyEmbedSessionToken,
+      verifySessionCookieValue,
+    } = await import("../lib/session-cookie.ts");
+    const issuedAt = new Date("2026-08-09T00:00:00.000Z");
+    const issued = createEmbedSessionToken(issuedAt);
+    assert.equal(
+      verifyEmbedSessionToken(
+        issued.token,
+        new Date("2026-08-09T00:09:59.000Z"),
+      ),
+      issued.sessionId,
+    );
+    assert.equal(
+      verifyEmbedSessionToken(
+        issued.token,
+        new Date("2026-08-09T00:10:00.000Z"),
+      ),
+      undefined,
+    );
+    const replacement = issued.token.endsWith("x") ? "y" : "x";
+    assert.equal(
+      verifyEmbedSessionToken(
+        `${issued.token.slice(0, -1)}${replacement}`,
+        issuedAt,
+      ),
+      undefined,
+    );
+    assert.equal(verifySessionCookieValue(issued.token), undefined);
+  } finally {
+    if (previous === undefined) delete process.env.SESSION_SIGNING_KEY;
+    else process.env.SESSION_SIGNING_KEY = previous;
   }
 });
 
@@ -647,6 +991,8 @@ test("missing dedicated session signing remains a launch blocker", async () => {
     sessionSigningReady: false,
     independentAuditorReady: true,
     releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
     providers: {
       reverseGeocoding: "managed",
       forwardGeocoding: "managed",

@@ -87,8 +87,8 @@
 }
 
 .language button {
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0 8px;
   border: 0;
   border-radius: var(--r-pill);
@@ -944,6 +944,60 @@ a.cta {
   gap: 8px;
 }
 
+.missedFacts {
+  width: 100%;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  text-align: left;
+}
+
+.missedFacts > div {
+  padding: 12px;
+  border: 1px solid #df9b91;
+  border-radius: var(--r-chip);
+  background: var(--danger-tint);
+}
+
+.missedFacts dt,
+.missedFacts dd {
+  margin: 0;
+}
+
+.missedFacts dt {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.missedFacts dd {
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.proofUnavailable,
+.proofTimingNote {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.proofUnavailable {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  background: var(--paper);
+  text-align: left;
+}
+
+.proofTimingNote {
+  padding: 0 4px;
+}
+
 .proofId,
 .errorHelp {
   color: var(--ink-soft);
@@ -1106,9 +1160,28 @@ a.cta {
   margin-bottom: 14px;
 }
 
+.sortNote {
+  margin: -6px 0 16px;
+  color: #5b6675;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.staleNotice {
+  margin: 14px 20px 0;
+  padding: 12px 14px;
+  border: 1px solid #b8d8d5;
+  border-radius: 12px;
+  background: #effaf8;
+  color: #174f4d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
 .sortChip,
 .sortActive {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 14px;
   border-radius: 999px;
   font-size: 14px;

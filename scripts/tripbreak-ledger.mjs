@@ -16,10 +16,22 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 function parseArgs(argv) {
-  const args = { base: "", count: 100, out: "", start: 0, delayMs: 400 };
+  const args = {
+    base: "",
+    count: 100,
+    out: "",
+    csvOut: "",
+    commit: "",
+    networkProfile: "server-observed",
+    deviceClass: "automation",
+    start: 0,
+    delayMs: 400,
+    requirePass: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -32,12 +44,26 @@ function parseArgs(argv) {
     } else if (key === "--out") {
       args.out = value;
       i += 1;
+    } else if (key === "--csv-out") {
+      args.csvOut = value;
+      i += 1;
+    } else if (key === "--commit") {
+      args.commit = value;
+      i += 1;
+    } else if (key === "--network") {
+      args.networkProfile = value;
+      i += 1;
+    } else if (key === "--device") {
+      args.deviceClass = value;
+      i += 1;
     } else if (key === "--start") {
       args.start = Number(value);
       i += 1;
     } else if (key === "--delay") {
       args.delayMs = Number(value);
       i += 1;
+    } else if (key === "--require-pass") {
+      args.requirePass = true;
     }
   }
   if (!args.base) throw new Error("--base <배포 URL> 이 필요합니다.");
@@ -46,6 +72,8 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 const baseUrl = args.base.replace(/\/$/, "");
+const root = fileURLToPath(new URL("../", import.meta.url));
+let deploymentCommitSha = args.commit.trim().toLowerCase();
 
 /* 플레이북의 권역 구성: 수도권, 부산, 다른 광역시, 일반 시군, 산간, 도서.
    각 권역에서 바꿀 수 있는 장소와 다음 고정 장소를 한 쌍씩 쓴다. */
@@ -164,8 +192,8 @@ function criticalFalsePositives(option) {
   if (option.purposePreservation?.status === "changed_visit_category") {
     reasons.push("목적 불일치를 적용 가능으로 표시");
   }
-  if (option.availability?.status === "closed") {
-    reasons.push("휴무·폐업을 적용 가능으로 표시");
+  if (option.availability?.status !== "confirmed_open") {
+    reasons.push("휴무·운영 미확인을 적용 가능으로 표시");
   }
   const route = option.continuity?.route ?? option.route;
   if (route && route.status !== "routed") {
@@ -197,6 +225,7 @@ function buildScenarios(total) {
       audience,
       hour,
       indoorOnly: incident === "rain",
+      hasFixedAppointment: index % 10 < 7,
     });
   }
   return scenarios;
@@ -210,35 +239,44 @@ async function runScenario(scenario) {
   cookieJar.clear();
   const schedule = koreaSchedule();
   const changeable = await findPlace(scenario.region.changeable);
-  const fixed = await findPlace(scenario.region.fixed);
+  const fixed = scenario.hasFixedAppointment
+    ? await findPlace(scenario.region.fixed)
+    : null;
   const base = {
     scenario_id: scenario.scenarioId,
     run_at: new Date().toISOString(),
+    commit_sha: deploymentCommitSha,
     deployment_url: baseUrl,
     region_class: scenario.region.class,
     area_code: scenario.region.area,
     /* 권역 집계는 표에 적어 둔 코드가 아니라 공사 응답이 돌려준 시도 코드를
        쓴다. 표가 사실과 다르면 6개 권역 요건 판정이 그대로 틀어진다. */
     resolved_area_code: changeable?.regionCode ?? null,
+    district_code: changeable?.districtCode ?? null,
     incident: scenario.incident,
     audience: scenario.audience,
-    has_fixed_appointment: true,
+    has_fixed_appointment: scenario.hasFixedAppointment,
+    network_profile: args.networkProfile,
+    device_class: args.deviceClass,
     time_slot: schedule.timeSlot,
     kst_hour: schedule.kstHour,
   };
-  if (!changeable || !fixed) {
+  if (!changeable || (scenario.hasFixedAppointment && !fixed)) {
     return {
       ...base,
       result_status: "setup_failed",
       notes: "공식 장소 조회 실패",
       option_count: 0,
       response_ms: 0,
+      locked_appointment_preserved: "not_applicable",
+      availability_fail_closed: false,
+      return_route_verified: "not_applicable",
       critical_false_positive: 0,
     };
   }
 
   const itineraryId = randomUUID();
-  const itinerary = {
+  const itinerary = scenario.hasFixedAppointment ? {
     id: itineraryId,
     title: `K-TRIPBREAK ${scenario.scenarioId}`,
     timezone: "Asia/Seoul",
@@ -278,22 +316,27 @@ async function runScenario(scenario) {
         },
       },
     ],
-  };
+  } : null;
 
-  const saved = await request("/api/v1/itineraries", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ itinerary, analyticsConsent: false }),
-  });
-  if (saved.status !== 201) {
-    return {
-      ...base,
-      result_status: "setup_failed",
-      notes: `일정 저장 실패 ${saved.status}`,
-      option_count: 0,
-      response_ms: 0,
-      critical_false_positive: 0,
-    };
+  if (itinerary) {
+    const saved = await request("/api/v1/itineraries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ itinerary, analyticsConsent: false }),
+    });
+    if (saved.status !== 201) {
+      return {
+        ...base,
+        result_status: "setup_failed",
+        notes: `일정 저장 실패 ${saved.status}`,
+        option_count: 0,
+        response_ms: 0,
+        locked_appointment_preserved: "not_applicable",
+        availability_fail_closed: false,
+        return_route_verified: "not_applicable",
+        critical_false_positive: 0,
+      };
+    }
   }
 
   const recovery = await request("/api/v1/recover", {
@@ -316,12 +359,21 @@ async function runScenario(scenario) {
       safetyBufferMinutes: 15,
       minimumStayMinutes: 30,
       analyticsConsent: false,
-      itinerary: {
-        ...itinerary,
-        occurredAt: schedule.occurredAt,
-        disruptedNodeId: "tb-changeable",
-        nextFixedNodeId: "tb-fixed",
-      },
+      ...(itinerary
+        ? {
+            itinerary: {
+              ...itinerary,
+              occurredAt: schedule.occurredAt,
+              disruptedNodeId: "tb-changeable",
+              nextFixedNodeId: "tb-fixed",
+            },
+          }
+        : {
+            openWindow: {
+              availableUntil: schedule.fixedAt,
+              plannedStayMinutes: 60,
+            },
+          }),
     }),
     timeoutMs: 40_000,
   });
@@ -337,6 +389,52 @@ async function runScenario(scenario) {
     ? body.rejectionSummary
     : [];
   const explainedEmpty = options.length === 0 && rejectionSummary.length > 0;
+  const availabilityFailClosed = options.every(
+    (option) =>
+      option.availability?.status === "confirmed_open" &&
+      option.confirmationRequired !== true &&
+      (option.evidenceGaps?.length ?? 0) === 0,
+  );
+  const returnRouteVerified =
+    scenario.hasFixedAppointment || options.length === 0
+      ? "not_applicable"
+      : options.every(
+          (option) =>
+            option.openWindowProof?.returnBasis === "origin_return_route" &&
+            typeof option.openWindowProof?.returnProvider === "string" &&
+            Number.isFinite(option.openWindowProof?.returnDistanceMeters) &&
+            typeof option.openWindowProof?.returnCalculatedAt === "string",
+        );
+  let lockedAppointmentPreserved = "not_applicable";
+  let applyStatus = "not_attempted";
+  if (scenario.hasFixedAppointment && options.length > 0) {
+    const runId = body.persistence?.runId;
+    if (typeof runId === "string") {
+      const applied = await request(
+        `/api/v1/recover/${encodeURIComponent(runId)}/apply`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ optionId: options[0].id }),
+        },
+      );
+      applyStatus = String(applied.status);
+      const nextFixed = applied.body?.execution?.steps?.find(
+        (step) => step.role === "next_fixed",
+      );
+      lockedAppointmentPreserved = Boolean(
+        applied.status === 201 &&
+          nextFixed?.originalNodeId === "tb-fixed" &&
+          nextFixed?.scheduledAt === schedule.fixedAt &&
+          nextFixed?.locked === true &&
+          nextFixed?.reservation === true &&
+          nextFixed?.title === fixed.title,
+      );
+    } else {
+      applyStatus = "missing_run_id";
+      lockedAppointmentPreserved = false;
+    }
+  }
 
   return {
     ...base,
@@ -353,6 +451,10 @@ async function runScenario(scenario) {
             : "unexplained_no_option",
     option_count: options.length,
     response_ms: recovery.elapsedMs,
+    locked_appointment_preserved: lockedAppointmentPreserved,
+    availability_fail_closed: availabilityFailClosed,
+    return_route_verified: returnRouteVerified,
+    apply_status: applyStatus,
     persistence: body.persistence?.status ?? null,
     recovery_status: body.status ?? null,
     rejected_count: body.rejectedCount ?? 0,
@@ -385,6 +487,14 @@ function percentile(values, ratio) {
   return sorted[index];
 }
 
+if (!deploymentCommitSha) {
+  const version = await request("/api/v1/release/version", { timeoutMs: 10_000 });
+  deploymentCommitSha =
+    typeof version.body?.commitSha === "string"
+      ? version.body.commitSha.toLowerCase()
+      : "unverified";
+}
+
 const scenarios = buildScenarios(args.count + args.start).slice(args.start);
 const rows = [];
 console.log(`대상 ${baseUrl} · 시나리오 ${scenarios.length}건`);
@@ -412,9 +522,16 @@ const preservedOptions = rows.reduce(
   (sum, row) => sum + (row.purpose_preserved ?? 0),
   0,
 );
+const lockedChecks = rows.filter(
+  (row) => typeof row.locked_appointment_preserved === "boolean",
+);
+const returnRouteChecks = rows.filter(
+  (row) => typeof row.return_route_verified === "boolean",
+);
 
 const summary = {
   deploymentUrl: baseUrl,
+  commitSha: deploymentCommitSha,
   measuredAt: new Date().toISOString(),
   sampleSize: rows.length,
   completedCount: completed.length,
@@ -439,6 +556,59 @@ const summary = {
   medianMs: percentile(latencies, 0.5),
   p95Ms: percentile(latencies, 0.95),
   optionsPresented: presentedOptions,
+  lockedAppointmentChecks: lockedChecks.length,
+  lockedAppointmentPreservationRate: lockedChecks.length
+    ? Number(
+        (
+          (lockedChecks.filter((row) => row.locked_appointment_preserved)
+            .length /
+            lockedChecks.length) *
+          100
+        ).toFixed(2),
+      )
+    : 0,
+  returnRouteChecks: returnRouteChecks.length,
+  returnRouteVerificationRate: returnRouteChecks.length
+    ? Number(
+        (
+          (returnRouteChecks.filter((row) => row.return_route_verified).length /
+            returnRouteChecks.length) *
+          100
+        ).toFixed(2),
+      )
+    : 0,
+  availabilityFailClosedRate: rows.length
+    ? Number(
+        (
+          (rows.filter((row) => row.availability_fail_closed === true).length /
+            rows.length) *
+          100
+        ).toFixed(2),
+      )
+    : 0,
+};
+
+const gateFailures = [
+  [summary.sampleSize >= 100, "시나리오 표본이 100건 미만입니다."],
+  [summary.completedCount === summary.sampleSize, "설정 또는 실행 실패 시나리오가 있습니다."],
+  [summary.regionsCovered.length >= 6, "실측 권역이 6개 미만입니다."],
+  [summary.scenarioSuccessRate >= 90, "설명 가능한 시나리오 성공률이 90% 미만입니다."],
+  [summary.purposePreservationRate >= 95, "목적 보존율이 95% 미만입니다."],
+  [summary.criticalFalsePositiveCount === 0, "치명적 오추천이 있습니다."],
+  [summary.lockedAppointmentChecks >= 50, "고정 예약 적용 검증이 50건 미만입니다."],
+  [summary.lockedAppointmentPreservationRate === 100, "고정 예약 원본 보존율이 100%가 아닙니다."],
+  [summary.returnRouteChecks >= 15, "역방향 복귀 경로 검증이 15건 미만입니다."],
+  [summary.returnRouteVerificationRate === 100, "역방향 복귀 경로 검증률이 100%가 아닙니다."],
+  [summary.availabilityFailClosedRate === 100, "운영 상태 fail-closed 비율이 100%가 아닙니다."],
+  [summary.medianMs <= 4_000, "복구 응답 p50이 4초를 초과합니다."],
+  [summary.p95Ms <= 8_000, "복구 응답 p95가 8초를 초과합니다."],
+  [/^[a-f0-9]{40}$/i.test(summary.commitSha), "배포 커밋 SHA를 검증하지 못했습니다."],
+]
+  .filter(([passed]) => !passed)
+  .map(([, message]) => message);
+summary.gate = {
+  status: gateFailures.length === 0 ? "passed" : "failed",
+  failures: gateFailures,
 };
 
 console.log("\n=== 집계 ===");
@@ -447,4 +617,33 @@ console.log(JSON.stringify(summary, null, 2));
 if (args.out) {
   writeFileSync(args.out, JSON.stringify({ summary, rows }, null, 2), "utf8");
   console.log(`\n원장 저장: ${args.out}`);
+}
+
+function csvCell(value) {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+if (args.csvOut) {
+  const template = readFileSync(
+    `${root}/evidence/templates/tripbreak-runs.csv`,
+    "utf8",
+  ).trim();
+  const headers = template.split(/\r?\n/, 1)[0].split(",");
+  const csv = [
+    headers.join(","),
+    ...rows.map((row) => headers.map((header) => csvCell(row[header])).join(",")),
+  ].join("\n");
+  writeFileSync(args.csvOut, `${csv}\n`, "utf8");
+  console.log(`CSV 원장 저장: ${args.csvOut}`);
+}
+
+if (args.requirePass && gateFailures.length > 0) {
+  console.error(`K-TRIPBREAK_GATE_FAILED\n${gateFailures.join("\n")}`);
+  process.exitCode = 1;
 }

@@ -1,52 +1,171 @@
 "use client";
 
-/* 일정 등록 마법사. **한 화면에 한 질문**만 둔다.
- *
- * 예전에는 등록 입구가 복구 탭 안의 긴 폼 하나뿐이었다. 시각 드롭다운과 장소
- * 검색과 잠금 체크박스가 한꺼번에 펼쳐져 있어서, 처음 온 사람은 무엇부터
- * 채워야 하는지 알 수 없었다. 여기서는 한 번에 하나만 묻고, 답하면 다음으로
- * 넘어간다. 언제든 뒤로 갈 수 있고, 위 막대가 어디까지 왔는지 보여 준다. */
-
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { HALF_HOUR_TIMES, todayInKorea } from "../product-app-model";
 import { ManualLocationPicker, type ManualPlace } from "../ManualLocationPicker";
 import styles from "./plan.module.css";
 
 type Step = "date" | "start" | "appointment" | "confirm";
+type Language = "ko" | "en";
+type PlanEntry = { place: ManualPlace; time: string; locked: boolean };
 
 const STEPS: Step[] = ["date", "start", "appointment", "confirm"];
+const START_TIME = "09:00";
+const MIN_LEAD_MINUTES = 15;
+
+function appointmentAt(date: string, time: string): number {
+  return Date.parse(`${date}T${time}:00+09:00`);
+}
+
+function formatPlanDate(date: string, language: Language): string {
+  const parsed = new Date(`${date}T12:00:00+09:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(parsed);
+}
+
+function firstPlanError(
+  date: string,
+  plan: PlanEntry[],
+  language: Language,
+  now = Date.now(),
+): string {
+  const t = (ko: string, en: string) => (language === "en" ? en : ko);
+  if (!date || date < todayInKorea()) {
+    return t(
+      "오늘보다 이전 날짜에는 새 여행을 등록할 수 없습니다.",
+      "A new trip cannot be scheduled in the past.",
+    );
+  }
+  let previous = START_TIME;
+  for (const entry of plan) {
+    if (entry.time <= previous) {
+      return t(
+        `일정 시각은 앞 일정(${previous})보다 늦어야 합니다.`,
+        `Each stop must be later than the previous stop (${previous}).`,
+      );
+    }
+    if (
+      date === todayInKorea() &&
+      appointmentAt(date, entry.time) < now + MIN_LEAD_MINUTES * 60_000
+    ) {
+      return t(
+        "오늘 일정은 현재 시각보다 최소 15분 뒤로 잡아 주세요.",
+        "For today, schedule each new stop at least 15 minutes from now.",
+      );
+    }
+    previous = entry.time;
+  }
+  if (!plan.some((entry) => entry.locked)) {
+    return t(
+      "이어가가 반드시 지킬 예약 또는 고정 일정을 하나 이상 잠가 주세요.",
+      "Lock at least one booking or fixed appointment for IEOGA to protect.",
+    );
+  }
+  return "";
+}
 
 export function PlanWizard() {
+  const [language, setLanguage] = useState<Language>("ko");
   const [step, setStep] = useState<Step>("date");
   const [date, setDate] = useState(todayInKorea());
   const [start, setStart] = useState<ManualPlace | null>(null);
-  /* 약속은 하나로 끝나지 않는다. 여행자가 원하는 만큼 이어 붙인다. */
-  const [plan, setPlan] = useState<
-    Array<{ place: ManualPlace; time: string; locked: boolean }>
-  >([]);
+  const [plan, setPlan] = useState<PlanEntry[]>([]);
   const [pending, setPending] = useState<ManualPlace | null>(null);
   const [pendingTime, setPendingTime] = useState("14:00");
-  /* 잠금은 담을 때 고른다. 마지막을 자동으로 잠갔더니, 마지막 여행지가
-     예약이 아닌 경우에도 복구가 손댈 수 없는 곳이 되었다. 기본값은 켜 둔다 —
-     대개 마지막이 지켜야 할 약속이고, 잠긴 곳이 하나도 없으면 이 앱이 지킬
-     대상 자체가 사라진다. */
   const [pendingLocked, setPendingLocked] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState("");
-
   const index = STEPS.indexOf(step);
-  /* 뒤로 가면 **그 단계의 입력을 비운다.** 남겨 두었더니 다른 곳을 고르러
-     돌아가도 이전 값이 그대로 보여, 무엇이 선택된 상태인지 알 수 없었다. */
-  /* 뒤로 가기는 **한 걸음씩** 되돌린다.
-   *
-   * 예전에는 단계 전체를 비웠다. 그래서 세 번째 여행지를 넣다가 뒤로 가면
-   * 출발지가 통째로 사라지고 담아 둔 목록만 남았다 — 화면에 1번이 없고 2번만
-   * 남은 것이 이 때문이다. 담는 중이던 것을 먼저 취소하고, 담은 것이 있으면
-   * 마지막 하나만 빼며, 둘 다 없을 때에만 이전 단계로 나간다. */
-  const back = () => {
-    setError("");
+  const tr = (ko: string, en: string) => (language === "en" ? en : ko);
+  const times = useMemo(() => HALF_HOUR_TIMES, []);
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+    document.title =
+      language === "en" ? "Register a trip · IEOGA" : "여행 일정 등록 · 이어가";
+    return () => {
+      document.documentElement.lang = "ko";
+    };
+  }, [language]);
+
+  function clearError() {
+    if (error) setError("");
+  }
+
+  function dateIsValid(): boolean {
+    if (date && date >= todayInKorea()) return true;
+    setError(
+      tr(
+        "오늘 또는 이후의 여행 날짜를 선택해 주세요.",
+        "Choose today or a future travel date.",
+      ),
+    );
+    return false;
+  }
+
+  function validatePending(): string {
+    if (!pending) {
+      return tr("먼저 장소를 선택해 주세요.", "Select a place first.");
+    }
+    const previousTime = plan.at(-1)?.time ?? START_TIME;
+    if (pendingTime <= previousTime) {
+      return tr(
+        `이 장소는 앞 일정(${previousTime})보다 늦은 시각으로 잡아 주세요.`,
+        `Schedule this stop later than the previous stop (${previousTime}).`,
+      );
+    }
+    if (
+      date === todayInKorea() &&
+      appointmentAt(date, pendingTime) <
+        Date.now() + MIN_LEAD_MINUTES * 60_000
+    ) {
+      return tr(
+        "오늘 일정은 현재 시각보다 최소 15분 뒤로 잡아 주세요.",
+        "For today, choose a time at least 15 minutes from now.",
+      );
+    }
+    return "";
+  }
+
+  function addPending() {
+    clearError();
+    const validation = validatePending();
+    if (validation || !pending) {
+      setError(validation);
+      return;
+    }
+    setPlan((previous) => [
+      ...previous,
+      { place: pending, time: pendingTime, locked: pendingLocked },
+    ]);
+    setPending(null);
+    setPendingLocked(true);
+    setPendingTime((current) => {
+      const currentIndex = times.findIndex((time) => time.value === current);
+      return times[Math.min(currentIndex + 2, times.length - 1)]?.value ?? current;
+    });
+  }
+
+  function review() {
+    clearError();
+    const validation = firstPlanError(date, plan, language);
+    if (validation) {
+      setError(validation);
+      return;
+    }
+    setStep("confirm");
+  }
+
+  function back() {
+    clearError();
     if (step === "appointment") {
       if (pending) {
         setPending(null);
@@ -62,33 +181,26 @@ export function PlanWizard() {
     const target = STEPS[index - 1];
     setPending(null);
     setPendingLocked(true);
-    /* 나가는 단계의 입력만 비운다. 앞 단계의 답은 건드리지 않는다. */
-    if (target === "start") setStart(null);
     setStep(target);
-  };
-  const forward = () => {
-    setError("");
-    if (index < STEPS.length - 1) setStep(STEPS[index + 1]);
-  };
-
-  /* 약속 시각은 30분 단위로만 고른다. 여행자는 분 단위로 계획하지 않고,
-     `type="time"`은 모바일에서 휠 두 개를 띄운다. */
-  const times = useMemo(() => HALF_HOUR_TIMES, []);
+  }
 
   async function save() {
-    if (!start || !plan.length) return;
+    if (!start) return;
+    const validation = firstPlanError(date, plan, language);
+    if (validation) {
+      setError(validation);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      /* 마지막 약속만 잠근다. 중간 정류지까지 잠그면 복구가 바꿀 수 있는 곳이
-         하나도 남지 않아, 일정이 틀어져도 이 앱이 할 수 있는 일이 없어진다. */
       const nodes = [
         {
           id: "start",
           sequence: 0,
           type: "visit" as const,
           title: start.title,
-          startAt: `${date}T09:00:00+09:00`,
+          startAt: `${date}T${START_TIME}:00+09:00`,
           locked: false,
           reservation: false,
           location: {
@@ -97,83 +209,109 @@ export function PlanWizard() {
             label: start.title,
           },
         },
-        ...plan.map((entry, entryIndex) => {
-          return {
-            id: `stop-${entryIndex + 1}`,
-            sequence: entryIndex + 1,
-            type: entry.locked ? ("reservation" as const) : ("visit" as const),
-            title: entry.place.title,
-            startAt: `${date}T${entry.time}:00+09:00`,
-            locked: entry.locked,
-            reservation: entry.locked,
-            location: {
-              latitude: entry.place.latitude,
-              longitude: entry.place.longitude,
-              label: entry.place.title,
-            },
-          };
-        }),
+        ...plan.map((entry, entryIndex) => ({
+          id: `stop-${entryIndex + 1}`,
+          sequence: entryIndex + 1,
+          type: entry.locked ? ("reservation" as const) : ("visit" as const),
+          title: entry.place.title,
+          startAt: `${date}T${entry.time}:00+09:00`,
+          locked: entry.locked,
+          reservation: entry.locked,
+          location: {
+            latitude: entry.place.latitude,
+            longitude: entry.place.longitude,
+            label: entry.place.title,
+          },
+        })),
       ];
       const response = await fetch("/api/v1/itineraries", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           itinerary: {
-            title: "오늘의 여행",
+            title: language === "en" ? "My trip" : "오늘의 여행",
             timezone: "Asia/Seoul",
             audience: "general",
             nodes,
           },
         }),
       });
-      const payload = (await response.json()) as {
+      const payload = (await response.json().catch(() => null)) as {
         itinerary?: { id?: string };
-        error?: { message?: string; cause?: string };
-      };
+        requestId?: string;
+        error?: { requestId?: string };
+      } | null;
       if (!response.ok) {
+        const requestId =
+          response.headers.get("x-request-id") ||
+          payload?.requestId ||
+          payload?.error?.requestId;
         throw new Error(
-          [payload.error?.message, payload.error?.cause]
-            .filter(Boolean)
-            .join(" ") || "일정을 저장하지 못했습니다.",
+          `${tr("일정을 저장하지 못했습니다.", "Could not save the itinerary.")}${
+            requestId ? ` · ${tr("요청 ID", "Request ID")} ${requestId}` : ""
+          }`,
         );
       }
-      setSavedId(payload.itinerary?.id ?? "saved");
+      setSavedId(payload?.itinerary?.id ?? "saved");
     } catch (caught) {
       setError(
-        caught instanceof Error ? caught.message : "일정을 저장하지 못했습니다.",
+        caught instanceof Error
+          ? caught.message
+          : tr("일정을 저장하지 못했습니다.", "Could not save the itinerary."),
       );
     } finally {
       setSaving(false);
     }
   }
 
+  const languageToggle = (
+    <div className={styles.language} role="group" aria-label={tr("언어 선택", "Language")}>
+      <button
+        type="button"
+        className={language === "ko" ? styles.languageOn : ""}
+        aria-pressed={language === "ko"}
+        onClick={() => setLanguage("ko")}
+      >
+        KO
+      </button>
+      <button
+        type="button"
+        className={language === "en" ? styles.languageOn : ""}
+        aria-pressed={language === "en"}
+        onClick={() => setLanguage("en")}
+      >
+        EN
+      </button>
+    </div>
+  );
+
   if (savedId) {
     return (
       <div className={styles.done}>
-        <div className={styles.doneMark} aria-hidden="true">
-          ✓
-        </div>
-        <h1>일정을 등록했어요</h1>
+        {languageToggle}
+        <div className={styles.doneMark} aria-hidden="true">✓</div>
+        <h1>{tr("일정을 등록했어요", "Your trip is registered")}</h1>
+        <p className={styles.summaryDate}>{formatPlanDate(date, language)}</p>
         <ol className={styles.route}>
           <li>
             <span>1</span>
-            <strong>{start?.title}</strong>
+            <div><strong>{start?.title}</strong><em>{START_TIME}</em></div>
           </li>
           {plan.map((entry, entryIndex) => (
             <li key={`${entry.place.title}-${entryIndex}`}>
               <span>{entryIndex + 2}</span>
               <div>
                 <strong>{entry.place.title}</strong>
-                <em>{entry.time}</em>
+                <em>{entry.time}{entry.locked ? tr(" · 잠금", " · locked") : ""}</em>
               </div>
             </li>
           ))}
         </ol>
         <Link className={styles.primary} href="/app">
-          일정이 틀어지면 여기서 복구하기
+          {tr("일정이 틀어지면 여기서 복구하기", "Recover this trip if plans change")}
         </Link>
         <Link className={styles.secondary} href="/">
-          처음으로
+          {tr("처음으로", "Home")}
         </Link>
       </div>
     );
@@ -184,11 +322,11 @@ export function PlanWizard() {
       <header className={styles.head}>
         {index > 0 ? (
           <button type="button" className={styles.back} onClick={back}>
-            ←<span className="sr-only">이전 단계</span>
+            ←<span className="sr-only">{tr("이전 단계", "Previous step")}</span>
           </button>
         ) : (
           <Link className={styles.back} href="/">
-            ←<span className="sr-only">처음으로</span>
+            ←<span className="sr-only">{tr("처음으로", "Home")}</span>
           </Link>
         )}
         <div
@@ -197,7 +335,10 @@ export function PlanWizard() {
           aria-valuemin={1}
           aria-valuemax={STEPS.length}
           aria-valuenow={index + 1}
-          aria-label={`${STEPS.length}단계 중 ${index + 1}단계`}
+          aria-label={tr(
+            `${STEPS.length}단계 중 ${index + 1}단계`,
+            `Step ${index + 1} of ${STEPS.length}`,
+          )}
         >
           {STEPS.map((entry, entryIndex) => (
             <span
@@ -206,37 +347,58 @@ export function PlanWizard() {
             />
           ))}
         </div>
+        {languageToggle}
       </header>
 
       {step === "date" && (
         <section className={styles.step}>
-          <h1>언제 가세요?</h1>
+          <h1>{tr("언제 가세요?", "When are you travelling?")}</h1>
+          <label className={styles.label} htmlFor="plan-date">
+            {tr("여행 날짜", "Travel date")}
+          </label>
           <input
+            id="plan-date"
             type="date"
             className={styles.field}
             value={date}
-            onChange={(event) => setDate(event.target.value)}
-            aria-label="여행 날짜"
+            min={todayInKorea()}
+            aria-invalid={Boolean(error)}
+            onChange={(event) => {
+              setDate(event.target.value);
+              clearError();
+            }}
           />
-          <button type="button" className={styles.primary} onClick={forward}>
-            다음
+          {error && <p className={styles.error} role="alert">{error}</p>}
+          <button
+            type="button"
+            className={styles.primary}
+            onClick={() => {
+              clearError();
+              if (dateIsValid()) setStep("start");
+            }}
+          >
+            {tr("다음", "Next")}
           </button>
         </section>
       )}
 
       {step === "start" && (
         <section className={styles.step}>
-          <h1>어디서 시작하세요?</h1>
+          <h1>{tr("어디서 시작하세요?", "Where does the trip start?")}</h1>
           <ManualLocationPicker
-            language="ko"
-            heading="출발지 찾기"
-            areaHint="시·군·구만 골라도 됩니다. 그 지역을 대표하는 지점에서 출발하는 것으로 잡습니다."
+            language={language}
+            purpose="saved_stop"
+            heading={tr("출발지 찾기", "Find the starting point")}
+            areaHint={tr(
+              "시·군·구만 골라도 됩니다. 선택한 지역의 대표 지점을 사용합니다.",
+              "You may choose only a city or district; its representative point will be used.",
+            )}
             onPick={(place) => {
               setStart(place);
-              forward();
+              clearError();
+              setStep("appointment");
             }}
           />
-          {start && <p className={styles.picked}>{start.title}</p>}
         </section>
       )}
 
@@ -244,31 +406,33 @@ export function PlanWizard() {
         <section className={styles.step}>
           <h1>
             {plan.length === 0
-              ? "꼭 지킬 약속이 있나요?"
-              : /* 1번은 출발지이므로 `plan[0]`이 이미 2번이다. `+1`이면
-                   목록에 2번이 보이는데 제목은 `2번째로 갈 곳`이라고 물어
-                   화면 안에서 번호가 어긋났다. */
-                `${plan.length + 2}번째로 갈 곳이 있나요?`}
+              ? tr("꼭 지킬 약속이 있나요?", "What appointment must be protected?")
+              : tr(
+                  `${plan.length + 2}번째로 갈 곳이 있나요?`,
+                  `Add stop ${plan.length + 2}?`,
+                )}
           </h1>
+          <p className={styles.summaryDate}>{formatPlanDate(date, language)}</p>
 
-          {/* 고른 곳과 시각을 **검색창보다 위에** 둔다. 아래에 두었더니 장소를
-              고른 뒤에도 화면 끝에 가려 다음에 무엇을 해야 하는지 보이지
-              않았다. */}
           {pending && (
             <div className={styles.pendingBlock}>
               <p className={styles.picked}>{pending.title}</p>
               <label className={styles.label} htmlFor="plan-appointment-time">
-                몇 시 약속인가요?
+                {tr("몇 시 약속인가요?", "What time is it?")}
               </label>
               <select
                 id="plan-appointment-time"
                 className={styles.field}
                 value={pendingTime}
-                onChange={(event) => setPendingTime(event.target.value)}
+                aria-invalid={Boolean(error)}
+                onChange={(event) => {
+                  setPendingTime(event.target.value);
+                  clearError();
+                }}
               >
                 {times.map((time) => (
                   <option key={time.value} value={time.value}>
-                    {time.label}
+                    {language === "en" ? time.value : time.label}
                   </option>
                 ))}
               </select>
@@ -276,26 +440,24 @@ export function PlanWizard() {
                 <input
                   type="checkbox"
                   checked={pendingLocked}
-                  onChange={(event) => setPendingLocked(event.target.checked)}
+                  onChange={(event) => {
+                    setPendingLocked(event.target.checked);
+                    clearError();
+                  }}
                 />
                 <span>
-                  <strong>이 일정은 못 바꿔요</strong>
-                  <em>예약·공연·교통편처럼 시간을 옮길 수 없는 곳</em>
+                  <strong>{tr("이 일정은 못 바꿔요", "Protect this appointment")}</strong>
+                  <em>
+                    {tr(
+                      "예약·공연·교통편처럼 시간을 옮길 수 없는 일정",
+                      "A booking, performance or transport departure that cannot move",
+                    )}
+                  </em>
                 </span>
               </label>
-              <button
-                type="button"
-                className={styles.primary}
-                onClick={() => {
-                  setPlan((previous) => [
-                    ...previous,
-                    { place: pending, time: pendingTime, locked: pendingLocked },
-                  ]);
-                  setPending(null);
-                  setPendingLocked(true);
-                }}
-              >
-                이 곳을 일정에 담기
+              {error && <p className={styles.error} role="alert">{error}</p>}
+              <button type="button" className={styles.primary} onClick={addPending}>
+                {tr("이 곳을 일정에 담기", "Add this stop")}
               </button>
             </div>
           )}
@@ -307,10 +469,7 @@ export function PlanWizard() {
                   <span>{entryIndex + 2}</span>
                   <div>
                     <strong>{entry.place.title}</strong>
-                    <em>
-                      {entry.time}
-                      {entry.locked ? " · 못 바꿈" : ""}
-                    </em>
+                    <em>{entry.time}{entry.locked ? tr(" · 잠금", " · locked") : ""}</em>
                   </div>
                 </li>
               ))}
@@ -319,23 +478,28 @@ export function PlanWizard() {
 
           {!pending && (
             <ManualLocationPicker
-              language="ko"
-              heading={
-                plan.length === 0 ? "약속 장소 찾기" : "갈 곳 찾기"
-              }
-              areaHint="시·군·구만 골라도 됩니다. 그 지역을 대표하는 지점을 기준으로 잡습니다."
-              onPick={(place) => setPending(place)}
+              language={language}
+              purpose="saved_stop"
+              heading={tr(
+                plan.length === 0 ? "약속 장소 찾기" : "갈 곳 찾기",
+                plan.length === 0 ? "Find the appointment place" : "Find another stop",
+              )}
+              areaHint={tr(
+                "시·군·구만 골라도 됩니다. 선택한 지역의 대표 지점을 사용합니다.",
+                "You may choose only a city or district; its representative point will be used.",
+              )}
+              onPick={(place) => {
+                setPending(place);
+                clearError();
+              }}
             />
           )}
 
+          {error && !pending && <p className={styles.error} role="alert">{error}</p>}
           {plan.length > 0 && !pending && (
             <div className={styles.stepActions}>
-              <button
-                type="button"
-                className={styles.primary}
-                onClick={forward}
-              >
-                더 이상 등록할 여행지가 없어요
+              <button type="button" className={styles.primary} onClick={review}>
+                {tr("일정 검토하기", "Review the itinerary")}
               </button>
             </div>
           )}
@@ -344,37 +508,33 @@ export function PlanWizard() {
 
       {step === "confirm" && (
         <section className={styles.step}>
-          <h1>이렇게 등록할까요?</h1>
+          <h1>{tr("이렇게 등록할까요?", "Register this itinerary?")}</h1>
+          <p className={styles.summaryDate}>{formatPlanDate(date, language)}</p>
           <ol className={styles.route}>
             <li>
               <span>1</span>
-              <strong>{start?.title}</strong>
+              <div><strong>{start?.title}</strong><em>{START_TIME}</em></div>
             </li>
             {plan.map((entry, entryIndex) => (
               <li key={`${entry.place.title}-${entryIndex}`}>
                 <span>{entryIndex + 2}</span>
                 <div>
                   <strong>{entry.place.title}</strong>
-                  <em>
-                    {entry.time}
-                    {entry.locked ? " · 못 바꿈" : ""}
-                  </em>
+                  <em>{entry.time}{entry.locked ? tr(" · 잠금", " · locked") : ""}</em>
                 </div>
               </li>
             ))}
           </ol>
-          {error && (
-            <p className={styles.error} role="alert">
-              {error}
-            </p>
-          )}
+          {error && <p className={styles.error} role="alert">{error}</p>}
           <button
             type="button"
             className={styles.primary}
-            onClick={save}
+            onClick={() => void save()}
             disabled={saving || !start || !plan.length}
           >
-            {saving ? "등록하는 중…" : "이 일정으로 등록"}
+            {saving
+              ? tr("등록하는 중…", "Saving…")
+              : tr("이 일정으로 등록", "Register this itinerary")}
           </button>
         </section>
       )}

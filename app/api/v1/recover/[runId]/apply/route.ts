@@ -3,6 +3,7 @@ import { activateRecoveryExecution } from "@/lib/db/repository";
 import {
   jsonResponse,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
@@ -12,11 +13,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(
   request: NextRequest,
-  context: { params: Promise<{ runId: string }> },
 ) {
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
-  const { runId } = await context.params;
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) return unsafeMutation;
+  const pathSegments = request.nextUrl.pathname.split("/").filter(Boolean);
+  const runId = pathSegments.at(-2) ?? "";
   const sessionId = readSessionId(request);
   if (
     !/^[a-zA-Z0-9_-]{8,80}$/.test(runId) ||

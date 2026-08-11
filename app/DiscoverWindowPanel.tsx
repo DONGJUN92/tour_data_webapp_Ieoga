@@ -13,6 +13,10 @@ import styles from "./DiscoverWindowPanel.module.css";
 import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
 import {
+  optionApplicationSafety,
+  windowEndIsoFromMinutes,
+} from "./traveler-safety";
+import {
   AUDIENCES,
   AUDIENCES_EN,
   TRAVEL_MODES,
@@ -70,26 +74,164 @@ function tr(language: Language, ko: string, en: string): string {
   return language === "en" ? en : ko;
 }
 
-/* 지금부터 N분 뒤를 30분 격자에 올려 ISO로 만든다. "3시간 뒤"가 17:07이 아니라
-   17:00 또는 17:30으로 떨어지게 하는 것이 목적이다. */
-function windowEndFromMinutes(minutes: number): {
-  iso: string;
-  label: string;
-} {
-  const target = new Date(Date.now() + minutes * 60_000);
-  target.setSeconds(0, 0);
-  const remainder = target.getMinutes() % 30;
-  if (remainder !== 0) {
-    target.setMinutes(target.getMinutes() - remainder);
-  }
-  return {
-    iso: target.toISOString(),
-    label: new Intl.DateTimeFormat("ko-KR", {
+function formatWindowEnd(iso: string, language: Language): string {
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
       timeZone: "Asia/Seoul",
       hour: "numeric",
       minute: "2-digit",
-    }).format(target),
+    }).format(new Date(iso));
+}
+
+const REJECTION_COPY: Record<string, { ko: string; en: string }> = {
+  TIME_LIMIT: {
+    ko: "남은 시간 안에 안전하게 다녀올 수 없음",
+    en: "Not enough time for a safe round trip",
+  },
+  OPEN_WINDOW_OVERFLOW: {
+    ko: "이동·체류·복귀가 남은 시간을 초과함",
+    en: "Travel, stay and return exceed the available window",
+  },
+  DISTANCE_LIMIT: {
+    ko: "설정한 이동 거리보다 멂",
+    en: "Beyond the selected travel-distance limit",
+  },
+  ROUTE_UNAVAILABLE: {
+    ko: "실제 이동 경로를 확인하지 못함",
+    en: "A real route could not be verified",
+  },
+  OFFICIALLY_CLOSED: {
+    ko: "제안된 방문 시간에 공식적으로 휴무·폐점",
+    en: "Officially closed during the proposed visit",
+  },
+  OPERATING_STATUS_UNCONFIRMED: {
+    ko: "체류 시간 전체의 운영 여부가 확인되지 않음",
+    en: "Opening for the full stay is unconfirmed",
+  },
+  OPERATING_STATUS_UPSTREAM_UNAVAILABLE: {
+    ko: "공식 운영정보 연결 실패",
+    en: "Official opening data was unavailable",
+  },
+  INDOOR_UNVERIFIED: {
+    ko: "실내 이용 가능 여부가 확인되지 않음",
+    en: "Indoor use could not be confirmed",
+  },
+  ACCESSIBILITY_UNVERIFIED: {
+    ko: "요청한 이동 편의 조건이 확인되지 않음",
+    en: "Requested accessibility could not be confirmed",
+  },
+  NEXT_FIXED_APPOINTMENT_AT_RISK: {
+    ko: "다음 고정 일정에 늦을 위험이 있음",
+    en: "The next fixed appointment would be at risk",
+  },
+};
+
+function returnProviderLabel(provider: string | undefined, language: Language): string {
+  const labels: Record<string, { ko: string; en: string }> = {
+    tmap_pedestrian: { ko: "TMAP 보행 경로", en: "TMAP pedestrian route" },
+    tmap_car: { ko: "TMAP 자동차 경로", en: "TMAP driving route" },
+    kakao_transit: { ko: "카카오 대중교통 경로", en: "Kakao transit route" },
+    kakao_bicycle: { ko: "카카오 자전거 경로", en: "Kakao cycling route" },
+    openstreetmap_osrm: { ko: "OpenStreetMap OSRM 경로", en: "OpenStreetMap OSRM route" },
   };
+  return provider && labels[provider]
+    ? labels[provider][language]
+    : language === "en"
+      ? "separately verified return route"
+      : "별도로 검증한 복귀 경로";
+}
+
+function ledgerStatusLabel(status: string, language: Language): string {
+  const labels: Record<string, { ko: string; en: string }> = {
+    live: { ko: "확인 완료", en: "Verified response" },
+    empty: { ko: "응답했지만 일치 결과 없음", en: "No matching record" },
+    error: { ko: "연결 실패", en: "Retrieval failed" },
+    not_required: { ko: "이번 조건에서 미사용", en: "Not required here" },
+    disabled: { ko: "제거실험에서 비활성", en: "Disabled for this ablation" },
+  };
+  return (
+    labels[status]?.[language] ??
+    tr(language, "상태를 확인할 수 없음", "Status unavailable")
+  );
+}
+
+function SourceLedgerDisclosure({
+  ledger,
+  language,
+}: {
+  ledger: unknown[] | undefined;
+  language: Language;
+}) {
+  if (!ledger?.length) return null;
+  return (
+    <details className={styles.sourceLedger}>
+      <summary>
+        {tr(
+          language,
+          `이번 요청에서 확인한 공식 데이터 ${ledger.length}건`,
+          `${ledger.length} official-data checks in this request`,
+        )}
+      </summary>
+      <p>
+        {tr(
+          language,
+          "추천 결과가 0건이어도 실제로 조회한 원천과 연결 실패를 숨기지 않습니다.",
+          "The sources checked—and any retrieval failures—remain visible even when no place qualifies.",
+        )}
+      </p>
+      <ul>
+        {ledger.map((entry, index) => {
+          const row = asRecord(entry);
+          const source =
+            readText(row, ["apiName", "source", "name"]) ||
+            tr(language, "공식 데이터", "Official data");
+          const operation = readText(row, ["operation"]);
+          const status = readText(row, ["status"]);
+          return (
+            <li key={`${source}-${operation}-${index}`}>
+              <span>
+                {source}
+                {operation ? ` · ${operation}` : ""}
+              </span>
+              <b>{ledgerStatusLabel(status, language)}</b>
+            </li>
+          );
+        })}
+      </ul>
+    </details>
+  );
+}
+
+function counterfactualGuidance(
+  counterfactual: RecoveryResponse["counterfactual"],
+  language: Language,
+): string {
+  const relaxation = counterfactual?.requiredRelaxation;
+  if (!relaxation) {
+    return language === "en"
+      ? "Try a longer window, a shorter stay or a closer origin."
+      : "남은 시간을 늘리거나 체류 시간을 줄이고, 더 가까운 출발지에서 다시 찾아보세요.";
+  }
+  const amount = relaxation.amount;
+  const unit = relaxation.unit ?? "";
+  if (language === "ko" && relaxation.description) return relaxation.description;
+  if (relaxation.constraint === "available_time") {
+    return language === "en"
+      ? `Allow about ${amount ?? "more"} ${unit || "minutes"} more.`
+      : `남은 시간을 약 ${amount ?? "조금"}${unit || "분"} 늘려 보세요.`;
+  }
+  if (relaxation.constraint === "minimum_stay") {
+    return language === "en"
+      ? `Shorten the stay by about ${amount ?? "a few"} ${unit || "minutes"}.`
+      : `체류 시간을 약 ${amount ?? "조금"}${unit || "분"} 줄여 보세요.`;
+  }
+  if (relaxation.constraint === "maximum_distance") {
+    return language === "en"
+      ? `Increase the distance limit by about ${amount ?? "a little"} ${unit || "metres"}.`
+      : `이동 거리 한도를 약 ${amount ?? "조금"}${unit || "m"} 늘려 보세요.`;
+  }
+  return language === "en"
+    ? "Adjust the stated constraint and search again."
+    : relaxation.description || "표시된 조건을 조정해 다시 찾아보세요.";
 }
 
 function minutesLabel(language: Language, minutes: number): string {
@@ -117,6 +259,9 @@ export default function DiscoverWindowPanel({
   /* 직접 입력을 이 화면 안에서 편다. 탭을 바꾸면 지금 하려던 일이 사라진다. */
   const [manualOpen, setManualOpen] = useState(false);
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
+  const [windowEndIso, setWindowEndIso] = useState(() =>
+    windowEndIsoFromMinutes(120),
+  );
   const [plannedStayMinutes, setPlannedStayMinutes] = useState<number>(60);
   const [audience, setAudience] = useState<Audience>("general");
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
@@ -132,9 +277,9 @@ export default function DiscoverWindowPanel({
   const [error, setError] = useState("");
   const [result, setResult] = useState<RecoveryResponse | null>(null);
 
-  const windowEnd = useMemo(
-    () => windowEndFromMinutes(windowMinutes),
-    [windowMinutes],
+  const windowEndLabel = useMemo(
+    () => formatWindowEnd(windowEndIso, language),
+    [windowEndIso, language],
   );
   const modeConfig =
     TRAVEL_MODES.find((item) => item.value === travelMode) ?? TRAVEL_MODES[0];
@@ -165,9 +310,14 @@ export default function DiscoverWindowPanel({
     }
     setNextPlaceState("loading");
     try {
-      const payload = await fetchJson(
-        `/api/v1/places/search?keyword=${encodeURIComponent(keyword)}&purpose=saved_stop&fallback=auto`,
-      );
+      const payload = await fetchJson("/api/v1/places/search", {
+        method: "POST",
+        body: JSON.stringify({
+          keyword,
+          purpose: "saved_stop",
+          fallback: "auto",
+        }),
+      });
       setNextPlaceResults(normalizePlaceResults(payload).slice(0, 6));
       setNextPlaceState("success");
     } catch (searchError) {
@@ -212,6 +362,14 @@ export default function DiscoverWindowPanel({
     setState("loading");
     setResult(null);
     try {
+      /* 표시와 POST가 같은 deadline을 가리키게 한 시각을 한 번만 만든다.
+         선택 시간을 시계 격자로 내림하지 않으므로 60분 선택은 정확히
+         60분이며, 요청 경계가 29분/59분이어도 짧아지지 않는다. */
+      const requestWindowEndIso = windowEndIsoFromMinutes(
+        windowMinutes,
+        Date.now(),
+      );
+      setWindowEndIso(requestWindowEndIso);
       const payload = await fetchJson("/api/v1/recover", {
         method: "POST",
         body: JSON.stringify({
@@ -237,7 +395,7 @@ export default function DiscoverWindowPanel({
           minimumStayMinutes: Math.min(plannedStayMinutes, 180),
           analyticsConsent,
           openWindow: {
-            availableUntil: windowEnd.iso,
+            availableUntil: requestWindowEndIso,
             plannedStayMinutes,
             nextPlace: nextPlace
               ? {
@@ -246,7 +404,7 @@ export default function DiscoverWindowPanel({
                   label: nextPlace.title,
                   areaCode: nextPlace.areaCode || undefined,
                   sigunguCode: nextPlace.sigunguCode || undefined,
-                  arriveBy: windowEnd.iso,
+                  arriveBy: requestWindowEndIso,
                 }
               : undefined,
           },
@@ -264,6 +422,16 @@ export default function DiscoverWindowPanel({
           typeof record?.rejectedCount === "number"
             ? record.rejectedCount
             : undefined,
+        rejectionSummary: Array.isArray(record?.rejectionSummary)
+          ? record.rejectionSummary.flatMap((entry) => {
+              const row = asRecord(entry);
+              const reasonCode = readText(row, ["reasonCode"]);
+              const count = Number(row?.count);
+              return reasonCode && Number.isFinite(count) && count > 0
+                ? [{ reasonCode, count }]
+                : [];
+            })
+          : [],
         warnings: Array.isArray(record?.warnings)
           ? (record.warnings as string[])
           : [],
@@ -272,6 +440,7 @@ export default function DiscoverWindowPanel({
           : [],
         generatedAt: readText(record, ["generatedAt"]) || undefined,
         recoveryMode: readText(record, ["recoveryMode"]) || undefined,
+        counterfactual: asRecord(record?.counterfactual) ?? undefined,
       });
       setState("success");
     } catch (submitError) {
@@ -385,7 +554,10 @@ export default function DiscoverWindowPanel({
                 className={
                   windowMinutes === minutes ? styles.chipActive : styles.chip
                 }
-                onClick={() => setWindowMinutes(minutes)}
+                onClick={() => {
+                  setWindowMinutes(minutes);
+                  setWindowEndIso(windowEndIsoFromMinutes(minutes));
+                }}
               >
                 {minutesLabel(language, minutes)}
               </button>
@@ -394,8 +566,8 @@ export default function DiscoverWindowPanel({
           <p className={styles.derived}>
             {tr(
               language,
-              `${windowEnd.label}까지 계산합니다. 30분 단위로만 잡습니다.`,
-              `Calculated until ${windowEnd.label}, on a 30-minute grid.`,
+              `${windowEndLabel}까지, 선택한 ${minutesLabel(language, windowMinutes)}을 줄이지 않고 계산합니다.`,
+              `Calculated until ${windowEndLabel}; the selected ${minutesLabel(language, windowMinutes)} window is not shortened.`,
             )}
           </p>
         </section>
@@ -664,8 +836,8 @@ export default function DiscoverWindowPanel({
         <p className={styles.footnote}>
           {tr(
             language,
-            "이동 시간과 운영 여부를 실제로 확인한 곳만 결과에 올립니다. 확인하지 못한 조건은 숨기지 않고 따로 알려 드립니다.",
-            "Only places with a verified route and opening status are listed. Anything unverified is shown, not hidden.",
+            "실제 이동·복귀 경로와 체류 시간 전체의 운영 여부가 확인된 곳만 선택할 수 있습니다. 미확인 후보는 사유와 함께 차단합니다.",
+            "Only places with verified outbound and return routes and confirmed opening for the full stay can be selected. Unverified options are blocked with a reason.",
           )}
         </p>
       </form>
@@ -735,6 +907,32 @@ function DiscoverResults({
         {(result.warnings ?? []).map((warning, index) => (
           <p key={index}>{warning}</p>
         ))}
+        {(result.rejectionSummary?.length ?? 0) > 0 && (
+          <section className={styles.rejectionPanel} aria-labelledby="discover-empty-reasons">
+            <strong id="discover-empty-reasons">
+              {tr(language, "제외된 실제 이유", "Why nearby places were excluded")}
+            </strong>
+            <ul>
+              {result.rejectionSummary?.map((entry) => (
+                <li key={entry.reasonCode}>
+                  <span>
+                    {REJECTION_COPY[entry.reasonCode]?.[language] ??
+                      tr(language, "필수 안전 조건을 충족하지 못함", "A required safety condition was not met")}
+                  </span>
+                  <b>
+                    {tr(language, `${entry.count}곳`, `${entry.count} place${entry.count === 1 ? "" : "s"}`)}
+                  </b>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {result.counterfactual && (
+          <section className={styles.counterfactual}>
+            <strong>{tr(language, "결과를 만들 수 있는 최소 변경", "Smallest change that may produce a result")}</strong>
+            <p>{counterfactualGuidance(result.counterfactual, language)}</p>
+          </section>
+        )}
         <p>
           {tr(
             language,
@@ -742,6 +940,10 @@ function DiscoverResults({
             "A shorter stay or a longer window may change this. We never invent a place to fill the gap.",
           )}
         </p>
+        <SourceLedgerDisclosure
+          ledger={result.sourceLedger}
+          language={language}
+        />
       </div>
     );
   }
@@ -749,26 +951,37 @@ function DiscoverResults({
   return (
     <>
       {result.options.length > 1 && (
-        <div className={styles.sortRow} role="group" aria-label={tr(language, "정렬", "Sort")}>
-          {(
-            [
-              ["recommended", "추천순", "Recommended"],
-              ["nearest_first", "가까운 순", "Nearest"],
-              ["quiet_first", "한적한 순", "Quietest"],
-              ["busy_first", "붐비는 순", "Busiest"],
-            ] as const
-          ).map(([value, ko, en]) => (
-            <button
-              key={value}
-              type="button"
-              className={sort === value ? styles.sortActive : styles.sortChip}
-              aria-pressed={sort === value}
-              onClick={() => setSort(value)}
-            >
-              {tr(language, ko, en)}
-            </button>
-          ))}
-        </div>
+        <>
+          <div className={styles.sortRow} role="group" aria-label={tr(language, "정렬", "Sort")}>
+            {(
+              [
+                ["recommended", "추천순", "Recommended"],
+                ["nearest_first", "가까운 순", "Nearest"],
+                ["quiet_first", "한적한 순", "Quietest"],
+                ["busy_first", "붐비는 순", "Busiest"],
+              ] as const
+            ).map(([value, ko, en]) => (
+              <button
+                key={value}
+                type="button"
+                className={sort === value ? styles.sortActive : styles.sortChip}
+                aria-pressed={sort === value}
+                onClick={() => setSort(value)}
+              >
+                {tr(language, ko, en)}
+              </button>
+            ))}
+          </div>
+          {sort === "recommended" && (
+            <p className={styles.sortNote}>
+              {tr(
+                language,
+                "추천순은 안전 조건을 통과한 뒤 최소 변경·편안함·지역 발견을 대표하는 안을 먼저 보여줍니다. 표시 점수는 기초 적합도라 단순 점수순과 다를 수 있습니다.",
+                "Recommended order shows representative options for minimal change, comfort and local discovery after safety checks. The displayed score is Base fit, so this is not a simple score ranking.",
+              )}
+            </p>
+          )}
+        </>
       )}
       <ul className={styles.cards}>
         {sortSimpleOptions(result.options, sort).map((option, index) => {
@@ -791,13 +1004,12 @@ function DiscoverResults({
                 : routeProvider === "kakao_bicycle"
                   ? { ko: "자전거로", noun: "자전거", en: "cycle" }
                   : { ko: "걸어서", noun: "보행", en: "walk" };
-          const unverified =
-            option.confirmationRequired ||
-            (option.evidenceGaps?.length ?? 0) > 0;
+          const safety = optionApplicationSafety(option, language);
+          const isBlocked = !safety.canApply;
           return (
             <li
               key={option.id || option.contentId || `${option.title}-${index}`}
-              className={unverified ? styles.cardUnverified : styles.card}
+              className={isBlocked ? styles.cardUnverified : styles.card}
               data-testid="discover-option"
             >
               <div className={styles.cardHead}>
@@ -808,7 +1020,7 @@ function DiscoverResults({
                 {typeof option.score === "number" && (
                   <span className={styles.score}>
                     <b>{Math.round(option.score)}</b>
-                    <small>{tr(language, "적합도", "Fit")}</small>
+                    <small>{tr(language, "기초 적합도", "Base fit")}</small>
                   </span>
                 )}
               </div>
@@ -827,7 +1039,10 @@ function DiscoverResults({
                   </li>
                   <li>
                     <span>
-                      {formatIsoTime(option.scheduleDiff?.replacementNode?.startAt)}
+                      {formatIsoTime(
+                        option.scheduleDiff?.replacementNode?.startAt,
+                        language,
+                      )}
                       {tr(language, " 도착", " arrive")}
                     </span>
                     <strong>
@@ -909,7 +1124,7 @@ function DiscoverResults({
               {window && (
                 <p
                   className={
-                    window.leftoverMinutes >= 15
+                    window.leftoverMinutes >= window.requiredBufferMinutes
                       ? styles.fitGood
                       : styles.fitTight
                   }
@@ -917,44 +1132,60 @@ function DiscoverResults({
                   {window.returnBasis === "next_place_route"
                     ? tr(
                         language,
-                        `다음 장소 도착까지 ${window.leftoverMinutes}분 여유가 남습니다.`,
-                        `${window.leftoverMinutes} min of slack before your next place.`,
+                        `다음 장소 도착까지 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다.`,
+                        `${window.leftoverMinutes} min of slack remains before your next place, meeting the ${window.requiredBufferMinutes}-min safety reserve.`,
                       )
                     : tr(
                         language,
-                        `${window.leftoverMinutes}분 여유가 남습니다. 돌아오는 시간은 같은 ${modeVerb.noun} 경로 기준입니다.`,
-                        `${window.leftoverMinutes} min of slack. Return time uses the same ${modeVerb.en} route.`,
+                        `복귀 뒤 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다. 복귀는 ${returnProviderLabel(window.returnProvider, language)}로 별도 확인했습니다.`,
+                        `${window.leftoverMinutes} min remains after returning, meeting the ${window.requiredBufferMinutes}-min safety reserve. The return leg was separately verified with ${returnProviderLabel(window.returnProvider, language)}.`,
                       )}
                 </p>
               )}
 
-              {unverified && (
+              {window?.returnBasis === "origin_return_route" && (
+                <p className={styles.returnEvidence}>
+                  {tr(
+                    language,
+                    `복귀 근거 · ${returnProviderLabel(window.returnProvider, language)}${
+                      typeof window.returnDistanceMeters === "number"
+                        ? ` · ${window.returnDistanceMeters.toLocaleString("ko-KR")}m`
+                        : ""
+                    }${window.returnCalculatedAt ? ` · ${new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit" }).format(new Date(window.returnCalculatedAt))} 확인` : ""}`,
+                    `Return evidence · ${returnProviderLabel(window.returnProvider, language)}${
+                      typeof window.returnDistanceMeters === "number"
+                        ? ` · ${window.returnDistanceMeters.toLocaleString("en-US")} m`
+                        : ""
+                    }${window.returnCalculatedAt ? ` · checked ${new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", hour: "numeric", minute: "2-digit" }).format(new Date(window.returnCalculatedAt))} KST` : ""}`,
+                  )}
+                </p>
+              )}
+
+              {isBlocked && (
                 <section className={styles.gaps} role="alert">
                   <strong>
                     {tr(
                       language,
-                      "공식 정보로 확인하지 못한 조건",
-                      "Conditions official data could not confirm",
+                      safety.availabilityStatus === "confirmed_closed"
+                        ? "이 시간에는 문을 열지 않아 선택할 수 없습니다"
+                        : "공식 확인 전에는 선택할 수 없습니다",
+                      safety.availabilityStatus === "confirmed_closed"
+                        ? "Closed during this visit — unavailable"
+                        : "Unavailable until required evidence is verified",
                     )}
                   </strong>
                   <ul>
-                    {(option.evidenceGaps ?? []).map((gap, gapIndex) => (
-                      <li key={`${gap.code ?? "gap"}-${gapIndex}`}>
-                        {(language === "en" ? gap.noteEn : "") ||
-                          gap.note ||
-                          tr(
-                            language,
-                            "필수 조건 근거 미확인",
-                            "Required evidence missing",
-                          )}
+                    {safety.reasons.map((reason, reasonIndex) => (
+                      <li key={`${option.id}-safety-${reasonIndex}`}>
+                        {reason}
                       </li>
                     ))}
                   </ul>
                   <p>
                     {tr(
                       language,
-                      "출발 전에 운영기관 안내를 직접 확인해 주세요.",
-                      "Please confirm with the venue before you set out.",
+                      "헛걸음과 다음 일정 지연을 막기 위해 이 후보는 일정에 넣을 수 없습니다.",
+                      "This option cannot be added because it could cause a wasted trip or delay the next appointment.",
                     )}
                   </p>
                 </section>
@@ -983,7 +1214,9 @@ function DiscoverResults({
                 <button
                   type="button"
                   className={styles.planFromPlace}
+                  disabled={isBlocked}
                   onClick={() =>
+                    safety.canApply &&
                     onPlanFromPlace({
                       title: option.title,
                       address: option.address ?? "",
@@ -991,11 +1224,9 @@ function DiscoverResults({
                     })
                   }
                 >
-                  {tr(
-                    language,
-                    "이 곳을 일정에 넣기",
-                    "Add this to my plan",
-                  )}
+                  {isBlocked
+                    ? tr(language, "안전 확인 전 추가 불가", "Cannot add until verified")
+                    : tr(language, "이 곳을 일정에 넣기", "Add this to my plan")}
                 </button>
               )}
             </li>
@@ -1008,23 +1239,51 @@ function DiscoverResults({
           탈락을 선고하는 말투다. 둘째, 그 N곳이 무엇인지 알려 주지 않으므로
           여행자는 자기가 무엇을 못 봤는지도 모른다.
 
-          엔진이 이제 운영시간으로 후보를 지우지 않고 사유와 함께 보여 주므로
-          여기서 남는 것은 정말로 갈 수 없는 경우(경로가 없거나 남은 시간을
-          넘김)뿐이다. 그 사실만 담담하게 적는다. */}
-      {typeof result.rejectedCount === "number" && result.rejectedCount > 0 && (
+          엔진은 confirmed_open으로 확인되지 않은 후보(휴무·운영 미확인·상위
+          운영정보 장애)를 안전하게 목록에서 제외한다. 이 화면은 제외 건수를
+          뭉개지 않고 사유별로 보여 주며, 사용자가 조건을 바꿔 다시 찾을 수 있는
+          경우에는 counterfactual 안내도 함께 보존한다. */}
+      {(result.rejectionSummary?.length ?? 0) > 0 ? (
+        <section className={styles.rejectionPanel} aria-labelledby="discover-rejection-reasons">
+          <strong id="discover-rejection-reasons">
+            {tr(language, "목록에서 제외된 이유", "Why other nearby places were excluded")}
+          </strong>
+          <ul>
+            {result.rejectionSummary?.map((entry) => (
+              <li key={entry.reasonCode}>
+                <span>
+                  {REJECTION_COPY[entry.reasonCode]?.[language] ??
+                    tr(language, "필수 안전 조건을 충족하지 못함", "A required safety condition was not met")}
+                </span>
+                <b>{tr(language, `${entry.count}곳`, `${entry.count} place${entry.count === 1 ? "" : "s"}`)}</b>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : typeof result.rejectedCount === "number" && result.rejectedCount > 0 ? (
         <p className={styles.rejected}>
           {tr(
             language,
-            `근처 ${result.rejectedCount}곳은 남은 시간 안에 다녀올 수 없어 목록에서 빠졌습니다.`,
-            `${result.rejectedCount} nearby places do not fit in the time you have left.`,
+            `근처 ${result.rejectedCount}곳은 안전 조건을 충족하지 못해 목록에서 빠졌습니다.`,
+            `${result.rejectedCount} nearby places did not meet the required safety conditions.`,
           )}
         </p>
+      ) : null}
+      {result.counterfactual && (
+        <section className={styles.counterfactual}>
+          <strong>{tr(language, "조건을 최소한으로 바꾸려면", "Smallest useful condition change")}</strong>
+          <p>{counterfactualGuidance(result.counterfactual, language)}</p>
+        </section>
       )}
       {(result.warnings ?? []).map((warning, index) => (
         <p key={index} className={styles.warning}>
           {warning}
         </p>
       ))}
+      <SourceLedgerDisclosure
+        ledger={result.sourceLedger}
+        language={language}
+      />
     </>
   );
 }

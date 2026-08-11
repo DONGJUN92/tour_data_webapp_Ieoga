@@ -13,10 +13,12 @@ import {
   getOrCreateSession,
   getRequestId,
   jsonResponse,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
   setSessionCookie,
 } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
+import { verifyEmbedSessionToken } from "@/lib/session-cookie";
 import { recoverTrip } from "@/lib/recovery/engine";
 import {
   recoveryAdministrativeScopes,
@@ -82,6 +84,32 @@ export async function POST(request: NextRequest) {
   if (signingUnavailable) {
     signingUnavailable.headers.set("X-Request-ID", requestId);
     return signingUnavailable;
+  }
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) {
+    unsafeMutation.headers.set("X-Request-ID", requestId);
+    return unsafeMutation;
+  }
+  const presentedEmbedToken = request.headers.get(
+    "x-ieoga-embed-session",
+  );
+  const embedSessionId = presentedEmbedToken
+    ? verifyEmbedSessionToken(presentedEmbedToken)
+    : undefined;
+  if (presentedEmbedToken && !embedSessionId) {
+    const response = jsonResponse(
+      {
+        requestId,
+        error: {
+          code: "INVALID_EMBED_SESSION",
+          message:
+            "위젯 세션이 만료되었거나 유효하지 않습니다. 위젯에서 다시 시도해 주세요.",
+        },
+      },
+      { status: 401 },
+    );
+    response.headers.set("X-Request-ID", requestId);
+    return response;
   }
   const rate = allowRequest(requestRateKey(request, "recover"), 15);
   if (!rate.allowed) {
@@ -167,15 +195,35 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const session = getOrCreateSession(request);
   const submittedItinerary = parsed.data.itinerary;
+  const openWindow = parsed.data.openWindow;
+  if (
+    embedSessionId &&
+    (submittedItinerary || !openWindow || parsed.data.analyticsConsent)
+  ) {
+    const response = jsonResponse(
+      {
+        requestId,
+        error: {
+          code: "EMBED_SESSION_SCOPE_VIOLATION",
+          message:
+            "위젯 세션은 동의 없는 빈 시간 추천에만 사용할 수 있습니다.",
+        },
+      },
+      { status: 403 },
+    );
+    response.headers.set("X-Request-ID", requestId);
+    return response;
+  }
+  const session = embedSessionId
+    ? { id: embedSessionId, isNew: false }
+    : getOrCreateSession(request);
   const serverIncidentAt = new Date().toISOString();
 
   /* 빈 시간 추천은 저장된 일정을 쓰지 않는다. 사용자가 지금 알려 준 창 조건만이
      입력이므로 소유권 조회와 일정 계약 재검증을 건너뛴다. 창의 끝 시각은 서버
      시각을 기준으로 다시 확인해, 기기 시각이 틀어진 채로 "아직 3시간 남았다"는
      계산이 통과하는 일을 막는다. */
-  const openWindow = parsed.data.openWindow;
   if (openWindow && !submittedItinerary) {
     const windowEndAt = Date.parse(openWindow.availableUntil);
     const remainingMinutes = Math.floor(

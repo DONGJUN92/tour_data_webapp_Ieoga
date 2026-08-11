@@ -10,10 +10,12 @@
     "build": "vinext build && node scripts/sanitize-build.mjs",
     "start": "node scripts/start-production-local.mjs",
     "test": "npm run build && npm run test:unit",
-    "test:unit": "node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/open-window.test.mjs tests/availability-fields.test.mjs tests/travel-mode.test.mjs tests/kakao-modes.test.mjs tests/indoor-and-related.test.mjs tests/ablation.test.mjs tests/map-and-embed.test.mjs tests/monthly-base-descent.test.mjs tests/rejection-labels.test.mjs tests/accessibility-conversion.test.mjs tests/upstream-vs-data-gap.test.mjs tests/counterfactual.test.mjs tests/place-search.test.mjs tests/korean-text.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs tests/open-window-apply.test.mjs tests/persona-s1-regressions.test.mjs tests/mission-counting.test.mjs tests/crowd-series.test.mjs tests/stay-weather.test.mjs tests/journey-drift.test.mjs tests/hours-card.test.mjs tests/crowd-fallback.test.mjs tests/plan-placement.test.mjs",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=lib/**/*.ts --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/open-window.test.mjs tests/availability-fields.test.mjs tests/travel-mode.test.mjs tests/kakao-modes.test.mjs tests/indoor-and-related.test.mjs tests/ablation.test.mjs tests/map-and-embed.test.mjs tests/monthly-base-descent.test.mjs tests/rejection-labels.test.mjs tests/accessibility-conversion.test.mjs tests/upstream-vs-data-gap.test.mjs tests/counterfactual.test.mjs tests/place-search.test.mjs tests/korean-text.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs tests/open-window-apply.test.mjs tests/persona-s1-regressions.test.mjs tests/mission-counting.test.mjs tests/crowd-series.test.mjs tests/stay-weather.test.mjs tests/journey-drift.test.mjs tests/hours-card.test.mjs tests/crowd-fallback.test.mjs tests/plan-placement.test.mjs",
+    "test:unit": "node --test --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/open-window.test.mjs tests/availability-fields.test.mjs tests/travel-mode.test.mjs tests/kakao-modes.test.mjs tests/indoor-and-related.test.mjs tests/ablation.test.mjs tests/map-and-embed.test.mjs tests/monthly-base-descent.test.mjs tests/rejection-labels.test.mjs tests/accessibility-conversion.test.mjs tests/upstream-vs-data-gap.test.mjs tests/counterfactual.test.mjs tests/place-search.test.mjs tests/korean-text.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs tests/open-window-apply.test.mjs tests/persona-s1-regressions.test.mjs tests/mission-counting.test.mjs tests/crowd-series.test.mjs tests/stay-weather.test.mjs tests/journey-drift.test.mjs tests/hours-card.test.mjs tests/crowd-fallback.test.mjs tests/plan-placement.test.mjs tests/submission-gate.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=lib/**/*.ts --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 --test-concurrency=1 tests/rendered-html.test.mjs tests/policy-missions.test.mjs tests/persistence-atomicity.test.mjs tests/continuity-engine.test.mjs tests/open-window.test.mjs tests/availability-fields.test.mjs tests/travel-mode.test.mjs tests/kakao-modes.test.mjs tests/indoor-and-related.test.mjs tests/ablation.test.mjs tests/map-and-embed.test.mjs tests/monthly-base-descent.test.mjs tests/rejection-labels.test.mjs tests/accessibility-conversion.test.mjs tests/upstream-vs-data-gap.test.mjs tests/counterfactual.test.mjs tests/place-search.test.mjs tests/korean-text.test.mjs tests/simulation-guide.test.mjs tests/launch-evidence.test.mjs tests/provider-readiness.test.mjs tests/kma-weather.test.mjs tests/kto-concurrency.test.mjs tests/release-quality.test.mjs tests/open-window-apply.test.mjs tests/persona-s1-regressions.test.mjs tests/mission-counting.test.mjs tests/crowd-series.test.mjs tests/stay-weather.test.mjs tests/journey-drift.test.mjs tests/hours-card.test.mjs tests/crowd-fallback.test.mjs tests/plan-placement.test.mjs tests/submission-gate.test.mjs",
     "test:e2e": "playwright test",
     "audit:production": "npm audit --omit=dev --audit-level=high",
+    "evidence:structure": "node scripts/submission-gate.mjs --structure-only",
+    "release:gate": "node scripts/submission-gate.mjs --manifest outputs/submission-manifest.json",
     "quality": "npm run typecheck && npm run lint && npm run test && npm run test:coverage && npm run audit:production",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
@@ -31,12 +33,12 @@
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
     "@cloudflare/vite-plugin": "1.49.0",
-    "@cloudflare/workers-types": "5.20260731.1",
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@playwright/test": "1.62.1",
     "@vitejs/plugin-react": "6.0.5",
     "@vitejs/plugin-rsc": "0.5.32",
     "drizzle-kit": "0.31.10",
@@ -47,13 +49,14 @@
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.2.0",
-    "wrangler": "4.116.0"
+    "wrangler": "^4.116.0"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {
       "esbuild": "0.25.12"
     },
     "postcss": "8.5.25",
+    "nanoid": "3.3.17",
     "sharp": "0.35.3"
   },
   "type": "module"

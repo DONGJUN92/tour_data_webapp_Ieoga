@@ -8,6 +8,7 @@ const baseURL = `http://127.0.0.1:${PORT}`;
 // bytes proves the minimum HMAC contract without borrowing any developer or
 // deployment secret from the parent process.
 const E2E_SESSION_SIGNING_KEY = "ieoga-ci-only-session-key-000001";
+const E2E_COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -18,6 +19,9 @@ export default defineConfig({
   use: {
     baseURL,
     browserName: "chromium",
+    // Route-mocked contract tests must not be claimed by a previously cached
+    // production service worker, or their API assertions become nondeterministic.
+    serviceWorkers: "block",
     colorScheme: "light",
     locale: "ko-KR",
     timezoneId: "Asia/Seoul",
@@ -36,6 +40,8 @@ export default defineConfig({
     env: {
       IEOGA_PLAYWRIGHT_SERVER: "true",
       SESSION_SIGNING_KEY: E2E_SESSION_SIGNING_KEY,
+      EMBED_ALLOWED_ORIGINS: "http://127.0.0.1:4195",
+      DEPLOYMENT_COMMIT_SHA: E2E_COMMIT_SHA,
     },
     reuseExistingServer: false,
     timeout: 120_000,

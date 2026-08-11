@@ -7,9 +7,13 @@ import {
 } from "@/lib/db/repository";
 import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import {
+  attachRequestId,
+  getRequestId,
   getOrCreateSession,
   jsonResponse,
+  logServerError,
   readSessionId,
+  requireSameOriginJsonMutation,
   requireSessionSigning,
   setSessionCookie,
 } from "@/lib/http";
@@ -52,6 +56,7 @@ const wrappedRegistrationSchema = z
   });
 
 export async function GET(request: NextRequest) {
+  const requestId = getRequestId(request);
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
   const sessionId = readSessionId(request);
@@ -69,9 +74,11 @@ export async function GET(request: NextRequest) {
       itinerary: itineraries[0] ?? null,
       itineraries,
     });
-  } catch {
-    return jsonResponse(
+  } catch (error) {
+    logServerError("itineraries.get", requestId, error);
+    return attachRequestId(jsonResponse(
       {
+        requestId,
         error: {
           code: "DB_UNAVAILABLE",
           message:
@@ -79,13 +86,16 @@ export async function GET(request: NextRequest) {
         },
       },
       { status: 503 },
-    );
+    ), requestId);
   }
 }
 
 export async function POST(request: NextRequest) {
+  const requestId = getRequestId(request);
   const signingUnavailable = requireSessionSigning();
   if (signingUnavailable) return signingUnavailable;
+  const unsafeMutation = requireSameOriginJsonMutation(request);
+  if (unsafeMutation) return unsafeMutation;
   const rate = allowRequest(requestRateKey(request, "itineraries"), 20);
   if (!rate.allowed) {
     const response = jsonResponse(
@@ -130,14 +140,18 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
-    return jsonResponse(
-      {
-        error: {
-          code: "INVALID_JSON",
-          message: "일정 요청 형식을 확인해 주세요.",
+    return attachRequestId(
+      jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "INVALID_JSON",
+            message: "일정 요청 형식을 확인해 주세요.",
+          },
         },
-      },
-      { status: 400 },
+        { status: 400 },
+      ),
+      requestId,
     );
   }
 
@@ -212,16 +226,21 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
-  } catch {
-    return jsonResponse(
-      {
-        error: {
-          code: "REGION_REFERENCE_UNAVAILABLE",
-          message:
-            "공식 행정구역 기준표를 확인할 수 없어 일정을 저장하지 않았습니다.",
+  } catch (error) {
+    logServerError("itineraries.region_reference", requestId, error);
+    return attachRequestId(
+      jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "REGION_REFERENCE_UNAVAILABLE",
+            message:
+              "공식 행정구역 기준표를 확인할 수 없어 일정을 저장하지 않았습니다.",
+          },
         },
-      },
-      { status: 503 },
+        { status: 503 },
+      ),
+      requestId,
     );
   }
   const saved = await saveItinerary({
@@ -231,31 +250,33 @@ export async function POST(request: NextRequest) {
     ephemeralLocationNodeIds: wrapped.success
       ? wrapped.data.ephemeralLocationNodeIds
       : undefined,
+    requestId,
   });
   if (!saved.saved) {
-    return jsonResponse(
-      {
-        error: {
-          code: saved.reason,
-          message:
-            saved.reason === "NOT_FOUND"
-              ? "수정할 일정을 찾지 못했습니다."
-              : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
-                ? "일회성 현재 위치는 변경 가능한 일정 노드에만 지정할 수 있습니다."
-              : "현재 일정을 저장하지 못했습니다.",
-          /* 원인을 화면까지 올린다. 로그를 볼 수 없는 자리에서 이 오류가 났고,
-             "재시도하세요"만 남으면 여행자도 우리도 다음 수가 없다. */
-          cause: "cause" in saved ? saved.cause : undefined,
+    return attachRequestId(
+      jsonResponse(
+        {
+          requestId,
+          error: {
+            code: saved.reason,
+            message:
+              saved.reason === "NOT_FOUND"
+                ? "수정할 일정을 찾지 못했습니다."
+                : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
+                  ? "일회성 현재 위치는 변경 가능한 일정 노드에만 지정할 수 있습니다."
+                  : "현재 일정을 저장하지 못했습니다.",
+          },
         },
-      },
-      {
-        status:
-          saved.reason === "NOT_FOUND"
-            ? 404
-            : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
-              ? 400
-              : 503,
-      },
+        {
+          status:
+            saved.reason === "NOT_FOUND"
+              ? 404
+              : saved.reason === "INVALID_EPHEMERAL_LOCATION_NODE"
+                ? 400
+                : 503,
+        },
+      ),
+      requestId,
     );
   }
 

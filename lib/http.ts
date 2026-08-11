@@ -8,9 +8,15 @@ import {
 const SESSION_COOKIE = "ieoga_session";
 
 export function readSessionId(request: NextRequest): string | undefined {
-  return verifySessionCookieValue(
-    request.cookies.get(SESSION_COOKIE)?.value,
-  );
+  const cookieHeader = request.headers.get("cookie");
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== SESSION_COOKIE) continue;
+    return verifySessionCookieValue(part.slice(separator + 1).trim());
+  }
+  return undefined;
 }
 
 export function jsonResponse(
@@ -60,6 +66,48 @@ export function requireSessionSigning(): NextResponse | null {
   );
 }
 
+export function requireSameOriginJsonMutation(
+  request: NextRequest,
+  options: { requireJson?: boolean } = {},
+): NextResponse | null {
+  const origin = request.headers.get("origin");
+  const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
+  if (
+    origin !== request.nextUrl.origin ||
+    (fetchSite !== undefined && fetchSite !== "same-origin")
+  ) {
+    return jsonResponse(
+      {
+        error: {
+          code: "CROSS_ORIGIN_MUTATION_FORBIDDEN",
+          message:
+            "이 브라우저와 같은 출처에서 시작한 요청만 처리할 수 있습니다.",
+        },
+      },
+      { status: 403 },
+    );
+  }
+  if (options.requireJson !== false) {
+    const mediaType = request.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (mediaType !== "application/json") {
+      return jsonResponse(
+        {
+          error: {
+            code: "JSON_CONTENT_TYPE_REQUIRED",
+            message: "Content-Type application/json 요청만 처리할 수 있습니다.",
+          },
+        },
+        { status: 415 },
+      );
+    }
+  }
+  return null;
+}
+
 export function getRequestId(request: NextRequest): string {
   const candidate = request.headers.get("x-request-id");
   if (candidate && /^[a-zA-Z0-9_-]{8,80}$/.test(candidate)) return candidate;
@@ -92,6 +140,35 @@ export function setSessionCookie(
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
+  });
+}
+
+export function attachRequestId(
+  response: NextResponse,
+  requestId: string,
+): NextResponse {
+  response.headers.set("X-Request-ID", requestId);
+  return response;
+}
+
+export function logServerError(
+  scope: string,
+  requestId: string,
+  error: unknown,
+): void {
+  const candidate = error as { name?: unknown; code?: unknown } | null;
+  // Driver messages may contain SQL, schema names, bound values, provider
+  // URLs, or credentials. Keep logs correlatable without copying raw error
+  // text into either logs or downstream responses.
+  console.error(`[server] ${scope}`, {
+    requestId,
+    errorName:
+      typeof candidate?.name === "string" ? candidate.name : "UnknownError",
+    errorCode:
+      typeof candidate?.code === "string" ||
+      typeof candidate?.code === "number"
+        ? String(candidate.code).slice(0, 80)
+        : "unavailable",
   });
 }
 

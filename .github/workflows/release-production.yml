@@ -26,7 +26,7 @@ jobs:
       # Build/test-only material; the deployed secret remains in Cloudflare and
       # is preserved by --keep-vars. Never expose the production signing key to
       # the build process.
-      SESSION_SIGNING_KEY: "ieoga-release-build-only-key-0001"
+      SESSION_SIGNING_KEY: "ieoga-release-build-only-key-001"
 
     steps:
       - name: Check out the exact main commit

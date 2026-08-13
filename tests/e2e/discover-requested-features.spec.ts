@@ -110,7 +110,7 @@ test("free-time discovery supports location reselection, future departure and co
         openWindow: {
           windowStartAt: openWindow.departureAt,
           windowEndAt: openWindow.availableUntil,
-          windowMinutes: 180,
+          windowMinutes: 240,
           travelToMinutes: 10,
           plannedStayMinutes: openWindow.plannedStayMinutes,
           appliedStayMinutes: openWindow.plannedStayMinutes,
@@ -118,7 +118,7 @@ test("free-time discovery supports location reselection, future departure and co
           returnBasis: "origin_return_route",
           returnProvider: "tmap_pedestrian",
           requiredBufferMinutes: 15,
-          leftoverMinutes: 125,
+          leftoverMinutes: 185,
           status: "fits",
         },
       },
@@ -134,6 +134,10 @@ test("free-time discovery supports location reselection, future departure and co
         requestId: "discover-counted-categories",
         status: "verified",
         generatedAt: new Date().toISOString(),
+        referenceTime: {
+          mode: "assumed",
+          at: openWindow.departureAt,
+        },
         rejectedCount: 0,
         rejectionSummary: [],
         warnings: [],
@@ -186,7 +190,8 @@ test("free-time discovery supports location reselection, future departure and co
 
   await automatic.click();
   await expect(recheck).toBeVisible();
-  await page.getByRole("radio", { name: "1시간 후", exact: true }).click();
+  await page.getByRole("radio", { name: /날짜·시각 선택/ }).click();
+  await page.getByRole("button", { name: "1시간 뒤", exact: true }).click();
   await page.getByRole("radio", { name: "4시간", exact: true }).click();
   await page.getByRole("radio", { name: "0시간 30분", exact: true }).click();
   await page
@@ -206,7 +211,11 @@ test("free-time discovery supports location reselection, future departure and co
   expect(recoveryBody).toBeDefined();
   expect(recoveryBody).not.toHaveProperty("maxDistanceMeters");
   expect(recoveryBody).not.toHaveProperty("radiusMeters");
-  expect(recoveryBody?.availableMinutes).toBe(180);
+  expect(recoveryBody?.availableMinutes).toBe(240);
+  expect(recoveryBody?.referenceTime).toEqual({
+    mode: "assumed",
+    at: expect.any(String),
+  });
   const requestWindow = recoveryBody?.openWindow as {
     departureAt: string;
     availableUntil: string;
@@ -215,7 +224,7 @@ test("free-time discovery supports location reselection, future departure and co
     (Date.parse(requestWindow.availableUntil) -
       Date.parse(requestWindow.departureAt)) /
       60_000,
-  ).toBe(180);
+  ).toBe(240);
   expect(Date.parse(requestWindow.departureAt)).toBeGreaterThan(
     Date.now() + 55 * 60_000,
   );

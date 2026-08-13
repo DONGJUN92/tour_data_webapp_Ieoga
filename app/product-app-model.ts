@@ -936,13 +936,14 @@ export function itineraryContract(
   plan: JourneyPlan,
   disruptedNodeId?: string,
   nextFixedNodeId?: string,
+  occurredAt = new Date().toISOString(),
 ) {
   return {
     id: plan.id === "new-journey" ? undefined : plan.id,
     title: plan.title,
     timezone: "Asia/Seoul",
     audience: plan.audience,
-    occurredAt: new Date().toISOString(),
+    occurredAt,
     disruptedNodeId: disruptedNodeId ?? plan.stops.find((stop) => !stop.fixed)?.id ?? plan.stops[0]?.id,
     nextFixedNodeId: nextFixedNodeId || undefined,
     nodes: plan.stops.map((stop, index) => ({

@@ -69,6 +69,17 @@ function weatherKey(latitude: number, longitude: number) {
   return `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
 }
 
+/* Open-Meteo returns local wall-clock strings when `timezone=auto` is used.
+   A string without an offset is interpreted in the server runtime timezone,
+   which made a Korea observation appear nine hours old on UTC workers and
+   caused a current-time request to select a forecast instead of the observed
+   conditions. All coordinates are constrained to Korea, so attach KST. */
+function koreaInstant(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  if (/(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) return value;
+  return `${value}${/:\d{2}:\d{2}$/u.test(value) ? "+09:00" : ":00+09:00"}`;
+}
+
 export async function getWeatherEvidence(
   latitude: number,
   longitude: number,
@@ -188,7 +199,7 @@ export async function getWeatherEvidence(
     const hourlyForecast: KmaForecastSlot[] = (payload.hourly?.time ?? [])
       .map((time, index) => {
         /* Open-Meteo는 `2026-08-05T15:00` 형태로 준다 — 초와 오프셋이 없다. */
-        const at = /[+Z]/.test(time) ? time : `${time}:00+09:00`;
+        const at = koreaInstant(time, observedAt);
         const millimeters = payload.hourly?.precipitation?.[index];
         return {
           at,
@@ -219,7 +230,7 @@ export async function getWeatherEvidence(
         Number(current.snowfall ?? 0);
     result = {
       status: "available",
-      observedAt: current.time || observedAt,
+      observedAt: koreaInstant(current.time, observedAt),
       temperatureCelsius: Number(current.temperature_2m),
       apparentTemperatureCelsius: Number(
         current.apparent_temperature ?? current.temperature_2m,

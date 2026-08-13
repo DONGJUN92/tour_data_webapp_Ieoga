@@ -92,6 +92,21 @@
   line-height: 1.55;
 }
 
+.referenceTimeResult {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  background: var(--brand-tint);
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.referenceTimeResult strong {
+  color: var(--brand-deep);
+}
+
 .originActions {
   display: flex;
   flex-wrap: wrap;

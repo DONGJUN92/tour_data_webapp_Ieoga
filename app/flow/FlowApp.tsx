@@ -21,6 +21,13 @@ import {
 } from "../product-app-model";
 import { withParticle } from "@/lib/text/korean";
 import { sourceLabelText, statusLabel } from "@/lib/text/status-labels";
+import { ReferenceTimePicker } from "../ReferenceTimePicker";
+import {
+  formatReferenceTime,
+  resolveReferenceTime,
+  scheduledReferenceFromOffset,
+  type ReferenceTimeMode,
+} from "../reference-time";
 import {
   authoritativeExecutionMatchesApply,
   executionPreservesLockedAppointment,
@@ -551,6 +558,18 @@ export default function FlowApp() {
   const [appointment, setAppointment] = useState({ date: "", time: "" });
   const apptDate = appointment.date;
   const apptTime = appointment.time;
+  const [referenceTimeMode, setReferenceTimeMode] =
+    useState<ReferenceTimeMode>("now");
+  const [referenceTimeLocal, setReferenceTimeLocal] = useState(() =>
+    scheduledReferenceFromOffset(30),
+  );
+  /* Results may show only the server-canonical time. Keeping the submitted
+     client value out of this state prevents a network response without the
+     contract from being presented as authoritative. */
+  const [authoritativeReferenceTime, setAuthoritativeReferenceTime] = useState<{
+    mode: "current" | "assumed";
+    at: string;
+  } | null>(null);
   const [apptQuery, setApptQuery] = useState("");
   const [apptHits, setApptHits] = useState<PlaceHit[]>([]);
   const [apptPlace, setApptPlace] = useState<PlaceHit | null>(null);
@@ -614,6 +633,7 @@ export default function FlowApp() {
   });
   const [recoveryStale, setRecoveryStale] = useState(false);
   const searchAbort = useRef<AbortController | null>(null);
+  const searchRequestGenerationRef = useRef(0);
   const applyAbort = useRef<AbortController | null>(null);
   const applyInFlightRef = useRef(false);
   const applyRequestGenerationRef = useRef(0);
@@ -673,7 +693,9 @@ export default function FlowApp() {
       );
     if (!hadRecoveryState) return;
 
+    searchRequestGenerationRef.current += 1;
     searchAbort.current?.abort();
+    searchAbort.current = null;
     if (applyInFlightRef.current) {
       applyRequestGenerationRef.current += 1;
       applyAbort.current?.abort();
@@ -689,6 +711,7 @@ export default function FlowApp() {
     setRejectionSummary([]);
     setRecoveryRequestId("");
     setRecoveryPersisted(false);
+    setAuthoritativeReferenceTime(null);
     setSelectedOptionId("");
     setAcknowledgedOptionId("");
     setExecution(null);
@@ -709,8 +732,21 @@ export default function FlowApp() {
     }
   }
 
+  function changeReferenceTimeMode(mode: ReferenceTimeMode) {
+    if (mode === referenceTimeMode) return;
+    invalidateRecoveryResults();
+    setReferenceTimeMode(mode);
+  }
+
+  function changeReferenceTimeLocal(value: string) {
+    if (value === referenceTimeLocal) return;
+    invalidateRecoveryResults();
+    setReferenceTimeLocal(value);
+  }
+
   useEffect(
     () => () => {
+      searchRequestGenerationRef.current += 1;
       searchAbort.current?.abort();
       applyRequestGenerationRef.current += 1;
       applyAbort.current?.abort();
@@ -818,12 +854,27 @@ export default function FlowApp() {
     };
   }, []);
 
-  /* Minutes between now and the appointment — the window the engine may
-     spend. Null while the clock is still unknown. */
-  const availableMinutes = useMemo(() => {
+  const referenceTimeResolution = useMemo(() => {
     if (nowMs == null) return null;
-    return appointmentMinutesFromNow(apptDate, apptTime, nowMs);
-  }, [apptDate, apptTime, nowMs]);
+    return resolveReferenceTime(
+      referenceTimeMode,
+      referenceTimeLocal,
+      language,
+      nowMs,
+    );
+  }, [language, nowMs, referenceTimeLocal, referenceTimeMode]);
+
+  /* The usable window begins at the explicit reference time, not necessarily
+     when this screen is rendered. The same timestamp is captured again at
+     submit time so registration and recovery share one exact baseline. */
+  const availableMinutes = useMemo(() => {
+    if (!referenceTimeResolution?.ok) return null;
+    return appointmentMinutesFromNow(
+      apptDate,
+      apptTime,
+      referenceTimeResolution.timestamp,
+    );
+  }, [apptDate, apptTime, referenceTimeResolution]);
   const appointmentDateBounds = useMemo(() => {
     if (nowMs == null) return null;
     const now = new Date(nowMs);
@@ -837,9 +888,16 @@ export default function FlowApp() {
   }, [nowMs]);
   const appointmentWindowInvalid =
     nowMs != null &&
+    Boolean(referenceTimeResolution?.ok) &&
     (availableMinutes == null ||
-      availableMinutes < MIN_APPOINTMENT_MINUTES ||
+      availableMinutes <= MIN_APPOINTMENT_MINUTES ||
       availableMinutes > MAX_APPOINTMENT_MINUTES);
+  const authoritativeReferenceLabel = authoritativeReferenceTime
+    ? tr(
+        `${authoritativeReferenceTime.mode === "assumed" ? "가정 출발" : "현재 시각"} · ${formatReferenceTime(authoritativeReferenceTime.at, language)} 기준 · 서버 확인`,
+        `${authoritativeReferenceTime.mode === "assumed" ? "Assumed departure" : "Current time"} · ${formatReferenceTime(authoritativeReferenceTime.at, language)} KST · server verified`,
+      )
+    : "";
 
 
   /* The dominant reason decides what to say. A schedule with no room is a
@@ -1155,15 +1213,30 @@ export default function FlowApp() {
        콜백의 클로저가 아직 옛 값을 보므로, 버튼이 한 번 더 눌려야 반영되는
        경합이 생긴다. */
     const includeOutdoor = options.includeOutdoor ?? allowOutdoor;
+    const requestNowMs = Date.now();
+    const requestReference = resolveReferenceTime(
+      referenceTimeMode,
+      referenceTimeLocal,
+      language,
+      requestNowMs,
+    );
+    const requestAvailableMinutes = requestReference.ok
+      ? appointmentMinutesFromNow(
+          apptDate,
+          apptTime,
+          requestReference.timestamp,
+        )
+      : null;
     if (
       !incident ||
       !origin ||
       !originSelectionCurrent ||
       !apptPlace ||
       !appointmentSelectionCurrent ||
-      availableMinutes == null ||
-      availableMinutes < MIN_APPOINTMENT_MINUTES ||
-      availableMinutes > MAX_APPOINTMENT_MINUTES
+      !requestReference.ok ||
+      requestAvailableMinutes == null ||
+      requestAvailableMinutes <= MIN_APPOINTMENT_MINUTES ||
+      requestAvailableMinutes > MAX_APPOINTMENT_MINUTES
     ) {
       return;
     }
@@ -1177,6 +1250,7 @@ export default function FlowApp() {
     searchAbort.current?.abort();
     const controller = new AbortController();
     searchAbort.current = controller;
+    const requestGeneration = ++searchRequestGenerationRef.current;
 
     setApiLog([]);
     setRecoveryStale(false);
@@ -1184,6 +1258,7 @@ export default function FlowApp() {
     setErrorRequestId("");
     setRecoveryRequestId("");
     setRecoveryPersisted(false);
+    setAuthoritativeReferenceTime(null);
     setSelectedOptionId("");
     setTourismCategory("all");
     setExecution(null);
@@ -1199,14 +1274,14 @@ export default function FlowApp() {
       );
 
     try {
-      const nowIso = new Date().toISOString();
+      const referenceIso = requestReference.iso;
       const nodes = [
         {
           id: "now",
           sequence: 0,
           type: "visit" as const,
           title: "지금 있는 곳",
-          startAt: nowIso,
+          startAt: referenceIso,
           locked: false,
           reservation: false,
         },
@@ -1243,6 +1318,12 @@ export default function FlowApp() {
           nodes,
         },
       }, controller.signal);
+      if (
+        controller.signal.aborted ||
+        requestGeneration !== searchRequestGenerationRef.current
+      ) {
+        return;
+      }
       const registeredRoot = asRecord(registered);
       const itineraryId = readText(
         asRecord(registeredRoot?.itinerary) ?? registeredRoot,
@@ -1293,9 +1374,13 @@ export default function FlowApp() {
         origin,
         incident,
         audience,
+        referenceTime:
+          referenceTimeMode === "now"
+            ? { mode: "current" }
+            : { mode: "assumed", at: referenceIso },
         /* 명시적으로 보낸 값이 엔진의 우천 기본값을 이긴다. */
         indoorOnly: incident === "rain" ? !includeOutdoor : false,
-        availableMinutes,
+        availableMinutes: requestAvailableMinutes,
         safetyBufferMinutes: 15,
         minimumStayMinutes: 30,
         analyticsConsent: false,
@@ -1305,14 +1390,31 @@ export default function FlowApp() {
           timezone: "Asia/Seoul",
           audience,
           nodes,
+          occurredAt: referenceIso,
           disruptedNodeId: "now",
           nextFixedNodeId: "next",
         },
       }, controller.signal);
 
-      if (controller.signal.aborted) return;
+      if (
+        controller.signal.aborted ||
+        requestGeneration !== searchRequestGenerationRef.current
+      ) {
+        return;
+      }
 
       const root = asRecord(recovered);
+      const responseReference = asRecord(root?.referenceTime);
+      const responseReferenceMode = readText(responseReference, ["mode"]);
+      const responseReferenceAt = readText(responseReference, ["at"]);
+      setAuthoritativeReferenceTime(
+        (responseReferenceMode === "current" ||
+          responseReferenceMode === "assumed") &&
+          responseReferenceAt &&
+          Number.isFinite(Date.parse(responseReferenceAt))
+          ? { mode: responseReferenceMode, at: responseReferenceAt }
+          : null,
+      );
       const list = Array.isArray(root?.options)
         ? (root.options as RecoveryOption[])
         : [];
@@ -1342,7 +1444,12 @@ export default function FlowApp() {
       );
       go(list.length ? "options" : "empty");
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (
+        controller.signal.aborted ||
+        requestGeneration !== searchRequestGenerationRef.current
+      ) {
+        return;
+      }
       const requestError = error as RequestError;
       setErrorText(
         requestError.message ||
@@ -1362,10 +1469,12 @@ export default function FlowApp() {
     appointmentSelectionCurrent,
     apptDate,
     apptTime,
-    availableMinutes,
     audience,
     allowOutdoor,
     go,
+    language,
+    referenceTimeLocal,
+    referenceTimeMode,
     tr,
   ]);
 
@@ -2194,6 +2303,14 @@ export default function FlowApp() {
               </p>
             )}
             <div className={styles.body}>
+              <ReferenceTimePicker
+                idPrefix="flow"
+                language={language}
+                mode={referenceTimeMode}
+                localValue={referenceTimeLocal}
+                onModeChange={changeReferenceTimeMode}
+                onLocalValueChange={changeReferenceTimeLocal}
+              />
               <div className={styles.appointmentFields}>
                 <div className={styles.field}>
                   <label className={styles.label} htmlFor="appt-date">
@@ -2246,18 +2363,18 @@ export default function FlowApp() {
                         "유효한 도착 날짜와 시각을 입력해 주세요.",
                         "Enter a valid arrival date and time.",
                       )
-                    : availableMinutes < MIN_APPOINTMENT_MINUTES
+                    : availableMinutes <= MIN_APPOINTMENT_MINUTES
                     ? tr(
-                        "현재부터 최소 15분 뒤의 약속을 선택해 주세요.",
-                        "Choose an appointment at least 15 minutes from now.",
+                        "조회 기준 시각과 약속 사이에 15분 안전 여유보다 더 많은 시간을 두어 주세요.",
+                        "Leave more than the 15-minute safety buffer between the reference time and appointment.",
                       )
                     : tr(
                         "현재부터 24시간 이내의 약속을 선택해 주세요.",
                         "Choose an appointment within the next 24 hours.",
                       )
                   : tr(
-                      "현재 시각 기준 15분 뒤부터 24시간 이내까지 선택할 수 있습니다.",
-                      "Choose a time from 15 minutes to 24 hours from now.",
+                      "조회 기준 시각 뒤이면서 현재부터 24시간 이내인 약속을 선택해 주세요.",
+                      "Choose an appointment after the reference time and within 24 hours of now.",
                     )}
               </p>
 
@@ -2448,6 +2565,11 @@ export default function FlowApp() {
                 }`,
               )}
             </p>
+            {authoritativeReferenceLabel && (
+              <p className={styles.referenceSummary} role="status">
+                {authoritativeReferenceLabel}
+              </p>
+            )}
             {options.length > 1 && (
               <>
                 <div className={styles.sortRow} role="group" aria-label={tr("정렬 기준", "Sort by")}>
@@ -2788,6 +2910,11 @@ export default function FlowApp() {
 
         {step === "active" && execution && (
           <>
+            {authoritativeReferenceLabel && (
+              <p className={styles.referenceSummary} role="status">
+                {authoritativeReferenceLabel}
+              </p>
+            )}
             {executionContractMissed ? (
               <section
                 className={styles.state}
@@ -3157,6 +3284,11 @@ export default function FlowApp() {
                   후보를 걸러냈는지와, 그래서 무엇을 바꾸면 되는지를
                   같이 알려준다. */}
               <p className={styles.sub}>{emptyReason.headline}</p>
+              {authoritativeReferenceLabel && (
+                <p className={styles.referenceSummary} role="status">
+                  {authoritativeReferenceLabel}
+                </p>
+              )}
             </div>
             {!!rejectionSummary.length && (
               <div className={styles.card} style={{ width: "100%" }}>
@@ -3230,8 +3362,9 @@ export default function FlowApp() {
             className={styles.cta}
             disabled={
               !appointmentSelectionCurrent ||
+              !referenceTimeResolution?.ok ||
               availableMinutes == null ||
-              availableMinutes < MIN_APPOINTMENT_MINUTES ||
+              availableMinutes <= MIN_APPOINTMENT_MINUTES ||
               availableMinutes > MAX_APPOINTMENT_MINUTES
             }
             onClick={() => void runRecovery()}
@@ -3241,11 +3374,16 @@ export default function FlowApp() {
                   "약속 장소를 선택해 주세요",
                   "Select the appointment place",
                 )
-              : availableMinutes != null &&
-                  availableMinutes < MIN_APPOINTMENT_MINUTES
+              : !referenceTimeResolution?.ok
                 ? tr(
-                    "약속까지 15분 이상 남아야 해요",
-                    "At least 15 minutes must remain",
+                    "조회 기준 시각을 확인해 주세요",
+                    "Check the reference time",
+                  )
+              : availableMinutes != null &&
+                  availableMinutes <= MIN_APPOINTMENT_MINUTES
+                ? tr(
+                    "약속 전 15분 안전 여유보다 더 필요해요",
+                    "More than the 15-minute safety buffer is required",
                   )
                 : availableMinutes != null &&
                     availableMinutes > MAX_APPOINTMENT_MINUTES

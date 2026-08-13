@@ -210,6 +210,7 @@ export const GLANCE_HOURS_AHEAD = [0, 1, 2] as const;
 export function weatherGlance(
   evidence: WeatherEvidence | undefined,
   from: Date,
+  options: { preferForecast?: boolean } = {},
 ): WeatherGlanceSlot[] {
   if (!evidence || evidence.status !== "available") return [];
   const fromMs = from.getTime();
@@ -218,26 +219,35 @@ export function weatherGlance(
 
   const slots: WeatherGlanceSlot[] = [];
 
-  /* "지금" 칸은 **예보가 아니라 실황**으로 만든다.
+  /* 실제 현재 시각의 "지금" 칸은 **예보가 아니라 실황**으로 만든다.
      23시 발표 단기예보는 00:00부터 시작하므로 현재 시각 이하의 슬롯이 없는
      때가 있다. 예보 슬롯이 있어야만 지금을 그리면 밤에는 이 칸이 비어 버린다.
-     실황은 매시 발표되고 관측값이므로 예보보다 정확하기도 하다. */
-  const nowSlot: WeatherGlanceSlot = {
-    hoursAhead: 0,
-    at: evidence.observedAt,
-    precipitationType:
-      evidence.observedPrecipitationType ??
-      /* 원시 코드가 없는 공급자(대체 경로)에서는 강수 유무만 옮긴다. 형태를
-         아는 것처럼 적지 않는다. */
-      (evidence.raining ? 1 : undefined),
-    skyCode: evidence.observedSkyCode,
-    precipitationProbabilityPercent: evidence.precipitationProbabilityPercent,
-    temperatureCelsius: evidence.temperatureCelsius,
-  };
-  slots.push(nowSlot);
+     실황은 매시 발표되고 관측값이므로 예보보다 정확하기도 하다. 반대로 사용자가
+     미래 시각을 가정한 경우에는 현재 실황을 그 시각의 날씨처럼 표시하지 않고
+     아래의 시간별 예보 슬롯을 쓴다. */
+  const observedMs = Date.parse(evidence.observedAt);
+  const useObservation =
+    !options.preferForecast &&
+    Number.isFinite(observedMs) &&
+    Math.abs(fromMs - observedMs) < HOUR_MS;
+  if (useObservation) {
+    slots.push({
+      hoursAhead: 0,
+      at: evidence.observedAt,
+      precipitationType:
+        evidence.observedPrecipitationType ??
+        /* 원시 코드가 없는 공급자(대체 경로)에서는 강수 유무만 옮긴다. 형태를
+           아는 것처럼 적지 않는다. */
+        (evidence.raining ? 1 : undefined),
+      skyCode: evidence.observedSkyCode,
+      precipitationProbabilityPercent:
+        evidence.precipitationProbabilityPercent,
+      temperatureCelsius: evidence.temperatureCelsius,
+    });
+  }
 
   for (const hoursAhead of GLANCE_HOURS_AHEAD) {
-    if (hoursAhead === 0) continue;
+    if (hoursAhead === 0 && useObservation) continue;
     const targetMs = fromMs + hoursAhead * HOUR_MS;
     /* 그 시각을 담는 정시 슬롯을 찾는다. 예보 값은 해당 시간대를 가리키므로
        목표 시각 이하의 가장 늦은 슬롯이 맞다. 없으면 목표 시각 **이후**의 가장

@@ -97,8 +97,8 @@ test("a separately hosted partner can render the allowlisted widget", async ({ p
     waitUntil: "domcontentloaded",
   });
   const widget = page.frameLocator('iframe[title="이어가 복구 위젯"]');
-  await expect(widget.getByRole("heading", { name: "지금 갈 수 있는 곳" })).toBeVisible();
-  await expect(widget.getByText("Partner × 이어가")).toBeVisible();
+  await expect(widget.getByRole("heading", { name: "갈 수 있는 곳" })).toBeVisible();
+  await expect(widget.getByText("Partner × IEOGA")).toBeVisible();
 });
 
 test("cross-origin iframe uses a scoped bearer without any third-party cookie", async ({

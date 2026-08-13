@@ -16,6 +16,7 @@ import {
   recoveryAdministrativeScopes,
   recoveryRequestSchema,
 } from "@/lib/recovery/schema";
+import { resolveRecoveryReferenceTime } from "@/lib/recovery/reference-time";
 
 export const dynamic = "force-dynamic";
 const PARTNER_RECOVERY_BUDGET_MS = 20_000;
@@ -155,7 +156,30 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const administrativeScopes = recoveryAdministrativeScopes(parsed.data);
+  const referenceResolution = resolveRecoveryReferenceTime(
+    parsed.data,
+    new Date(),
+  );
+  if (!referenceResolution.success) {
+    const response = jsonResponse(
+      { requestId, error: referenceResolution.error },
+      {
+        status:
+          referenceResolution.error.code === "REFERENCE_TIME_CONFLICT" ||
+          referenceResolution.error.code ===
+            "REFERENCE_TIME_CONTRACT_INVALID"
+            ? 409
+            : 400,
+      },
+    );
+    response.headers.set("X-Request-ID", requestId);
+    return response;
+  }
+  const authoritativeRequest = referenceResolution.input;
+
+  const administrativeScopes = recoveryAdministrativeScopes(
+    authoritativeRequest,
+  );
   if (administrativeScopes.length > 0) {
     let knownScopes: boolean;
     try {
@@ -198,7 +222,7 @@ export async function POST(request: NextRequest) {
   let result: Awaited<ReturnType<typeof recoverTrip>>;
   try {
     result = await beforeDeadline(
-      recoverTrip(parsed.data, requestId, {
+      recoverTrip(authoritativeRequest, requestId, {
         deadlineAt,
         signal: deadlineController.signal,
       }),

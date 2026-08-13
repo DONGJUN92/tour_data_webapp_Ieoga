@@ -532,6 +532,20 @@ export const openWindowSchema = z
 
 export const recoveryRequestSchema = z
   .object({
+    /* 모든 추천 판정의 공통 시계. `current`는 서버 수신 시각을 사용하고,
+       `assumed`는 사용자가 그 시각에 현재 위치에 있다고 가정한다. 과거·미래
+       상한과 일정 충돌은 서버 시계가 필요한 공통 resolver에서 검증한다. */
+    referenceTime: z
+      .discriminatedUnion("mode", [
+        z.object({ mode: z.literal("current") }).strict(),
+        z
+          .object({
+            mode: z.literal("assumed"),
+            at: z.string().datetime({ offset: true }),
+          })
+          .strict(),
+      ])
+      .optional(),
     origin: z
       .object({
         ...coordinateFields,

@@ -378,6 +378,13 @@ export type CounterfactualProof = RejectedCandidate & {
 
 export type RecoveryResult = {
   requestId: string;
+  /* The authoritative clock used for route departure, opening-hours checks,
+     weather slots and locked-appointment continuity. `generatedAt` remains
+     the actual computation time and must not be confused with this value. */
+  referenceTime: {
+    mode: "current" | "assumed";
+    at: string;
+  };
   status: RecoveryStatus;
   recoveryMode: RecoveryMode;
   itinerarySummary?: {

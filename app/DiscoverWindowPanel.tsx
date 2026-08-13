@@ -5,17 +5,20 @@
    안에 무엇을 다녀올 수 있을까"이므로, 카드도 바뀐 일정 수가 아니라 도착·체류·
    복귀·남는 여유를 보여준다.
 
-   시각은 30분 격자로만 받는다. 여행자는 분 단위로 계획하지 않으며, 분 단위
-   입력을 허용하면 검증은 정확해지지만 아무도 세우지 않는 계획을 검증하게 된다. */
+   조회 기준은 현재 시각 또는 사용자가 고른 한국 시각이다. 빠른 선택은 여행 중
+   한 손으로도 누를 수 있게 하되, 정확한 약속에는 분 단위 직접 입력을 허용한다. */
 
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import styles from "./DiscoverWindowPanel.module.css";
 import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
+import { optionApplicationSafety } from "./traveler-safety";
+import { ReferenceTimePicker } from "./ReferenceTimePicker";
 import {
-  optionApplicationSafety,
-  windowEndIsoFromMinutes,
-} from "./traveler-safety";
+  formatReferenceTime,
+  resolveReferenceTime,
+  type ReferenceTimeMode,
+} from "./reference-time";
 import {
   AUDIENCES,
   AUDIENCES_EN,
@@ -46,11 +49,6 @@ import {
 const STAY_CHOICES = [30, 60, 90, 120, 150, 180] as const;
 
 const WINDOW_CHOICES = [60, 90, 120, 150, 180, 240] as const;
-
-/* 출발 시각은 여행 중 한 손으로도 고를 수 있게 상대 시각 칩으로 받는다. 같은
-   화면의 종료 시각 선택과 마찬가지로 30분 단위를 쓰되, 계산할 때는 두 시각을
-   반드시 같은 `now`에 고정한다. */
-const DEPARTURE_DELAY_CHOICES = [0, 30, 60, 90, 120] as const;
 
 export type DiscoverOrigin = {
   latitude: string;
@@ -255,20 +253,6 @@ function minutesLabel(language: Language, minutes: number): string {
   );
 }
 
-function departureDelayLabel(language: Language, minutes: number): string {
-  if (minutes === 0) return tr(language, "지금", "Now");
-  if (minutes < 60) {
-    return tr(language, `${minutes}분 후`, `In ${minutes} min`);
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  return tr(
-    language,
-    remainder ? `${hours}시간 ${remainder}분 후` : `${hours}시간 후`,
-    remainder ? `In ${hours}h ${remainder}m` : `In ${hours}h`,
-  );
-}
-
 export default function DiscoverWindowPanel({
   language,
   origin,
@@ -285,11 +269,15 @@ export default function DiscoverWindowPanel({
   const [manualOpen, setManualOpen] = useState(false);
   const [originSelectionOpen, setOriginSelectionOpen] = useState(false);
   const automaticLocationButtonRef = useRef<HTMLButtonElement>(null);
-  const [departureDelayMinutes, setDepartureDelayMinutes] = useState(0);
+  const [referenceTimeMode, setReferenceTimeMode] =
+    useState<ReferenceTimeMode>("now");
+  const [referenceTimeLocal, setReferenceTimeLocal] = useState("");
+  const [referenceClockMs, setReferenceClockMs] = useState(0);
+  const [submittedReferenceTime, setSubmittedReferenceTime] = useState<{
+    mode: ReferenceTimeMode;
+    iso: string;
+  } | null>(null);
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
-  const [windowEndIso, setWindowEndIso] = useState(() =>
-    windowEndIsoFromMinutes(120),
-  );
   const [plannedStayMinutes, setPlannedStayMinutes] = useState<number>(60);
   const [audience, setAudience] = useState<Audience>("general");
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
@@ -304,25 +292,26 @@ export default function DiscoverWindowPanel({
   const [state, setState] = useState<LoadState>("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<RecoveryResponse | null>(null);
+  const submitGenerationRef = useRef(0);
 
+  const previewReferenceTime = resolveReferenceTime(
+    referenceTimeMode,
+    referenceTimeLocal,
+    language,
+    referenceClockMs,
+  );
+  const previewReferenceTimestamp = previewReferenceTime.ok
+    ? previewReferenceTime.timestamp
+    : referenceClockMs;
+  const windowEndIso = new Date(
+    previewReferenceTimestamp + windowMinutes * 60_000,
+  ).toISOString();
   const windowEndLabel = useMemo(
-    () => formatWindowEnd(windowEndIso, language),
-    [windowEndIso, language],
-  );
-  /* 표시용 시작 시각도 종료 시각과 같은 기준점에서 역산한다. 사용자가 조건을
-     바꿀 때 두 라벨의 기준 시각이 몇 초씩 어긋나는 일을 막는다. 제출 직전에는
-     아래 `submit`에서 하나의 최신 now로 둘을 다시 확정한다. */
-  const departureAtIso = useMemo(
     () =>
-      new Date(
-        Date.parse(windowEndIso) -
-          (windowMinutes - departureDelayMinutes) * 60_000,
-      ).toISOString(),
-    [departureDelayMinutes, windowEndIso, windowMinutes],
-  );
-  const departureAtLabel = useMemo(
-    () => formatWindowEnd(departureAtIso, language),
-    [departureAtIso, language],
+      referenceClockMs > 0
+        ? formatWindowEnd(windowEndIso, language)
+        : tr(language, "조회할 때 확정", "set when you search"),
+    [language, referenceClockMs, windowEndIso],
   );
   const originReady =
     geoState === "success" &&
@@ -332,15 +321,37 @@ export default function DiscoverWindowPanel({
     origin.longitude.trim() !== "" &&
     origin.label.trim() !== "";
 
-  /* 출발을 미루는 동안은 여행에 쓸 수 있는 시간이 아니다. 예를 들어 지금부터
-     2시간 비어 있어도 1시간 뒤에 출발하면 실제 이동·체류·복귀 창은 1시간이다. */
-  const effectiveWindowMinutes = Math.max(
-    0,
-    windowMinutes - departureDelayMinutes,
-  );
-  const departureOutsideWindow = departureDelayMinutes >= windowMinutes;
-  const stayTooLong =
-    !departureOutsideWindow && plannedStayMinutes >= effectiveWindowMinutes;
+  const stayTooLong = plannedStayMinutes >= windowMinutes;
+
+  useEffect(() => {
+    const refresh = () => setReferenceClockMs(Date.now());
+    const initial = window.setTimeout(refresh, 0);
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  function invalidateReferenceResult() {
+    submitGenerationRef.current += 1;
+    setResult(null);
+    setState("idle");
+    setError("");
+    setSubmittedReferenceTime(null);
+  }
+
+  function changeReferenceTimeMode(mode: ReferenceTimeMode) {
+    setReferenceClockMs(Date.now());
+    setReferenceTimeMode(mode);
+    invalidateReferenceResult();
+  }
+
+  function changeReferenceTimeLocal(value: string) {
+    setReferenceClockMs(Date.now());
+    setReferenceTimeLocal(value);
+    invalidateReferenceResult();
+  }
 
   function beginOriginReselection() {
     setManualOpen(false);
@@ -416,15 +427,15 @@ export default function DiscoverWindowPanel({
       );
       return;
     }
-    if (departureOutsideWindow) {
+    const requestReferenceTime = resolveReferenceTime(
+      referenceTimeMode,
+      referenceTimeLocal,
+      language,
+      Date.now(),
+    );
+    if (!requestReferenceTime.ok) {
       setState("error");
-      setError(
-        tr(
-          language,
-          "출발 시각이 자유 시간 종료 시각과 같거나 늦습니다. 더 이른 출발 시각이나 더 긴 남은 시간을 선택해 주세요.",
-          "Your departure is at or after the end of your free time. Leave earlier or choose a longer window.",
-        ),
-      );
+      setError(requestReferenceTime.message);
       return;
     }
     if (stayTooLong) {
@@ -432,27 +443,20 @@ export default function DiscoverWindowPanel({
       setError(
         tr(
           language,
-          "선택한 출발 시각 뒤의 실제 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
-          "Your stay fills the time remaining after departure, leaving no room to travel and return.",
+          "선택한 조회 기준 이후의 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
+          "Your stay fills the window after the reference time, leaving no room to travel and return.",
         ),
       );
       return;
     }
     setState("loading");
     setResult(null);
+    const requestGeneration = ++submitGenerationRef.current;
     try {
-      /* 출발과 종료를 같은 기준 시각에서 만든다. `Date.now()`를 두 번 읽으면
-         30분 뒤 출발과 2시간 뒤 종료 사이가 네트워크·렌더 시간만큼 조용히
-         짧아질 수 있다. */
-      const requestNowMs = Date.now();
-      const requestDepartureAtIso = new Date(
-        requestNowMs + departureDelayMinutes * 60_000,
+      const requestDepartureAtIso = requestReferenceTime.iso;
+      const requestWindowEndIso = new Date(
+        requestReferenceTime.timestamp + windowMinutes * 60_000,
       ).toISOString();
-      const requestWindowEndIso = windowEndIsoFromMinutes(
-        windowMinutes,
-        requestNowMs,
-      );
-      setWindowEndIso(requestWindowEndIso);
       const payload = await fetchJson("/api/v1/recover", {
         method: "POST",
         body: JSON.stringify({
@@ -466,8 +470,11 @@ export default function DiscoverWindowPanel({
           /* 이 화면은 사고가 아니라 빈 시간이 출발점이다. 상황 입력을 강요하지
              않고, 실내 조건을 켠 경우에만 우천 취급으로 넘긴다. */
           incident: indoorOnly ? "rain" : "delay",
-          /* 대기시간을 여행 가능 시간으로 세지 않는다. */
-          availableMinutes: effectiveWindowMinutes,
+          referenceTime:
+            referenceTimeMode === "now"
+              ? { mode: "current" }
+              : { mode: "assumed", at: requestReferenceTime.iso },
+          availableMinutes: windowMinutes,
           audience,
           indoorOnly,
           travelMode,
@@ -491,7 +498,21 @@ export default function DiscoverWindowPanel({
           },
         }),
       });
+      if (requestGeneration !== submitGenerationRef.current) return;
       const record = asRecord(payload);
+      const responseReferenceTime = asRecord(record?.referenceTime);
+      const authoritativeReferenceAt = readText(responseReferenceTime, ["at"]);
+      setSubmittedReferenceTime(
+        authoritativeReferenceAt
+          ? {
+              mode:
+                readText(responseReferenceTime, ["mode"]) === "assumed"
+                  ? "scheduled"
+                  : "now",
+              iso: authoritativeReferenceAt,
+            }
+          : null,
+      );
       setResult({
         requestId: readText(record, ["requestId"]) || "",
         status: readText(record, ["status"]) || "unknown",
@@ -525,6 +546,7 @@ export default function DiscoverWindowPanel({
       });
       setState("success");
     } catch (submitError) {
+      if (requestGeneration !== submitGenerationRef.current) return;
       setState("error");
       setError(
         travelerErrorText(
@@ -622,51 +644,14 @@ export default function DiscoverWindowPanel({
           )}
         </section>
 
-        <section className={styles.block} aria-labelledby="discover-departure">
-          <h3 id="discover-departure">
-            {tr(language, "언제 출발할까요?", "When will you leave?")}
-          </h3>
-          <div
-            className={styles.chips}
-            role="radiogroup"
-            aria-label={tr(language, "출발 시각", "Departure time")}
-            aria-describedby="discover-departure-summary"
-          >
-            {DEPARTURE_DELAY_CHOICES.map((minutes) => (
-              <button
-                key={minutes}
-                type="button"
-                role="radio"
-                aria-checked={departureDelayMinutes === minutes}
-                className={
-                  departureDelayMinutes === minutes
-                    ? styles.chipActive
-                    : styles.chip
-                }
-                onClick={() => {
-                  const selectionNowMs = Date.now();
-                  setDepartureDelayMinutes(minutes);
-                  setWindowEndIso(
-                    windowEndIsoFromMinutes(windowMinutes, selectionNowMs),
-                  );
-                }}
-              >
-                {departureDelayLabel(language, minutes)}
-              </button>
-            ))}
-          </div>
-          <p className={styles.derived} id="discover-departure-summary">
-            {tr(
-              language,
-              departureDelayMinutes === 0
-                ? "현재 시각에 출발하는 것으로 계산합니다."
-                : `${departureAtLabel} 출발로 계산합니다. 기다리는 시간은 여행 가능 시간에서 제외합니다.`,
-              departureDelayMinutes === 0
-                ? "Calculated for departure now."
-                : `Calculated for departure at ${departureAtLabel}. Waiting time is excluded from the travel window.`,
-            )}
-          </p>
-        </section>
+        <ReferenceTimePicker
+          idPrefix="discover"
+          language={language}
+          mode={referenceTimeMode}
+          localValue={referenceTimeLocal}
+          onModeChange={changeReferenceTimeMode}
+          onLocalValueChange={changeReferenceTimeLocal}
+        />
 
         <section className={styles.block} aria-labelledby="discover-window">
           <h3 id="discover-window">
@@ -687,8 +672,8 @@ export default function DiscoverWindowPanel({
                   windowMinutes === minutes ? styles.chipActive : styles.chip
                 }
                 onClick={() => {
+                  setReferenceClockMs(Date.now());
                   setWindowMinutes(minutes);
-                  setWindowEndIso(windowEndIsoFromMinutes(minutes));
                 }}
               >
                 {minutesLabel(language, minutes)}
@@ -698,19 +683,10 @@ export default function DiscoverWindowPanel({
           <p className={styles.derived}>
             {tr(
               language,
-              `${windowEndLabel}까지 비어 있습니다. 출발 뒤 실제 이동·체류·복귀 가능 시간은 ${minutesLabel(language, effectiveWindowMinutes)}입니다.`,
-              `You are free until ${windowEndLabel}. ${minutesLabel(language, effectiveWindowMinutes)} remains after departure for travel, the visit and return.`,
+              `조회 기준 시각부터 ${minutesLabel(language, windowMinutes)} 동안 비어 있으며 ${windowEndLabel}까지 이동·체류·복귀합니다.`,
+              `You have ${minutesLabel(language, windowMinutes)} from the reference time, through ${windowEndLabel}, for travel, the visit and return.`,
             )}
           </p>
-          {departureOutsideWindow && (
-            <p className={styles.messageError} role="alert">
-              {tr(
-                language,
-                "출발 시각이 자유 시간 종료 시각과 같거나 늦습니다. 더 이른 출발 시각이나 더 긴 남은 시간을 선택해 주세요.",
-                "Your departure is at or after the end of your free time. Leave earlier or choose a longer window.",
-              )}
-            </p>
-          )}
         </section>
 
         <section className={styles.block} aria-labelledby="discover-stay">
@@ -753,9 +729,9 @@ export default function DiscoverWindowPanel({
           {stayTooLong && (
             <p className={styles.messageError} role="alert">
               {tr(
-                language,
-                "선택한 출발 시각 뒤의 실제 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
-                "Your stay fills the time remaining after departure, leaving no room to travel and return.",
+              language,
+              "선택한 조회 기준 이후의 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
+              "Your stay fills the window after the reference time, leaving no room to travel and return.",
               )}
             </p>
           )}
@@ -968,7 +944,6 @@ export default function DiscoverWindowPanel({
             state === "loading" ||
             !originReady ||
             originSelectionOpen ||
-            departureOutsideWindow ||
             stayTooLong
           }
         >
@@ -1021,6 +996,7 @@ export default function DiscoverWindowPanel({
             key={result.requestId}
             language={language}
             result={result}
+            referenceTime={submittedReferenceTime}
             onPlanFromPlace={onPlanFromPlace}
           />
         )}
@@ -1032,10 +1008,12 @@ export default function DiscoverWindowPanel({
 function DiscoverResults({
   language,
   result,
+  referenceTime,
   onPlanFromPlace,
 }: {
   language: Language;
   result: RecoveryResponse;
+  referenceTime: { mode: ReferenceTimeMode; iso: string } | null;
   onPlanFromPlace?: Props["onPlanFromPlace"];
 }) {
   /* 여행 복구 화면에는 있던 정렬이 이쪽에는 없었다. 같은 대안 목록인데 한쪽
@@ -1048,9 +1026,26 @@ function DiscoverResults({
     filterOptionsByTourismCategory(result.options, category),
     sort,
   );
+  const referenceTimeNotice = referenceTime ? (
+    <p className={styles.referenceTimeResult} data-testid="discover-reference-time">
+      <strong>{tr(language, "조회 기준", "Search reference")}</strong>{" "}
+      {referenceTime.mode === "now"
+        ? tr(
+            language,
+            `요청을 받은 현재 시각 · ${formatReferenceTime(referenceTime.iso, language)}`,
+            `Current time when the request was received · ${formatReferenceTime(referenceTime.iso, language)}`,
+          )
+        : tr(
+            language,
+            `가정 시각 · ${formatReferenceTime(referenceTime.iso, language)}`,
+            `Assumed time · ${formatReferenceTime(referenceTime.iso, language)}`,
+          )}
+    </p>
+  ) : null;
   if (!result.options.length) {
     return (
       <div className={styles.noResult} role="status">
+        {referenceTimeNotice}
         <strong>
           {tr(
             language,
@@ -1125,6 +1120,7 @@ function DiscoverResults({
 
   return (
     <>
+      {referenceTimeNotice}
       {result.options.length > 1 && (
         <>
           <div

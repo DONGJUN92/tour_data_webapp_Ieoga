@@ -1,0 +1,133 @@
+.fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--cream);
+}
+
+.fieldset legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.intro,
+.summary,
+.error {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.intro,
+.summary {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.modeChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choice,
+.active {
+  display: grid;
+  gap: 3px;
+  min-height: 64px;
+  padding: 10px 12px;
+  border-radius: var(--r-control);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice {
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink-soft);
+}
+
+.active {
+  border: 1px solid var(--brand);
+  background: var(--brand-tint-strong);
+  color: var(--brand-deep);
+}
+
+.choice small,
+.active small {
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.scheduledPanel {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.scheduledPanel label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.scheduledPanel input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+.quickChoices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.quickChoices button,
+.reset {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reset {
+  justify-self: start;
+  border-color: var(--brand);
+  color: var(--brand-deep);
+}
+
+.choice:focus-visible,
+.active:focus-visible,
+.quickChoices button:focus-visible,
+.reset:focus-visible,
+.scheduledPanel input:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
+@media (max-width: 540px) {
+  .modeChoices {
+    grid-template-columns: 1fr;
+  }
+}

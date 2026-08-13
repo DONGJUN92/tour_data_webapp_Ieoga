@@ -949,27 +949,20 @@ test("새 탭이 링크·키보드·탭목록 어디에서도 빠지지 않는�
   assert.match(product, /aria-labelledby="tab-discover"/);
 });
 
-test("빈 시간 화면은 30분 단위 선택을 줄이지 않고 이동시간을 입력받지 않는다", async () => {
-  const [panel, safety] = await Promise.all([
+test("빈 시간 화면은 선택한 기준시각부터 창 전체를 보존하고 이동시간을 입력받지 않는다", async () => {
+  const [panel, picker] = await Promise.all([
     readFile(new URL("../app/DiscoverWindowPanel.tsx", import.meta.url), "utf8"),
-    import("../app/traveler-safety.ts"),
+    readFile(new URL("../app/ReferenceTimePicker.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(panel, /STAY_CHOICES = \[30, 60, 90, 120, 150, 180\]/);
   assert.match(panel, /WINDOW_CHOICES = \[60, 90, 120, 150, 180, 240\]/);
-  /* 선택지는 30분 단위지만 deadline을 시계 격자로 내리면 60분 선택이
-     30~59분으로 줄어든다. 분 경계에서도 정확한 선택 길이를 보존한다. */
-  for (const now of [
-    Date.parse("2026-08-11T00:00:00.001Z"),
-    Date.parse("2026-08-11T00:29:59.999Z"),
-    Date.parse("2026-08-11T00:59:59.999Z"),
-  ]) {
-    assert.equal(
-      Date.parse(safety.windowEndIsoFromMinutes(60, now)) - now,
-      60 * 60_000,
-    );
-  }
-  assert.match(panel, /const requestWindowEndIso = windowEndIsoFromMinutes/);
-  assert.match(panel, /setWindowEndIso\(requestWindowEndIso\)/);
+  /* 미래 시각까지 기다린 시간을 선택한 창에서 빼지 않는다. 사용자가 고른
+     기준시각부터 정확히 N분을 이동·체류·복귀 창으로 만든다. */
+  assert.match(
+    panel,
+    /requestReferenceTime\.timestamp \+ windowMinutes \* 60_000/,
+  );
+  assert.doesNotMatch(panel, /windowMinutes - departureDelayMinutes/);
   assert.match(panel, /availableUntil: requestWindowEndIso/);
   assert.match(panel, /arriveBy: requestWindowEndIso/);
   assert.match(
@@ -978,16 +971,14 @@ test("빈 시간 화면은 30분 단위 선택을 줄이지 않고 이동시간�
     "English free-time results must not fall back to Korean 오전/오후 formatting",
   );
   assert.doesNotMatch(panel, /getMinutes\(\) % 30/);
-  /* 여행자가 분 단위 숫자를 타이핑하는 입력이 새로 생기면 이 화면의 목적이
-     사라진다. 숫자·시간 입력 필드를 두지 않는다. */
+  /* 머무는 시간과 창 길이는 빠른 칩으로 유지한다. 정확한 조회 기준은 별도의
+     datetime 입력으로 받을 수 있지만 이동시간 숫자를 받지는 않는다. */
   assert.ok(
     !/type="number"/.test(panel),
     "빈 시간 화면에 숫자 입력 필드가 생겼다",
   );
-  assert.ok(
-    !/type="time"/.test(panel),
-    "빈 시간 화면에 분 단위 시간 입력이 생겼다",
-  );
+  assert.match(picker, /type="datetime-local"/);
+  assert.match(picker, /현재 시각으로 되돌리기/);
   assert.match(panel, /이동 시간은 실제 보행 경로로 계산하므로 따로 입력하지 않습니다/);
   /* 선택 칩은 라디오로 노출되어야 스크린리더가 하나만 고르는 그룹으로 읽는다. */
   assert.match(panel, /role="radiogroup"/);

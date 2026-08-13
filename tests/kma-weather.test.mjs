@@ -225,6 +225,11 @@ test("unapproved KMA service falls back to Open-Meteo", async () => {
       assert.equal(evidence.status, "available");
       assert.equal(evidence.provider, "open_meteo");
       assert.equal(evidence.temperatureCelsius, 21.5);
+      assert.equal(
+        evidence.observedAt,
+        "2026-07-15T10:00:00+09:00",
+        "offset 없는 한국 현지 시각을 UTC로 오해하면 안 된다",
+      );
       assert.ok(openMeteoCalled, "falls through to the fallback provider");
     },
   );
@@ -259,6 +264,7 @@ test("KMA is not called unless KMA_SERVICE_KEY is set", async () => {
     async () => {
       const evidence = await getWeatherEvidence(35.8694, 128.6062);
       assert.equal(evidence.provider, "open_meteo");
+      assert.equal(evidence.observedAt, "2026-07-15T10:00:00+09:00");
       assert.equal(kmaCalled, false, "must not borrow the KTO key");
     },
   );

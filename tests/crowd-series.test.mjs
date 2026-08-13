@@ -133,7 +133,7 @@ test("집중률을 사람 수로 말하지 않는다", async () => {
   const engine = await src("../lib/recovery/engine.ts");
   /* 실측에서 청와대(30일 평균 37.1)가 경운동민병옥가옥(81.5)보다 낮았다.
      이 값을 인원수로 읽으면 안 된다 — 좁은 곳은 적은 인원으로도 포화된다. */
-  assert.match(engine, /사람 수가 아니라 붐빔 정도 예측이며/);
+  assert.match(engine, /사람 수가 아니라 일별 붐빔 정도 예측이며/);
   assert.match(engine, /A crowding forecast, not a live headcount\./);
   /* 카드 문구는 세 단계로 줄였다. 숫자와 백분위를 늘어놓으면 "붐비나?"라는
      질문의 답을 여행자가 직접 계산해야 한다. 원문 수치는 근거 확인용으로
@@ -141,7 +141,7 @@ test("집중률을 사람 수로 말하지 않는다", async () => {
   assert.match(engine, /function crowdLevelOf\(candidate/);
   assert.match(engine, /if \(score >= 70\) return "easy";/);
   assert.match(engine, /if \(score >= 40\) return "normal";/);
-  assert.match(engine, /지금 예측으로는 붐비는 편입니다/);
+  assert.match(engine, /조회 기준일 예측으로는 붐비는 편입니다/);
   /* 등급은 점수와 **같은 함수**에서 나와야 갈리지 않는다. */
   assert.match(engine, /const score = crowdComfortScore\(candidate\);/);
   /* 화면은 아이콘만으로 뜻을 나르지 않는다 — 색각 이상에서도 읽혀야 한다. */

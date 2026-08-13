@@ -17,6 +17,40 @@
   gap: 4px;
 }
 
+.headTop {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.language {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--cream);
+}
+
+.language button {
+  min-height: 36px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.language .languageOn {
+  background: var(--paper);
+  color: var(--brand-deep);
+  box-shadow: 0 1px 4px rgb(25 31 40 / 10%);
+}
+
 .kicker {
   margin: 0;
   color: var(--muted);
@@ -66,12 +100,27 @@
 
 .chip,
 .chipOn {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 13px;
   border-radius: var(--r-pill);
   font-size: 0.88rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.referenceCompact {
+  min-width: 0;
+}
+
+/* The shared picker owns validation and accessibility. These compact layout
+   adjustments preserve that contract inside a narrow partner frame. */
+.referenceCompact :global(fieldset) {
+  gap: 9px;
+  padding: 12px;
+}
+
+.referenceCompact :global(fieldset > p:first-of-type) {
+  font-size: 0.78rem;
 }
 
 .chip {
@@ -129,6 +178,18 @@
 .results {
   display: grid;
   gap: 10px;
+}
+
+.referenceBasis {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid #b8d8d5;
+  border-radius: var(--r-chip);
+  background: #effaf8;
+  color: #174f4d;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .card,
@@ -214,6 +275,29 @@
   color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.warnings {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 10px 10px 28px;
+  border-radius: var(--r-chip);
+  background: var(--cream);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.language button:focus-visible,
+.chip:focus-visible,
+.chipOn:focus-visible,
+.primary:focus-visible,
+.originReady button:focus-visible,
+.submit:focus-visible,
+.foot a:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
 }
 
 .foot {

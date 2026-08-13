@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+
+const src = (path) => readFile(new URL(path, import.meta.url), "utf8");
+
+test("조회 기준 시간은 현재·직접 선택과 한국시간 검증을 제공한다", async () => {
+  const [picker, helper] = await Promise.all([
+    src("../app/ReferenceTimePicker.tsx"),
+    src("../app/reference-time.ts"),
+  ]);
+
+  assert.match(picker, /현재 시각/);
+  assert.match(picker, /날짜·시각 선택/);
+  assert.match(picker, /type="datetime-local"/);
+  assert.match(picker, /현재 시각으로 되돌리기/);
+  assert.match(picker, /aria-invalid/);
+  assert.match(picker, /role="alert"/);
+  assert.match(helper, /MAX_REFERENCE_TIME_FUTURE_MINUTES = 6 \* 60/);
+  assert.match(helper, /timestamp < nowMs - 60_000/);
+  assert.match(helper, /Asia\/Seoul/);
+  assert.match(picker, /useState\(0\)/);
+});
+
+test("한국시간 직접 입력은 과거와 6시간 초과를 거절하고 경계를 ISO로 보존한다", async () => {
+  const { koreaDateTimeLocalValue, resolveReferenceTime } = await import(
+    "../app/reference-time.ts"
+  );
+  const now = Date.parse("2026-08-14T01:00:00.000Z"); // 한국시간 오전 10시
+  assert.equal(koreaDateTimeLocalValue(now), "2026-08-14T10:00");
+  assert.equal(
+    resolveReferenceTime("scheduled", "2026-08-14T09:58", "ko", now).ok,
+    false,
+  );
+  assert.equal(
+    resolveReferenceTime("scheduled", "2026-08-14T16:01", "ko", now).ok,
+    false,
+  );
+  assert.deepEqual(
+    resolveReferenceTime("scheduled", "2026-08-14T16:00", "ko", now),
+    {
+      ok: true,
+      iso: "2026-08-14T07:00:00.000Z",
+      timestamp: Date.parse("2026-08-14T07:00:00.000Z"),
+    },
+  );
+});
+
+test("두 제품 탭은 같은 기준시간 계약을 전송하고 이전 응답을 폐기한다", async () => {
+  const [product, discover] = await Promise.all([
+    src("../app/ProductApp.tsx"),
+    src("../app/DiscoverWindowPanel.tsx"),
+  ]);
+
+  for (const source of [product, discover]) {
+    assert.match(source, /<ReferenceTimePicker/);
+    assert.match(source, /mode: "current"/);
+    assert.match(source, /mode: "assumed", at: requestReferenceTime\.iso/);
+    assert.match(source, /requestGeneration !== .*GenerationRef\.current/);
+    assert.match(source, /formatReferenceTime/);
+    assert.doesNotMatch(source, /assumedAt/);
+  }
+  assert.match(product, /requestReferenceTime\.iso,\s*\)/);
+  assert.match(product, /availableMinutes: requestNextAppointmentMinutes/);
+  assert.match(product, /가정 시각 ·/);
+  assert.match(discover, /가정 시각 ·/);
+  assert.doesNotMatch(product, /useState\(\(\) =>\s*scheduledReferenceFromOffset/);
+  assert.doesNotMatch(discover, /useState\(\(\) =>\s*scheduledReferenceFromOffset/);
+  assert.match(discover, /requestReferenceTime\.timestamp \+ windowMinutes \* 60_000/);
+  assert.doesNotMatch(discover, /windowMinutes - departureDelayMinutes/);
+});
+
+test("일정 계약은 조회 기준 시각을 occurredAt으로 고정할 수 있다", async () => {
+  const model = await src("../app/product-app-model.ts");
+  assert.match(model, /occurredAt = new Date\(\)\.toISOString\(\)/);
+  assert.match(model, /\n\s*occurredAt,\n/);
+});

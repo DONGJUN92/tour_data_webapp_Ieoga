@@ -23,6 +23,12 @@ import {
 import { LaunchEvidencePanel } from "./LaunchEvidencePanel";
 import { PolicyMissionPanel } from "./PolicyMissionPanel";
 import { SimulationGuide } from "./SimulationGuide";
+import { ReferenceTimePicker } from "./ReferenceTimePicker";
+import {
+  formatReferenceTime,
+  resolveReferenceTime,
+  type ReferenceTimeMode,
+} from "./reference-time";
 
 import {
   AUDIENCES_EN,
@@ -65,7 +71,7 @@ import {
   inferRecoveryContext,
   itineraryContract,
   makeStop,
-  minutesUntil,
+  appointmentMinutesFromNow,
   normalizeDistricts,
   normalizeJourneyExecution,
   normalizeJourneyPlan,
@@ -406,6 +412,14 @@ export function ProductApp() {
       (locationMode === "automatic" || locationMode === "manual"),
   );
   const [incident, setIncident] = useState<Incident>("rain");
+  const [referenceTimeMode, setReferenceTimeMode] =
+    useState<ReferenceTimeMode>("now");
+  const [referenceTimeLocal, setReferenceTimeLocal] = useState("");
+  const [referenceClockMs, setReferenceClockMs] = useState(0);
+  const [submittedReferenceTime, setSubmittedReferenceTime] = useState<{
+    mode: ReferenceTimeMode;
+    iso: string;
+  } | null>(null);
   const [availableMinutes, setAvailableMinutes] = useState(90);
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
@@ -480,6 +494,7 @@ export function ProductApp() {
   const resultRef = useRef<HTMLDivElement>(null);
   const appliedPlanRef = useRef<HTMLDivElement>(null);
   const recoveryFormRef = useRef<HTMLFormElement>(null);
+  const recoverRequestGenerationRef = useRef(0);
   const applyInFlightRef = useRef(false);
   const applyRequestGenerationRef = useRef(0);
   const geolocationRequestGenerationRef = useRef(0);
@@ -708,12 +723,65 @@ export function ProductApp() {
     [appliedProof],
   );
   const nextAppointmentMinutes = useMemo(
-    () =>
-      journeyPlan && selectedNextFixedStop
-        ? minutesUntil(journeyPlan.date, selectedNextFixedStop.time)
-        : null,
-    [journeyPlan, selectedNextFixedStop],
+    () => {
+      if (!journeyPlan || !selectedNextFixedStop || referenceClockMs <= 0) {
+        return null;
+      }
+      const reference = resolveReferenceTime(
+        referenceTimeMode,
+        referenceTimeLocal,
+        language,
+        referenceClockMs,
+      );
+      return appointmentMinutesFromNow(
+        journeyPlan.date,
+        selectedNextFixedStop.time,
+        reference.ok ? reference.timestamp : referenceClockMs,
+      );
+    },
+    [
+      journeyPlan,
+      language,
+      referenceTimeLocal,
+      referenceTimeMode,
+      referenceClockMs,
+      selectedNextFixedStop,
+    ],
   );
+
+  useEffect(() => {
+    const refresh = () => setReferenceClockMs(Date.now());
+    const initial = window.setTimeout(refresh, 0);
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  function invalidateRecoveryForReferenceTime() {
+    /* 이미 요청 중이어도 이전 기준 시각의 응답은 도착 즉시 버린다. */
+    recoverRequestGenerationRef.current += 1;
+    setRecovery(null);
+    setRecoverState("idle");
+    setRecoverError("");
+    setSubmittedReferenceTime(null);
+    setAppliedOptionId("");
+    setOptionCategory("all");
+    setOptionSort("recommended");
+  }
+
+  function changeReferenceTimeMode(mode: ReferenceTimeMode) {
+    setReferenceClockMs(Date.now());
+    setReferenceTimeMode(mode);
+    invalidateRecoveryForReferenceTime();
+  }
+
+  function changeReferenceTimeLocal(value: string) {
+    setReferenceClockMs(Date.now());
+    setReferenceTimeLocal(value);
+    invalidateRecoveryForReferenceTime();
+  }
 
   useEffect(() => {
     if (!journeyPlan || !affectedStopId) return;
@@ -1326,9 +1394,38 @@ export function ProductApp() {
       );
       return;
     }
+    const requestNowMs = Date.now();
+    const requestReferenceTime = resolveReferenceTime(
+      referenceTimeMode,
+      referenceTimeLocal,
+      language,
+      requestNowMs,
+    );
+    if (!requestReferenceTime.ok) {
+      setRecoverState("error");
+      setRecoverError(requestReferenceTime.message);
+      return;
+    }
+    const requestNextAppointmentMinutes = appointmentMinutesFromNow(
+      journeyPlan.date,
+      selectedNextFixedStop.time,
+      requestReferenceTime.timestamp,
+    );
     if (
-      nextAppointmentMinutes !== null &&
-      nextAppointmentMinutes <= safetyBufferMinutes
+      requestNextAppointmentMinutes === null ||
+      requestNextAppointmentMinutes > 1440
+    ) {
+      setRecoverState("error");
+      setRecoverError(
+        tr(
+          "다음 예약은 조회 기준 시각 뒤이면서 현재부터 24시간 이내여야 합니다. 일정 시각을 다시 확인해 주세요.",
+          "The next booking must be after the reference time and within 24 hours of now. Check the schedule time.",
+        ),
+      );
+      return;
+    }
+    if (
+      requestNextAppointmentMinutes <= safetyBufferMinutes
     ) {
       setRecoverState("error");
       setRecoverError(
@@ -1359,9 +1456,7 @@ export function ProductApp() {
       return;
     }
     if (
-      !Number.isFinite(availableMinutes) ||
-      availableMinutes < 15 ||
-      availableMinutes > 1440 ||
+      requestNextAppointmentMinutes < 15 ||
       !Number.isFinite(minimumStayMinutes) ||
       minimumStayMinutes < 10 ||
       minimumStayMinutes > 180
@@ -1382,6 +1477,10 @@ export function ProductApp() {
     setOptionCategory("all");
     setOptionSort("recommended");
     setOutcomeMessage("");
+    const requestGeneration = ++recoverRequestGenerationRef.current;
+    /* 결과에는 서버가 확정해 돌려준 기준 시각만 표시한다. 클라이언트 선택값을
+       먼저 보여 주면 서버가 보정·거절한 시각을 확정값처럼 오해하게 된다. */
+    setSubmittedReferenceTime(null);
     try {
       const payload = await fetchJson("/api/v1/recover", {
         method: "POST",
@@ -1394,7 +1493,14 @@ export function ProductApp() {
             sigunguCode: sigunguCode || undefined,
           },
           incident,
-          availableMinutes,
+          referenceTime:
+            referenceTimeMode === "now"
+              ? { mode: "current" }
+              : { mode: "assumed", at: requestReferenceTime.iso },
+          /* 제출 순간의 동일한 기준 시각에서 다시 계산한다. 기준 시각 변경 직후
+             React effect가 아직 표시용 state를 갱신하지 않았어도 오래된 시간을
+             서버로 보내지 않는다. */
+          availableMinutes: requestNextAppointmentMinutes,
           audience,
           indoorOnly,
           travelMode,
@@ -1406,11 +1512,17 @@ export function ProductApp() {
             journeyPlan,
             selectedAffectedStop.id,
             selectedNextFixedStop.id,
+            requestReferenceTime.iso,
           ),
         }),
       });
       const record = asRecord(payload);
+      if (requestGeneration !== recoverRequestGenerationRef.current) return;
       const persistence = asRecord(record?.persistence);
+      const responseReferenceTime = asRecord(record?.referenceTime);
+      const authoritativeReferenceAt = readText(responseReferenceTime, [
+        "at",
+      ]);
       const response: RecoveryResponse = {
         requestId: readText(record, ["requestId"]) || "",
         status: readText(record, ["status"]) || "unknown",
@@ -1441,10 +1553,22 @@ export function ProductApp() {
         recoveryMode: readText(record, ["recoveryMode"]) || undefined,
         itinerarySummary: asRecord(record?.itinerarySummary) ?? undefined,
       };
+      setSubmittedReferenceTime(
+        authoritativeReferenceAt
+          ? {
+              mode:
+                readText(responseReferenceTime, ["mode"]) === "assumed"
+                  ? "scheduled"
+                  : "now",
+              iso: authoritativeReferenceAt,
+            }
+          : null,
+      );
       setRecovery(response);
       setRecoverState("success");
       window.setTimeout(() => resultRef.current?.focus({ preventScroll: false }), 40);
     } catch (error) {
+      if (requestGeneration !== recoverRequestGenerationRef.current) return;
       setRecoverState("error");
       setRecoverError(
         travelerErrorText(
@@ -2982,6 +3106,15 @@ export function ProductApp() {
                   </div>
                 </fieldset>
 
+                <ReferenceTimePicker
+                  idPrefix="recover"
+                  language={language}
+                  mode={referenceTimeMode}
+                  localValue={referenceTimeLocal}
+                  onModeChange={changeReferenceTimeMode}
+                  onLocalValueChange={changeReferenceTimeLocal}
+                />
+
                 <fieldset className="form-group">
                   <legend>{language === "en" ? "What IEOGA will protect" : "이어가가 반드시 지킬 것"}</legend>
                   <div className="derived-time-card">
@@ -3372,6 +3505,20 @@ export function ProductApp() {
 
                 {recoverState === "success" && recovery && recovery.options.length === 0 && (
                   <div className="no-candidate" data-testid="no-candidate">
+                    {submittedReferenceTime && (
+                      <p className="reference-time-result" data-testid="recover-reference-time">
+                        <strong>{tr("조회 기준", "Search reference")}</strong>{" "}
+                        {submittedReferenceTime.mode === "now"
+                          ? tr(
+                              `요청을 받은 현재 시각 · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                              `Current time when the request was received · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                            )
+                          : tr(
+                              `가정 시각 · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                              `Assumed time · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                            )}
+                      </p>
+                    )}
                     <span>{tr("적용 가능 후보 0", "0 safe-to-apply alternatives")}</span>
                     <h3>
                       {tr(
@@ -3473,6 +3620,20 @@ export function ProductApp() {
 
                 {recoverState === "success" && recovery && recovery.options.length > 0 && (
                   <div className="recovery-results">
+                    {submittedReferenceTime && (
+                      <p className="reference-time-result" data-testid="recover-reference-time">
+                        <strong>{tr("조회 기준", "Search reference")}</strong>{" "}
+                        {submittedReferenceTime.mode === "now"
+                          ? tr(
+                              `요청을 받은 현재 시각 · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                              `Current time when the request was received · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                            )
+                          : tr(
+                              `가정 시각 · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                              `Assumed time · ${formatReferenceTime(submittedReferenceTime.iso, language)}`,
+                            )}
+                      </p>
+                    )}
                     <div className="recovery-ready-banner">
                       <span aria-hidden="true">✓</span>
                       <div>

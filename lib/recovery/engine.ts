@@ -45,6 +45,7 @@ import {
 import { withParticle } from "@/lib/text/korean";
 import { strictFiniteNumber } from "@/lib/validation/numbers";
 import type { RecoveryRequest } from "./schema";
+import { recoveryReferenceTime } from "./reference-time";
 import type {
   EvidenceGap,
   AccessibilityEvidence,
@@ -536,7 +537,10 @@ function operatingStatusRejection(params: {
  *
  * 백분위는 단위 정의에 의존하지 않으므로 절대값과 함께 쓸 수 있다. 시간 단위
  * 값은 이 API에 없으므로 "지금 붐빔이 오르고 있다"는 판정은 하지 않는다. */
-function currentForecastByTitle(items: KtoItem[]): Map<
+function currentForecastByTitle(
+  items: KtoItem[],
+  referenceAt = new Date(),
+): Map<
   string,
   {
     rate: number;
@@ -553,7 +557,7 @@ function currentForecastByTitle(items: KtoItem[]): Map<
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(referenceAt);
   const koreaDate = Object.fromEntries(
     koreaDateParts.map((part) => [part.type, part.value]),
   );
@@ -995,7 +999,7 @@ function buildTravelPurposeProof(params: {
     if (nextPlaceLabel) {
       return {
         status: "open_window_flow",
-        originalPurpose: "지금 비어 있는 시간",
+        originalPurpose: "조회 기준 시각부터 비어 있는 시간",
         replacementPurpose: replacement.label,
         originalStopTitle: nextPlaceLabel,
         replacementTitle: params.replacementTitle,
@@ -1016,7 +1020,7 @@ function buildTravelPurposeProof(params: {
     }
     return {
       status: "open_window_unconstrained",
-      originalPurpose: "지금 비어 있는 시간",
+      originalPurpose: "조회 기준 시각부터 비어 있는 시간",
       replacementPurpose: replacement.label,
       originalStopTitle: params.input.origin.label,
       replacementTitle: params.replacementTitle,
@@ -1139,9 +1143,7 @@ function itineraryContext(
   );
   if (!disrupted) return undefined;
   const disruptedIndex = sortedNodes.indexOf(disrupted);
-  const occurredAt = new Date(
-    itinerary.occurredAt ?? disrupted.startAt ?? new Date().toISOString(),
-  );
+  const occurredAt = new Date(recoveryReferenceTime(input).at);
   const explicitNext = itinerary.nextFixedNodeId
     ? sortedNodes.find((node) => node.id === itinerary.nextFixedNodeId)
     : undefined;
@@ -1193,9 +1195,9 @@ function openWindowContext(
   if (!window) return undefined;
   const endAt = new Date(window.availableUntil);
   if (Number.isNaN(endAt.getTime())) return undefined;
-  const requestedDepartureAt = window.departureAt
-    ? new Date(window.departureAt)
-    : new Date();
+  const requestedDepartureAt = new Date(
+    recoveryReferenceTime(input).at,
+  );
   const occurredAt = Number.isNaN(requestedDepartureAt.getTime())
     ? new Date()
     : requestedDepartureAt;
@@ -1227,7 +1229,7 @@ function openWindowContext(
   return {
     mode: "open_window",
     changeKind: "insert",
-    title: "지금 비어 있는 시간",
+    title: "조회 기준 시각부터 비어 있는 시간",
     occurredAt,
     disrupted: undefined,
     nextFixed,
@@ -1554,9 +1556,10 @@ function fallbackScheduleDiff(
     title: string;
     estimatedTravelMinutes: number;
   },
+  referenceAt = new Date(),
 ): ScheduleDiff {
   const startAt = new Date(
-    Date.now() + candidate.estimatedTravelMinutes * 60_000,
+    referenceAt.getTime() + candidate.estimatedTravelMinutes * 60_000,
   );
   const durationMinutes = 30;
   return {
@@ -2260,10 +2263,14 @@ async function enrichForContinuity(params: {
     new Date(scheduleDiff.replacementNode.startAt),
     new Date(scheduleDiff.replacementNode.endAt),
   );
-  /* 시점별 아이콘용. 기준 시각은 **지금**이다 — 지정 여행지와 대안을 같은
+  /* 시점별 아이콘용. 기준 시각은 요청의 조회 기준 시각이다 — 지정 여행지와 대안을 같은
      시점으로 놓아야 비교가 되고, 후보마다 체류 시작이 달라 그것을 기준으로
      하면 카드 간 시점이 어긋난다. */
-  const glance = weatherGlance(weatherEvidence, new Date());
+  const glance = weatherGlance(
+    weatherEvidence,
+    new Date(recoveryReferenceTime(input).at),
+    { preferForecast: recoveryReferenceTime(input).mode === "assumed" },
+  );
 
   const withoutScores = {
     ...candidate,
@@ -2472,10 +2479,10 @@ function buildWhy(
          그 답을 직접 계산하라고 떠넘기는 것이 된다. 원문 수치는 근거 화면에
          남아 있으므로 "무엇을 근거로 그렇게 말했는가"는 여전히 답할 수 있다. */
       crowdLevelOf(candidate) === "easy"
-        ? "지금 예측으로는 원활한 편입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
+        ? "조회 기준일 예측으로는 원활한 편입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
         : crowdLevelOf(candidate) === "busy"
-          ? "지금 예측으로는 붐비는 편입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
-          : "지금 예측으로는 보통 수준입니다. 사람 수가 아니라 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다.",
+          ? "조회 기준일 예측으로는 붐비는 편입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
+          : "조회 기준일 예측으로는 보통 수준입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다.",
       crowdLevelOf(candidate) === "easy"
         ? "Forecast to be quiet. A crowding forecast, not a live headcount."
         : crowdLevelOf(candidate) === "busy"
@@ -2837,7 +2844,7 @@ function pickOptions(
     "minimum_change",
     input.itinerary
       ? { ko: "예약을 지키는 가장 가까운 곳", en: "Closest place that keeps your booking" }
-      : { ko: "지금 바로 갈 수 있는 가장 가까운 곳", en: "Closest place you can reach now" },
+      : { ko: "조회 기준 시각에 갈 수 있는 가장 가까운 곳", en: "Closest place you can reach at the selected time" },
   );
 
   /* 두 번째 카드는 상황별로 사용자가 실제로 궁금해하는 축을 쓴다. */
@@ -3055,17 +3062,19 @@ export async function recoverTrip(
   requestId = crypto.randomUUID(),
   execution: { deadlineAt?: number; signal?: AbortSignal } = {},
 ): Promise<RecoveryResult> {
+  const referenceTime = recoveryReferenceTime(input);
+  const referenceAt = new Date(referenceTime.at);
   const context = recoveryContext(input);
   const recoveryMode: RecoveryMode =
     context?.mode ?? "proximity_fallback";
   const warnings = context
     ? [
-        "운영정보와 경로는 호출 시점의 공식·공개 데이터를 기준으로 검증합니다. 예약 자체와 현장 안전을 보증하지 않으므로 출발 직전 운영기관 안내를 확인하세요.",
+        "운영시간·경로·날씨는 선택한 조회 기준 시각에 맞춰 검증합니다. 공식 데이터는 요청할 때 조회한 정보이므로 예약 자체와 현장 안전을 보증하지 않으며, 출발 직전 운영기관 안내를 확인하세요.",
         ...(context.changeKind === "insert"
           ? [
               context.openWindow?.nextPlaceLabel
-                ? `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 검증했습니다.`
-                : `지금 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 후보지에서 출발지로 돌아오는 실제 역방향 ${travelModeLabel(input.travelMode)} 경로를 별도로 조회했으며, 목적 유지 여부는 판단하지 않았습니다.`,
+                ? `조회 기준 시각부터 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 검증했습니다.`
+                : `조회 기준 시각부터 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 후보지에서 출발지로 돌아오는 실제 역방향 ${travelModeLabel(input.travelMode)} 경로를 별도로 조회했으며, 목적 유지 여부는 판단하지 않았습니다.`,
             ]
           : []),
       ]
@@ -3102,6 +3111,7 @@ export async function recoverTrip(
     );
     return {
       requestId,
+      referenceTime,
       status: "upstream_unavailable",
       recoveryMode,
       itinerarySummary: summariseItinerary(context),
@@ -3464,14 +3474,22 @@ export async function recoverTrip(
     weatherSettled.status === "fulfilled"
       ? weatherSettled.value
       : undefined;
+  const referenceWeather = weatherGlance(weatherEvidence, referenceAt, {
+    preferForecast: referenceTime.mode === "assumed",
+  })[0];
+  const referenceWeatherShowsRain =
+    (referenceWeather?.precipitationType !== undefined &&
+      referenceWeather.precipitationType > 0) ||
+    (referenceWeather?.precipitationProbabilityPercent ?? 0) >= 50;
   if (
     context &&
     input.incident === "rain" &&
     weatherEvidence?.status === "available" &&
-    !weatherEvidence.raining
+    referenceWeather &&
+    !referenceWeatherShowsRain
   ) {
     warnings.push(
-      "현재 위치의 자동 기상 확인에서는 강수가 감지되지 않았지만 사용자가 선택한 우천 상황을 우선 적용했습니다.",
+      "조회 기준 시각의 자동 기상 확인에서는 강수가 감지되지 않았지만 사용자가 선택한 우천 상황을 우선 적용했습니다.",
     );
   }
 
@@ -3485,7 +3503,7 @@ export async function recoverTrip(
   const relatedRanks = relatedAnchorTitle
     ? relatedRankByTitle(relatedItems, relatedAnchorTitle)
     : new Map<string, RelatedMatch>();
-  const forecasts = currentForecastByTitle(crowdItems);
+  const forecasts = currentForecastByTitle(crowdItems, referenceAt);
   const accessibleIds = new Set(
     accessibleItems.map((item) => stringValue(item.contentid)).filter(Boolean),
   );
@@ -3657,7 +3675,7 @@ export async function recoverTrip(
       contentId,
       title,
       estimatedTravelMinutes,
-    });
+    }, referenceAt);
     const routeEvidence = geodesicEvidence(
       distanceMeters,
       estimatedTravelMinutes,
@@ -3993,6 +4011,7 @@ export async function recoverTrip(
 
   return {
     requestId,
+    referenceTime,
     status,
     recoveryMode,
     itinerarySummary: summariseItinerary(context),
@@ -4000,7 +4019,9 @@ export async function recoverTrip(
        추천은 현재 위치가 기준이다. 대안 카드의 같은 시점과 나란히 놓여야
        "여기가 나은가"를 판단할 수 있다. */
     originWeatherGlance: (() => {
-      const glance = weatherGlance(weatherEvidence, new Date());
+      const glance = weatherGlance(weatherEvidence, referenceAt, {
+        preferForecast: referenceTime.mode === "assumed",
+      });
       return glance.length ? glance : undefined;
     })(),
     originWeatherLabel:

@@ -396,9 +396,16 @@ test("기준 지점과 대안을 같은 시점으로 나란히 놓는다", async
   assert.match(product, /isBaseline/);
   assert.match(product, /원래 가려던 곳 ·/);
   assert.match(product, /이 곳 ·/);
-  /* 기준 시각은 후보의 체류 시작이 아니라 "지금"이어야 한다 — 후보마다
+  /* 기준 시각은 후보의 체류 시작이 아니라 공통 조회 기준이어야 한다 — 후보마다
      체류 시작이 달라 그것을 기준으로 하면 카드 간 시점이 어긋난다. */
-  assert.match(engine, /const glance = weatherGlance\(weatherEvidence, new Date\(\)\)/);
+  assert.match(
+    engine,
+    /new Date\(recoveryReferenceTime\(input\)\.at\)/,
+  );
+  assert.doesNotMatch(
+    engine,
+    /const glance = weatherGlance\(weatherEvidence, new Date\(\)\)/,
+  );
 
   /* 아이콘만 있으면 스크린리더 사용자는 이 줄을 전혀 쓸 수 없다. */
   const strip = await src("../app/WeatherGlanceStrip.tsx");
@@ -424,6 +431,7 @@ test("예보가 현재 시각 이후부터 시작해도 지금 칸이 비지 않
       temperatureCelsius: 29,
     }),
   ]);
+  base.observedAt = "2026-08-05T14:00:00.000Z";
   base.temperatureCelsius = 30.2;
   base.observedSkyCode = 3;
   base.observedPrecipitationType = 0;

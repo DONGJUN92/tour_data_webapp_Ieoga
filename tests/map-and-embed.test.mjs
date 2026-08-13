@@ -148,3 +148,68 @@ test("단계가 바뀌면 포커스가 그 단계 제목으로 이동한다", as
      사용자에게 느닷없는 테두리로 보인다. */
   assert.match(css, /\.title:focus-visible/);
 });
+
+test("세 번 답하기는 선택한 조회 기준시각부터 다음 약속까지를 한 요청으로 고정한다", async () => {
+  const flow = await src("../app/flow/FlowApp.tsx");
+  assert.match(flow, /<ReferenceTimePicker/);
+  assert.match(flow, /const requestNowMs = Date\.now\(\)/);
+  assert.match(flow, /requestReference\.timestamp/);
+  assert.match(flow, /startAt: referenceIso/);
+  assert.match(flow, /occurredAt: referenceIso/);
+  assert.match(flow, /\{ mode: "assumed", at: referenceIso \}/);
+  assert.match(flow, /requestAvailableMinutes <= MIN_APPOINTMENT_MINUTES/);
+  assert.match(flow, /searchRequestGenerationRef\.current/);
+  assert.match(flow, /readText\(responseReference, \["at"\]\)/);
+  assert.match(flow, /formatReferenceTime\(authoritativeReferenceTime\.at/);
+});
+
+test("임베드도 미래 출발시각과 자유시간 duration을 분리해 서버 계약으로 보낸다", async () => {
+  const widget = await src("../app/embed/recover/EmbedRecoverWidget.tsx");
+  assert.match(widget, /<ReferenceTimePicker/);
+  assert.match(
+    widget,
+    /requestReference\.timestamp \+ minutes \* 60_000/,
+  );
+  assert.match(widget, /\{ mode: "assumed", at: requestReference\.iso \}/);
+  assert.match(widget, /departureAt: requestReference\.iso/);
+  assert.match(widget, /availableUntil: requestAvailableUntil/);
+  assert.match(widget, /canonicalReferenceTime\(payload\.referenceTime\)/);
+  assert.match(widget, /requestGeneration !== requestGenerationRef\.current/);
+  assert.match(widget, /requestAbortRef\.current\?\.abort\(\)/);
+  assert.match(widget, /\(\["ko", "en"\] as const\)/);
+  assert.match(widget, /sanitizeTravelerText\(warning, language\)/);
+  assert.doesNotMatch(widget, /<li key=\{warning\}>\{warning\}<\/li>/);
+});
+
+test("공용 조회 기준시각 계약은 KST 입력, 과거, 6시간 상한을 동일하게 검증한다", async () => {
+  const reference = await import("../app/reference-time.ts");
+  const now = Date.parse("2026-08-14T00:00:00.000Z"); // 09:00 KST
+
+  const valid = reference.resolveReferenceTime(
+    "scheduled",
+    "2026-08-14T09:30",
+    "ko",
+    now,
+  );
+  assert.equal(valid.ok, true);
+  assert.equal(valid.iso, "2026-08-14T00:30:00.000Z");
+
+  assert.equal(
+    reference.resolveReferenceTime(
+      "scheduled",
+      "2026-08-14T08:58",
+      "ko",
+      now,
+    ).code,
+    "past",
+  );
+  assert.equal(
+    reference.resolveReferenceTime(
+      "scheduled",
+      "2026-08-14T15:01",
+      "en",
+      now,
+    ).code,
+    "too_far",
+  );
+});

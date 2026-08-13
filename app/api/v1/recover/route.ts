@@ -25,6 +25,7 @@ import {
   recoveryRequestSchema,
   type RecoveryRequest,
 } from "@/lib/recovery/schema";
+import { resolveRecoveryReferenceTime } from "@/lib/recovery/reference-time";
 
 export const dynamic = "force-dynamic";
 /* Ceiling for the whole recovery, not a target. Measured directly against the
@@ -37,8 +38,6 @@ export const dynamic = "force-dynamic";
    where returning a verified answer late beats returning nothing. */
 const RECOVERY_RESPONSE_BUDGET_MS = 20_000;
 const PERSISTENCE_COMMIT_RESERVE_MS = 2_000;
-const MAX_CLIENT_CLOCK_SKEW_MS = 5 * 60_000;
-const MAX_OPEN_WINDOW_DEPARTURE_DELAY_MS = 6 * 60 * 60_000;
 const MAX_OPEN_WINDOW_MINUTES = 1_440;
 
 export async function POST(request: NextRequest) {
@@ -197,11 +196,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const submittedItinerary = parsed.data.itinerary;
-  const openWindow = parsed.data.openWindow;
   if (
     embedSessionId &&
-    (submittedItinerary || !openWindow || parsed.data.analyticsConsent)
+    (parsed.data.itinerary ||
+      !parsed.data.openWindow ||
+      parsed.data.analyticsConsent)
   ) {
     const response = jsonResponse(
       {
@@ -220,41 +219,46 @@ export async function POST(request: NextRequest) {
   const session = embedSessionId
     ? { id: embedSessionId, isNew: false }
     : getOrCreateSession(request);
-  const serverIncidentAt = new Date().toISOString();
+  const serverNow = new Date();
+  const serverTime = serverNow.toISOString();
+  const referenceResolution = resolveRecoveryReferenceTime(
+    parsed.data,
+    serverNow,
+  );
+  if (!referenceResolution.success) {
+    const response = jsonResponse(
+      {
+        requestId,
+        error: referenceResolution.error,
+      },
+      {
+        status:
+          referenceResolution.error.code === "REFERENCE_TIME_CONFLICT" ||
+          referenceResolution.error.code ===
+            "REFERENCE_TIME_CONTRACT_INVALID"
+            ? 409
+            : 400,
+      },
+    );
+    response.headers.set("X-Request-ID", requestId);
+    if (session.isNew) setSessionCookie(response, session.id);
+    return response;
+  }
+  const authoritativeRequest = referenceResolution.input;
+  const referenceAt = referenceResolution.referenceTime.at;
+  const submittedItinerary = authoritativeRequest.itinerary;
+  const openWindow = authoritativeRequest.openWindow;
 
   /* 빈 시간 추천은 저장된 일정을 쓰지 않는다. 사용자가 지금 알려 준 창 조건만이
      입력이므로 소유권 조회와 일정 계약 재검증을 건너뛴다. 창의 끝 시각은 서버
      시각을 기준으로 다시 확인해, 기기 시각이 틀어진 채로 "아직 3시간 남았다"는
      계산이 통과하는 일을 막는다. */
   if (openWindow && !submittedItinerary) {
-    const departureAt = openWindow.departureAt
-      ? Date.parse(openWindow.departureAt)
-      : Date.parse(serverIncidentAt);
-    const serverNowMs = Date.parse(serverIncidentAt);
+    const departureAt = Date.parse(referenceAt);
     const windowEndAt = Date.parse(openWindow.availableUntil);
     const remainingMinutes = Math.floor(
       (windowEndAt - departureAt) / 60_000,
     );
-    if (
-      !Number.isFinite(departureAt) ||
-      departureAt < serverNowMs - 60_000 ||
-      departureAt > serverNowMs + MAX_OPEN_WINDOW_DEPARTURE_DELAY_MS
-    ) {
-      const response = jsonResponse(
-        {
-          requestId,
-          error: {
-            code: "OPEN_WINDOW_DEPARTURE_INVALID",
-            message:
-              "출발 시각은 서버 시각 이후 6시간 안으로 선택해 주세요.",
-            serverTime: serverIncidentAt,
-          },
-        },
-        { status: 400 },
-      );
-      if (session.isNew) setSessionCookie(response, session.id);
-      return response;
-    }
     if (!Number.isFinite(windowEndAt) || remainingMinutes < 30) {
       const response = jsonResponse(
         {
@@ -262,8 +266,8 @@ export async function POST(request: NextRequest) {
           error: {
             code: "OPEN_WINDOW_TOO_SHORT",
             message:
-              "서버 시각 기준으로 남은 자유 시간이 30분 미만입니다. 종료 시각을 다시 확인해 주세요.",
-            serverTime: serverIncidentAt,
+              "조회 기준 시각부터 남은 자유 시간이 30분 미만입니다. 종료 시각을 다시 확인해 주세요.",
+            serverTime,
           },
         },
         { status: 400 },
@@ -282,7 +286,7 @@ export async function POST(request: NextRequest) {
             code: "OPEN_WINDOW_TOO_LONG",
             message:
               "출발 뒤 자유 시간은 최대 24시간까지 확인할 수 있습니다. 종료 시각을 다시 확인해 주세요.",
-            serverTime: serverIncidentAt,
+            serverTime,
           },
         },
         { status: 400 },
@@ -291,7 +295,9 @@ export async function POST(request: NextRequest) {
       return response;
     }
 
-    const openWindowScopes = recoveryAdministrativeScopes(parsed.data);
+    const openWindowScopes = recoveryAdministrativeScopes(
+      authoritativeRequest,
+    );
     if (openWindowScopes.length > 0) {
       let knownScope: boolean;
       try {
@@ -335,7 +341,7 @@ export async function POST(request: NextRequest) {
     }
 
     const authoritativeOpenWindowInput: RecoveryRequest = {
-      ...parsed.data,
+      ...authoritativeRequest,
       availableMinutes: remainingMinutes,
       openWindow: {
         ...openWindow,
@@ -371,28 +377,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (submittedItinerary.occurredAt) {
-    const clockSkew = Math.abs(
-      Date.parse(submittedItinerary.occurredAt) -
-        Date.parse(serverIncidentAt),
-    );
-    if (clockSkew > MAX_CLIENT_CLOCK_SKEW_MS) {
-      const response = jsonResponse(
-        {
-          requestId,
-          error: {
-            code: "INCIDENT_TIME_SKEWED",
-            message:
-              "기기 시각이 서버 시각과 5분 이상 차이 납니다. 자동 시각 설정을 확인한 뒤 다시 시도해 주세요.",
-            serverTime: serverIncidentAt,
-          },
-        },
-        { status: 409 },
-      );
-      if (session.isNew) setSessionCookie(response, session.id);
-      return response;
-    }
-  }
   if (!submittedItinerary.id) {
     return jsonResponse(
       {
@@ -439,14 +423,14 @@ export async function POST(request: NextRequest) {
   }
 
   const authoritative = recoveryRequestSchema.safeParse({
-    ...parsed.data,
+    ...authoritativeRequest,
     itinerary: {
       id: owned.itinerary.id,
       title: owned.itinerary.title,
       timezone: owned.itinerary.timezone,
       audience: owned.itinerary.audience,
       nodes: owned.itinerary.nodes,
-      occurredAt: serverIncidentAt,
+      occurredAt: referenceAt,
       disruptedNodeId: submittedItinerary.disruptedNodeId,
       nextFixedNodeId: submittedItinerary.nextFixedNodeId,
     },

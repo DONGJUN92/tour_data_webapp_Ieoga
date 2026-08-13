@@ -3202,7 +3202,7 @@ export async function recoverTrip(
     totalCount: reportedTotal,
   };
   warnings.push(
-    "후보 탐색은 한국관광공사 locationBasedList2가 제공하는 최대 반경 20km 안에서 수행합니다.",
+    "후보 탐색은 한국관광공사가 제공하는 관광정보의 최대 검색 범위 20km 안에서 수행합니다.",
   );
   if (
     expansionStoppedByDeadline ||
@@ -3939,9 +3939,29 @@ export async function recoverTrip(
       candidate.reasonCode ===
       "OPERATING_STATUS_UPSTREAM_UNAVAILABLE",
   );
+  /* A single failed detail lookup must not turn an otherwise completed
+     recovery into a service-wide 503. The incident that exposed this had
+     four successful discovery pages and six successful operating-detail
+     responses; one transient NETWORK_ERROR nevertheless promoted all 202
+     rejections to `upstream_unavailable`. Keep every unverified candidate
+     fail-closed, but reserve 503 for the case where the operating-information
+     provider did not answer any of the detail checks needed by this run. */
+  const availabilityAudits = sourceLedger.filter(
+    (audit) =>
+      audit.apiName === "KorService2" &&
+      audit.operation === "detailIntro2",
+  );
+  const availabilityProviderUnavailable =
+    availabilityProviderBlocked &&
+    availabilityAudits.some((audit) => audit.status === "error") &&
+    !availabilityAudits.some(
+      (audit) => audit.status === "live" || audit.status === "empty",
+    );
+  const availabilityPartiallyUnavailable =
+    availabilityProviderBlocked && !availabilityProviderUnavailable;
   const status =
     options.length === 0
-      ? availabilityProviderBlocked
+      ? availabilityProviderUnavailable
         ? "upstream_unavailable"
         : "no_valid_candidate"
       : hasSourceFailure || hasConditionalEvidence
@@ -3950,8 +3970,10 @@ export async function recoverTrip(
 
   if (!options.length) {
     warnings.push(
-      availabilityProviderBlocked
+      availabilityProviderUnavailable
         ? "공식 운영정보 제공자 장애로 후보의 실제 운영 여부를 확인하지 못했습니다. 데이터가 없다고 간주하지 않았으며, 검증 없이 장소를 추천하지 않습니다. 잠시 후 다시 시도해 주세요."
+        : availabilityPartiallyUnavailable
+          ? "일부 후보의 공식 운영정보를 일시적으로 확인하지 못해 해당 후보만 제외했습니다. 확인된 다른 후보는 계속 검증했으며, 검증 없이 장소를 추천하지 않습니다."
         : context?.nextFixed
           ? "다음 고정 일정의 도착 안전여유와 모든 필수 조건을 함께 만족하는 복구안을 찾지 못했습니다. 잠금 일정을 임의로 변경하지 않았습니다."
           : "현재 조건을 모두 만족하는 공식 관광지 후보를 찾지 못했습니다. 존재하지 않는 장소를 만들어 추천하지 않았습니다.",

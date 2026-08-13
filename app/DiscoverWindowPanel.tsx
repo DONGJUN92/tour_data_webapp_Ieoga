@@ -37,6 +37,11 @@ import {
   tourismCategoryCounts,
   type SimpleOptionSort,
 } from "./product-app-model";
+import {
+  sanitizeTravelerText,
+  travelerErrorText,
+  travelerSourceLabel,
+} from "@/lib/text/traveler-facing";
 
 const STAY_CHOICES = [30, 60, 90, 120, 150, 180] as const;
 
@@ -200,10 +205,7 @@ function SourceLedgerDisclosure({
           const status = readText(row, ["status"]);
           return (
             <li key={`${source}-${operation}-${index}`}>
-              <span>
-                {source}
-                {operation ? ` · ${operation}` : ""}
-              </span>
+              <span>{travelerSourceLabel(source, language)}</span>
               <b>{ledgerStatusLabel(status, language)}</b>
             </li>
           );
@@ -525,13 +527,12 @@ export default function DiscoverWindowPanel({
     } catch (submitError) {
       setState("error");
       setError(
-        submitError instanceof Error
-          ? submitError.message
-          : tr(
-              language,
-              "추천을 불러오지 못했습니다.",
-              "Could not load recommendations.",
-            ),
+        travelerErrorText(
+          submitError,
+          language,
+          "Could not load recommendations. Please try again shortly.",
+          "추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        ),
       );
     }
   }
@@ -1058,7 +1059,7 @@ function DiscoverResults({
           )}
         </strong>
         {(result.warnings ?? []).map((warning, index) => (
-          <p key={index}>{warning}</p>
+          <p key={index}>{sanitizeTravelerText(warning, language)}</p>
         ))}
         {(result.rejectionSummary?.length ?? 0) > 0 && (
           <section
@@ -1544,7 +1545,7 @@ function DiscoverResults({
       )}
       {(result.warnings ?? []).map((warning, index) => (
         <p key={index} className={styles.warning}>
-          {warning}
+          {sanitizeTravelerText(warning, language)}
         </p>
       ))}
       <SourceLedgerDisclosure

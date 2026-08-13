@@ -16,6 +16,12 @@ const { statusLabel, isMappedStatus, sourceLabelText } = await import(
 const { parseBranchQuery, branchAffinity, matchesBase } = await import(
   "../lib/location/branch-query.ts"
 );
+const {
+  containsInternalKtoName,
+  sanitizeTravelerText,
+  travelerErrorText,
+  travelerSourceLabel,
+} = await import("../lib/text/traveler-facing.ts");
 
 const source = (relative) =>
   readFile(new URL(relative, `file://${ROOT}`), "utf8");
@@ -86,6 +92,141 @@ test("상태 코드는 절대 화면으로 새지 않는다", () => {
     sourceLabelText("한국관광공사 국문 관광정보", "ko"),
     "한국관광공사 국문 관광정보",
   );
+});
+
+test("여행자 화면은 한국관광공사 내부 API 이름을 숨기고 요청 ID는 남긴다", () => {
+  const requestId = "ca907366-6da2-4bf1-8ec1-11cc2774717f";
+  const raw = `KorService2.locationBasedList2 호출에 실패했습니다. · Request ID ${requestId}`;
+
+  assert.equal(containsInternalKtoName(raw), true);
+  const ko = travelerErrorText(
+    new Error(raw),
+    "ko",
+    "Could not load recommendations.",
+    "추천을 불러오지 못했습니다.",
+  );
+  assert.match(ko, /한국관광공사/);
+  assert.match(ko, new RegExp(requestId));
+  assert.doesNotMatch(ko, /KorService2|locationBasedList2/);
+
+  const en = travelerErrorText(
+    new Error(raw),
+    "en",
+    "Could not load recommendations.",
+    "추천을 불러오지 못했습니다.",
+  );
+  assert.match(en, /Korea Tourism Organization/);
+  assert.match(en, new RegExp(requestId));
+  assert.doesNotMatch(en, /KorService2|locationBasedList2|[가-힣]/u);
+
+  assert.equal(
+    travelerSourceLabel("KorService2", "ko"),
+    "한국관광공사",
+  );
+  assert.equal(
+    travelerSourceLabel("locationBasedList2", "en"),
+    "Korea Tourism Organization",
+  );
+});
+
+test("한국관광공사 경고의 유용한 설명은 유지하고 operation만 지운다", () => {
+  const raw =
+    "후보 탐색은 한국관광공사 locationBasedList2가 제공하는 최대 반경 20km 안에서 수행합니다.";
+  const safe = sanitizeTravelerText(raw, "ko");
+  assert.equal(
+    safe,
+    "후보 탐색은 한국관광공사가 제공하는 최대 반경 20km 안에서 수행합니다.",
+  );
+  assert.doesNotMatch(safe, /locationBasedList2/);
+  const safeEn = sanitizeTravelerText(raw, "en");
+  assert.match(safeEn, /Korea Tourism Organization/);
+  assert.match(safeEn, /20 km/);
+  assert.doesNotMatch(safeEn, /locationBasedList2|[가-힣]/u);
+  assert.equal(
+    sanitizeTravelerText(
+      "한국관광공사 futureNearbyList3 응답이 지연되고 있습니다.",
+      "ko",
+    ),
+    "한국관광공사 응답이 지연되고 있습니다.",
+  );
+  assert.equal(
+    sanitizeTravelerText(
+      "후보 탐색은 한국관광공사가 제공하는 관광정보의 최대 검색 범위 20km 안에서 수행합니다.",
+      "en",
+    ),
+    "Candidates are checked within the maximum 20 km search range supported by Korea Tourism Organization data.",
+  );
+
+  const generic = travelerErrorText(
+    new Error("요청에 실패했습니다. (503) · Request ID req-503"),
+    "ko",
+    "Could not load recommendations.",
+    "추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+  );
+  assert.equal(
+    generic,
+    "추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요. · 요청 ID req-503",
+  );
+});
+
+test("503 upstream_unavailable 응답은 HTTP 문구 대신 재시도 안내와 요청 ID를 보여 준다", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestId = "ca907366-6da2-4bf1-8ec1-11cc2774717f";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        status: "upstream_unavailable",
+        sourceLedger: [
+          {
+            apiName: "KorService2",
+            operation: "locationBasedList2",
+            status: "error",
+          },
+        ],
+      }),
+      {
+        status: 503,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-ID": requestId,
+        },
+      },
+    );
+  try {
+    const { fetchJson } = await import("../app/product-app-model.ts");
+    let caught;
+    try {
+      await fetchJson("/api/v1/recover", { method: "POST", body: "{}" });
+    } catch (error) {
+      caught = error;
+    }
+    const copy = travelerErrorText(
+      caught,
+      "ko",
+      "Could not load recommendations. Please try again shortly.",
+      "추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    );
+    assert.equal(
+      copy,
+      `추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요. · 요청 ID ${requestId}`,
+    );
+    assert.doesNotMatch(copy, /503|KorService2|locationBasedList2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("시간이 비었어요와 일정 복구가 공용 여행자 오류 경계를 사용한다", async () => {
+  const [discover, product, model] = await Promise.all([
+    source("app/DiscoverWindowPanel.tsx"),
+    source("app/ProductApp.tsx"),
+    source("app/product-app-model.ts"),
+  ]);
+  assert.match(discover, /travelerErrorText\(/);
+  assert.match(discover, /travelerSourceLabel\(source, language\)/);
+  assert.doesNotMatch(discover, /\{operation \? ` · \$\{operation\}`/);
+  assert.match(product, /travelerErrorText\(/);
+  assert.match(model, /containsInternalKtoName\(message\)/);
 });
 
 test("지점명이 붙은 검색어를 기저명과 지점 단서로 쪼갠다", () => {

@@ -5,6 +5,10 @@
 
 import type { JourneyExecution } from "@/lib/recovery/execution";
 import { statusLabel, statusTone } from "@/lib/text/status-labels";
+import {
+  containsInternalKtoName,
+  sanitizeTravelerText,
+} from "@/lib/text/traveler-facing";
 
 export type TabId = "recover" | "discover" | "insights" | "transparency";
 export type Incident = "rain" | "delay" | "crowd" | "less_walk";
@@ -1246,14 +1250,20 @@ export async function fetchJson(url: string, init?: RequestInit): Promise<unknow
       readText(nestedError, ["message", "detail"]) ||
       readText(record, ["message", "detail"]) ||
       `요청에 실패했습니다. (${response.status})`;
+    /* A few older callers render Error.message directly. Apply a final
+       defense here as well as at the component boundary so a provider
+       operation such as locationBasedList2 can never become UI copy. */
+    const publicMessage = containsInternalKtoName(message)
+      ? "한국관광공사 관광정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요."
+      : sanitizeTravelerText(message, "ko");
     const requestId =
       response.headers.get("x-request-id") ||
       readText(record, ["requestId"]) ||
       readText(nestedError, ["requestId"]);
     throw new Error(
-      requestId && !message.includes(requestId)
-        ? `${message} · Request ID ${requestId}`
-        : message,
+      requestId && !publicMessage.includes(requestId)
+        ? `${publicMessage} · Request ID ${requestId}`
+        : publicMessage,
     );
   }
   return payload;

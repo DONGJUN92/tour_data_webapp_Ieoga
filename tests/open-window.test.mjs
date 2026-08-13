@@ -54,6 +54,7 @@ function nearbyItems() {
 
 function installFetch({ legSecondsByCandidate, routePaths }) {
   const originalFetch = globalThis.fetch;
+  let availabilityRequestCount = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(
       typeof input === "string"
@@ -125,15 +126,25 @@ function installFetch({ legSecondsByCandidate, routePaths }) {
     if (service === "KorService2" && operation === "locationBasedList2") {
       items = nearbyItems();
     } else if (service === "KorService2" && operation === "detailIntro2") {
+      availabilityRequestCount += 1;
       const availabilityMode =
         legSecondsByCandidate.availability ?? "confirmed_open";
-      if (availabilityMode === "upstream_error") {
+      if (
+        availabilityMode === "upstream_error" ||
+        ((availabilityMode === "partial_upstream_error" ||
+          availabilityMode === "partial_upstream_error_no_valid") &&
+          availabilityRequestCount === 2)
+      ) {
         return new Response("upstream unavailable", { status: 503 });
       }
+      const effectiveAvailabilityMode =
+        availabilityMode === "partial_upstream_error_no_valid"
+          ? "unconfirmed"
+          : availabilityMode;
       items =
-        availabilityMode === "confirmed_closed"
+        effectiveAvailabilityMode === "confirmed_closed"
           ? [{ eventenddate: "20000101", infocenter: "02-000-0000" }]
-          : availabilityMode === "unconfirmed"
+          : effectiveAvailabilityMode === "unconfirmed"
             ? [{ infocenter: "02-000-0000" }]
             : [
                 {
@@ -425,7 +436,9 @@ test("첫 페이지 후보가 모두 부적합하면 다음 KTO 페이지까지 
       "첫 페이지 탈락 뒤 다음 페이지의 검증 가능 후보를 보충하지 않았다",
     );
     assert.ok(
-      result.warnings.some((warning) => warning.includes("최대 반경 20km")),
+      result.warnings.some((warning) =>
+        warning.includes("최대 검색 범위 20km"),
+      ),
       "외부 제공자의 탐색 반경 한계를 숨겨서는 안 된다",
     );
   } finally {
@@ -615,9 +628,120 @@ test("운영정보의 휴무·데이터 공백·제공자 장애를 구분하고
           ),
           scenario.mode,
         );
+        if (scenario.mode === "upstream_error") {
+          const detailAudits = result.sourceLedger.filter(
+            (audit) => audit.operation === "detailIntro2",
+          );
+          assert.ok(detailAudits.length > 0);
+          assert.ok(
+            detailAudits.every((audit) => audit.status === "error"),
+            "모든 상세 운영정보 조회가 실패한 경우에만 전체 제공자 장애다",
+          );
+        }
       },
     );
   }
+});
+
+test("상세 운영정보 한 건 실패를 공급자 전체 장애 503으로 승격하지 않는다", async () => {
+  await withMockedEnvironment(
+    {
+      near: [300],
+      far: [600],
+      availability: "partial_upstream_error",
+    },
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const result = await recoverTrip(
+        openWindowRequest({
+          openWindow: {
+            availableUntil: new Date(
+              Date.now() + 180 * 60_000,
+            ).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "availability-partial-upstream-error",
+      );
+
+      assert.ok(result.options.length >= 1);
+      assert.equal(result.status, "degraded");
+      assert.ok(
+        result.sourceLedger.some(
+          (audit) =>
+            audit.operation === "detailIntro2" &&
+            audit.status === "live",
+        ),
+      );
+      assert.ok(
+        result.sourceLedger.some(
+          (audit) =>
+            audit.operation === "detailIntro2" &&
+            audit.status === "error",
+        ),
+      );
+    },
+  );
+});
+
+test("상세 운영정보가 일부 성공했다면 결과가 0개여도 제공자 전체 장애가 아니다", async () => {
+  await withMockedEnvironment(
+    {
+      near: [300],
+      far: [600],
+      availability: "partial_upstream_error_no_valid",
+    },
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const result = await recoverTrip(
+        openWindowRequest({
+          openWindow: {
+            availableUntil: new Date(
+              Date.now() + 180 * 60_000,
+            ).toISOString(),
+            plannedStayMinutes: 30,
+          },
+        }),
+        "availability-partial-error-empty-result",
+      );
+
+      assert.equal(result.options.length, 0);
+      assert.equal(
+        result.status,
+        "no_valid_candidate",
+        "일부 조회 실패는 검증되지 않은 해당 후보만 제외하며 전체 503이 아니다",
+      );
+      assert.ok(
+        result.rejectionSummary.some(
+          (entry) =>
+            entry.reasonCode === "OPERATING_STATUS_UNCONFIRMED" &&
+            entry.count >= 1,
+        ),
+      );
+      assert.ok(
+        result.rejectionSummary.some(
+          (entry) =>
+            entry.reasonCode === "OPERATING_STATUS_UPSTREAM_UNAVAILABLE" &&
+            entry.count >= 1,
+        ),
+      );
+      const detailAudits = result.sourceLedger.filter(
+        (audit) => audit.operation === "detailIntro2",
+      );
+      assert.ok(detailAudits.some((audit) => audit.status === "live"));
+      assert.ok(detailAudits.some((audit) => audit.status === "error"));
+
+      const route = await readFile(
+        `${ROOT}/app/api/v1/recover/route.ts`,
+        "utf8",
+      );
+      assert.match(
+        route,
+        /status:\s*result\.status\s*===\s*"upstream_unavailable"\s*\?\s*503\s*:\s*200/,
+        "no_valid_candidate는 API에서 HTTP 200으로 전달돼야 한다",
+      );
+    },
+  );
 });
 
 test("다음 장소를 알려 주면 그 도착까지 검증하고 목적 근거를 그 장소로 삼는다", async () => {

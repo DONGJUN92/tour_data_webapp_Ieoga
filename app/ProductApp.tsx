@@ -92,6 +92,10 @@ import { quotedWithParticle, withParticle } from "@/lib/text/korean";
 import { regionDisplayName } from "@/lib/text/region-alias";
 import { sourceLabelText, statusLabel } from "@/lib/text/status-labels";
 import {
+  sanitizeTravelerText,
+  travelerErrorText,
+} from "@/lib/text/traveler-facing";
+import {
   authoritativeExecutionMatchesApply,
   executionMatchesAppliedRecovery,
   executionPreservesLockedAppointment,
@@ -245,19 +249,6 @@ function compactLocalizedValue(value: unknown, language: Language): string {
   if (english) return english;
   const status = readText(record, ["status", "value"]);
   return status ? statusLabel(status, "en") : "See the official evidence";
-}
-
-function localizedErrorText(
-  error: unknown,
-  language: Language,
-  fallbackEn: string,
-  fallbackKo: string,
-): string {
-  const message = error instanceof Error ? error.message.trim() : "";
-  if (language === "ko") return message || fallbackKo;
-  if (message && !/[가-힣]/u.test(message)) return message;
-  const requestId = message.match(/(?:Request ID|요청 ID)\s*[:·]?\s*([\w-]+)/i)?.[1];
-  return requestId ? `${fallbackEn} · Request ID ${requestId}` : fallbackEn;
 }
 
 function counterfactualReasonText(
@@ -830,7 +821,7 @@ export function ProductApp() {
     } catch (error) {
       setPracticeState("error");
       setPracticeError(
-        localizedErrorText(
+        travelerErrorText(
           error,
           language,
           "Could not load real places for the practice itinerary.",
@@ -903,7 +894,7 @@ export function ProductApp() {
     } catch (error) {
       setJourneyPlaceState("error");
       setJourneyPlaceError(
-        localizedErrorText(
+        travelerErrorText(
           error,
           language,
           "Could not verify official place information.",
@@ -1456,7 +1447,7 @@ export function ProductApp() {
     } catch (error) {
       setRecoverState("error");
       setRecoverError(
-        localizedErrorText(
+        travelerErrorText(
           error,
           language,
           "The recovery request failed. Check the inputs and try again.",
@@ -1649,7 +1640,7 @@ export function ProductApp() {
       setShareMessages((current) => ({
         ...current,
         [option.id]:
-          localizedErrorText(
+          travelerErrorText(
             error,
             language,
             "Could not create the share link.",
@@ -1802,7 +1793,7 @@ export function ProductApp() {
       if (requestGeneration === applyRequestGenerationRef.current) {
         setOutcomePriority("assertive");
         setOutcomeMessage(
-          localizedErrorText(
+          travelerErrorText(
             error,
             language,
             "Could not save the outcome. Try again shortly.",
@@ -3459,7 +3450,7 @@ export function ProductApp() {
                       <small key={warning}>
                         {language === "en"
                           ? "An official evidence source reported a limitation; review the verification details before changing any condition."
-                          : warning}
+                          : sanitizeTravelerText(warning, language)}
                       </small>
                     ))}
                     <div className="no-candidate-actions">
@@ -3511,7 +3502,7 @@ export function ProductApp() {
                           <p key={warning}>
                             {language === "en"
                               ? "An official evidence source was unavailable or incomplete. Affected safety conditions remain blocked and are identified on each option."
-                              : warning}
+                              : sanitizeTravelerText(warning, language)}
                           </p>
                         ))}
                       </div>
@@ -4900,7 +4891,7 @@ export function ProductApp() {
                   )}
                 </strong>
                 <p>
-                  {localizedErrorText(
+                  {travelerErrorText(
                     healthError ? new Error(healthError) : undefined,
                     language,
                     "The readiness check did not return a usable response.",

@@ -135,7 +135,13 @@ function installFetch({ legSecondsByCandidate, routePaths }) {
           ? [{ eventenddate: "20000101", infocenter: "02-000-0000" }]
           : availabilityMode === "unconfirmed"
             ? [{ infocenter: "02-000-0000" }]
-            : [{ usetimeculture: "00:00~23:59", infocenter: "02-000-0000" }];
+            : [
+                {
+                  usetimeculture: "24시간",
+                  restdateculture: "연중무휴",
+                  infocenter: "02-000-0000",
+                },
+              ];
     }
     return Response.json(ktoEnvelope(items));
   };
@@ -378,7 +384,7 @@ test("첫 페이지 후보가 모두 부적합하면 다음 KTO 페이지까지 
             ];
     } else if (service === "KorService2" && operation === "detailIntro2") {
       totalCount = 1;
-      items = [{ usetimeculture: "00:00~23:59" }];
+      items = [{ usetimeculture: "24시간", restdateculture: "연중무휴" }];
     }
     return Response.json({
       response: {

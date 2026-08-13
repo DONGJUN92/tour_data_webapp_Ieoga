@@ -182,7 +182,7 @@ async function withKakaoUpstream(run, { offset = 0, transitStatus } = {}) {
         },
       ];
     } else if (service === "KorService2" && operation === "detailIntro2") {
-      items = [{ usetimeculture: "00:00~23:59" }];
+      items = [{ usetimeculture: "24시간", restdateculture: "연중무휴" }];
     }
     return Response.json(ktoEnvelope(items));
   };

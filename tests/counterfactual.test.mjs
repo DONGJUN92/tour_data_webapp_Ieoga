@@ -87,7 +87,7 @@ async function withOutdoorOnly(run) {
     ) {
       /* 거리 반사실 테스트가 운영정보 미확인이라는 두 번째 필수 조건에
          막히지 않도록 체류 구간 전체가 열려 있음을 명시한다. */
-      items = [{ usetimeculture: "00:00~23:59" }];
+      items = [{ usetime: "24시간", restdate: "연중무휴" }];
     }
     return Response.json(envelope(items));
   };

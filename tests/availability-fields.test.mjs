@@ -114,6 +114,36 @@ test("상시 개방·연중무휴 공식 표기는 체류 구간 전체의 운�
   assert.equal(evidence.status, "confirmed_open");
 });
 
+test("자정을 넘는 체류는 일반 시간표로 확정하지 않고 24시간·연중무휴일 때만 운영 확인한다", async () => {
+  const { evaluateAvailabilityItem } = await import(
+    "../lib/kto/availability.ts"
+  );
+  const startAt = new Date("2026-08-09T23:30:00+09:00");
+  const endAt = new Date("2026-08-10T00:30:00+09:00");
+
+  const singleDateHours = evaluateAvailabilityItem(
+    {
+      usetimeculture: "00:00~23:59",
+      restdateculture: "연중무휴",
+    },
+    audit,
+    startAt,
+    endAt,
+  );
+  assert.equal(singleDateHours.status, "official_hours_unstructured");
+
+  const alwaysOpen = evaluateAvailabilityItem(
+    {
+      usetimeculture: "24시간",
+      restdateculture: "연중무휴",
+    },
+    audit,
+    startAt,
+    endAt,
+  );
+  assert.equal(alwaysOpen.status, "confirmed_open");
+});
+
 test("상시 개방이어도 체류가 자정을 넘어 공식 휴무일과 겹치면 실패 폐쇄한다", async () => {
   const { evaluateAvailabilityItem } = await import(
     "../lib/kto/availability.ts"

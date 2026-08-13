@@ -86,7 +86,7 @@ async function withStrollerUpstream(
         },
       ];
     } else if (service === "KorService2" && operation === "detailIntro2") {
-      items = [{ usetimeculture: "00:00~23:59" }];
+      items = [{ usetimeculture: "24시간", restdateculture: "연중무휴" }];
     } else if (service === "KorWithService2" && operation === "detailWithTour2") {
       /* 유아차 필수 동선을 공식 데이터가 확인해 주는 응답. */
       items = detailConfirms

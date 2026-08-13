@@ -204,7 +204,13 @@ test("minimum-change engine routes through every original waypoint and proves pr
       service === "KorService2" &&
       operation === "detailIntro2"
     ) {
-      items = [{ usetime: "00:00~23:59", infocenter: "02-000-0000" }];
+      items = [
+        {
+          usetimeculture: "24시간",
+          restdateculture: "연중무휴",
+          infocenter: "02-000-0000",
+        },
+      ];
     }
 
     return Response.json(ktoEnvelope(items));

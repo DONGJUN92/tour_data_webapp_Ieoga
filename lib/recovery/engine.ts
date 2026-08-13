@@ -1,5 +1,7 @@
 import {
   CONCENTRATION_PAGE_SIZE,
+  KTO_CANDIDATE_PAGE_SIZE,
+  KTO_CANDIDATE_RADIUS_METERS,
   getAccessibilityDetail,
   getConcentrationForecast,
   getNearbyAccessibleTourism,
@@ -7,6 +9,7 @@ import {
   getRelatedTourism,
   normalizeAnalysisCodes,
 } from "@/lib/kto/adapters";
+import { ktoTourismCategory } from "@/lib/kto/category";
 import {
   getAvailabilityEvidence,
   type AvailabilityEvidence,
@@ -60,6 +63,18 @@ import type {
 } from "./types";
 
 export const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
+/* Provider and latency guardrails, not traveller distance preferences.
+   `locationBasedList2` itself caps radius at 20 km. We scan more pages while
+   enough of the request's 20-second budget remains, then verify in small
+   batches so failed candidates can be replaced without an unbounded burst. */
+const CANDIDATE_DISCOVERY_MAX_PAGES = 4;
+const CANDIDATE_EXPANSION_TIMEOUT_MS = 2_500;
+const CANDIDATE_DISCOVERY_RESERVE_MS = 10_000;
+const CONTINUITY_RESULT_LIMIT = 12;
+const CONTINUITY_VERIFICATION_HARD_LIMIT = 18;
+const CONTINUITY_VERIFICATION_BATCH_SIZE = 3;
+const CONTINUITY_VERIFICATION_RESERVE_MS = 2_500;
+const ACCESSIBILITY_DETAIL_RESERVE_MS = 8_000;
 
 type ItineraryNode = NonNullable<
   RecoveryRequest["itinerary"]
@@ -143,6 +158,20 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function candidateDiscoveryKey(item: KtoItem): string {
+  const contentId = stringValue(item.contentid);
+  if (contentId) return `content:${contentId}`;
+  /* Invalid records are rejected later, but a bad record repeated on several
+     pages must not inflate work or rejection counts. */
+  return [
+    "fallback",
+    stringValue(item.contenttypeid),
+    normalizeName(stringValue(item.title)),
+    stringValue(item.mapx),
+    stringValue(item.mapy),
+  ].join(":");
+}
+
 function numberInRange(
   value: unknown,
   minimum: number,
@@ -185,15 +214,25 @@ const VERIFIED_INDOOR_CATEGORY_CODES = new Set([
 export function hasVerifiedIndoorEvidence(item: KtoItem): boolean {
   const contentTypeId = stringValue(item.contenttypeid);
   const title = stringValue(item.title);
-  const categoryCode = stringValue(
-    item.cat3 ?? item.lclsSystm3 ?? item.lclsSystm2,
-  );
+  const legacyCategoryCode = stringValue(item.cat3).toUpperCase();
+  const officialLevel2Code = stringValue(item.lclsSystm2).toUpperCase();
+  const officialLevel3Code = stringValue(item.lclsSystm3).toUpperCase();
+  /* 신분류의 공원/자연휴양 분류는 이름과 콘텐츠 유형보다 우선한다. 반대로
+     VE07 전시·문화시설은 공식 분류 자체가 실내 근거다. */
+  if (["VE02", "VE03", "NA04"].includes(officialLevel2Code)) return false;
+  if (
+    officialLevel2Code === "VE07" ||
+    officialLevel3Code.startsWith("VE07")
+  ) {
+    return true;
+  }
+
   const explicitOutdoor =
     /공원|산책로|둘레길|트레킹|해변|해수욕장|광장|정원|수목원|숲|산\b|계곡|폭포|캠핑|야영|전망대|유적|고궁|궁궐|성곽|섬|항구|시장/i.test(
-      `${title} ${stringValue(item.cat1)} ${stringValue(item.cat2)} ${categoryCode}`,
+      `${title} ${stringValue(item.cat1)} ${stringValue(item.cat2)}`,
     );
   if (explicitOutdoor) return false;
-  if (VERIFIED_INDOOR_CATEGORY_CODES.has(categoryCode)) return true;
+  if (VERIFIED_INDOOR_CATEGORY_CODES.has(legacyCategoryCode)) return true;
 
   /* Food establishments are an indoor TourAPI content class unless the
      record explicitly describes an outdoor venue above. Culture and shopping
@@ -1154,6 +1193,12 @@ function openWindowContext(
   if (!window) return undefined;
   const endAt = new Date(window.availableUntil);
   if (Number.isNaN(endAt.getTime())) return undefined;
+  const requestedDepartureAt = window.departureAt
+    ? new Date(window.departureAt)
+    : new Date();
+  const occurredAt = Number.isNaN(requestedDepartureAt.getTime())
+    ? new Date()
+    : requestedDepartureAt;
 
   const nextPlace = window.nextPlace;
   const nextPlaceArriveBy = nextPlace
@@ -1183,7 +1228,7 @@ function openWindowContext(
     mode: "open_window",
     changeKind: "insert",
     title: "지금 비어 있는 시간",
-    occurredAt: new Date(),
+    occurredAt,
     disrupted: undefined,
     nextFixed,
     continuityNodes: nextFixed ? [nextFixed] : [],
@@ -1266,6 +1311,7 @@ function summariseOpenWindow(
   const window = context?.openWindow;
   if (!context || !window) return undefined;
   return {
+    windowStartAt: context.occurredAt.toISOString(),
     windowEndAt: window.endAt.toISOString(),
     windowMinutes: Math.max(
       0,
@@ -1283,10 +1329,49 @@ function scoreCandidate(
   candidate: Omit<WorkingCandidate, "baseScore" | "comfortScore">,
   input: RecoveryRequest,
 ): { baseScore: number; comfortScore: number } {
-  const distanceScore = Math.max(
-    0,
-    100 - (candidate.distanceMeters / input.radiusMeters) * 100,
+  const minimumStayMinutes = input.minimumStayMinutes ?? 30;
+  const safetyBufferMinutes = input.safetyBufferMinutes ?? 15;
+  const openWindowStartMs = Date.parse(input.openWindow?.departureAt ?? "");
+  const openWindowEndMs = Date.parse(input.openWindow?.availableUntil ?? "");
+  const authoritativeAvailableMinutes =
+    Number.isFinite(openWindowStartMs) && Number.isFinite(openWindowEndMs)
+      ? Math.max(
+          0,
+          Math.floor((openWindowEndMs - openWindowStartMs) / 60_000),
+        )
+      : input.availableMinutes;
+  const windowProof = candidate.scheduleDiff.openWindow;
+  const appointmentProof = candidate.scheduleDiff.nextFixedAppointment;
+  /* 거리값은 같은 5km라도 이동수단·경로에 따라 부담이 전혀 다르다. 실제 검증
+     뒤에는 왕복/다음 장소까지의 경로 시간을, 그 전에는 수단별 보수 추정을 쓴다. */
+  const travelBurdenMinutes = windowProof
+    ? windowProof.travelToMinutes + windowProof.returnMinutes
+    : input.openWindow && !input.openWindow.nextPlace
+      ? candidate.estimatedTravelMinutes * 2
+      : candidate.estimatedTravelMinutes;
+  const availableTravelMinutes = Math.max(
+    1,
+    authoritativeAvailableMinutes -
+      minimumStayMinutes -
+      safetyBufferMinutes,
   );
+  const timeBurdenScore = Math.max(
+    0,
+    Math.min(
+      100,
+      100 - (travelBurdenMinutes / availableTravelMinutes) * 100,
+    ),
+  );
+  const slackMinutes = appointmentProof
+    ? (appointmentProof.arrivalBufferMinutes ?? 0) -
+      appointmentProof.safetyBufferMinutes
+    : windowProof
+      ? windowProof.leftoverMinutes - windowProof.requiredBufferMinutes
+      : authoritativeAvailableMinutes -
+        minimumStayMinutes -
+        safetyBufferMinutes -
+        travelBurdenMinutes;
+  const slackScore = Math.max(0, Math.min(100, 50 + slackMinutes * 2));
   /* 같은 `supported_visit_category`에 84점을 일괄로 주면 박물관과 식당의
      총점이 88 대 86처럼 붙어서 사용자가 고를 근거가 사라진다. 유형별로
      벌린다. */
@@ -1313,79 +1398,52 @@ function scoreCandidate(
         ? 100
         : 0;
   const indoorScore = candidate.indoor ? 100 : 35;
-  const continuityScore =
-    candidate.scheduleDiff.nextFixedAppointment?.status === "preserved"
-      ? Math.min(
-          100,
-          70 +
-            Math.max(
-              0,
-              candidate.scheduleDiff.nextFixedAppointment
-                .arrivalBufferMinutes ?? 0,
-            ),
-        )
-      : /* 빈 시간 추천에서 다음 장소를 알려 주지 않은 경우에는 지킬 약속이
-           없으므로 연속성을 0으로 깎지 않는다. 대신 창 안에 남는 여유를
-           같은 척도로 환산한다. 여유가 클수록 서두르지 않아도 된다. */
-        candidate.scheduleDiff.openWindow
-        ? Math.min(
-            100,
-            70 +
-              Math.max(0, candidate.scheduleDiff.openWindow.leftoverMinutes),
-          )
-        : candidate.scheduleDiff.mode === "proximity_fallback"
-          ? 50
-          : 0;
-
   let baseScore: number;
   if (input.incident === "rain") {
     baseScore =
-      distanceScore * 0.15 +
+      timeBurdenScore * 0.15 +
       indoorScore * 0.25 +
       accessScore * 0.13 +
       purposeScore * 0.18 +
       crowdScore * 0.04 +
-      continuityScore * 0.25;
+      slackScore * 0.25;
   } else if (input.incident === "crowd") {
     baseScore =
-      distanceScore * 0.14 +
+      timeBurdenScore * 0.14 +
       crowdScore * 0.24 +
       accessScore * 0.14 +
       purposeScore * 0.18 +
-      continuityScore * 0.3;
+      slackScore * 0.3;
   } else if (input.incident === "less_walk") {
     /* `less_walk`는 엔진에 아예 없었다. 화면은 "보행 부담과 접근성 조건을 먼저
        통과한 후보만 제시합니다"라고 약속하는데 실제로는 `delay`와 똑같이 계산됐다.
        고른 상황이 결과를 바꾸지 않으면 그 선택지는 화면 장식이다.
 
-       이동 부담을 줄이는 것이 목적이므로 거리 가중을 가장 크게 두고 접근성을
-       그다음에 둔다. 하드 필터로 후보를 잘라내지는 않는다 — 사용자가 준 이동거리
-       상한을 화면에 알리지 않고 절반으로 조이면 "왜 아무것도 안 나오는가"를
-       설명할 수 없다. 대신 순위를 확실히 갈라 놓고, 그렇게 정렬했다는 사실을
-       카드 문장으로 밝힌다. */
+       이동 부담을 줄이는 것이 목적이므로 실제 이동시간 가중을 가장 크게 두고
+       접근성을 그다음에 둔다. 거리는 표시 정보일 뿐 탈락·점수 기준이 아니다. */
     baseScore =
-      distanceScore * 0.38 +
+      timeBurdenScore * 0.38 +
       accessScore * 0.22 +
       purposeScore * 0.12 +
       indoorScore * 0.04 +
       crowdScore * 0.02 +
-      continuityScore * 0.22;
+      slackScore * 0.22;
   } else {
     baseScore =
-      distanceScore * 0.23 +
+      timeBurdenScore * 0.23 +
       accessScore * 0.13 +
       purposeScore * 0.18 +
       crowdScore * 0.06 +
-      continuityScore * 0.4;
+      slackScore * 0.4;
   }
 
   const comfortScore =
     accessScore * 0.27 +
     indoorScore * 0.2 +
     crowdScore * 0.14 +
-    distanceScore * 0.12 +
+    timeBurdenScore * 0.12 +
     purposeScore * 0.1 +
-    continuityScore * 0.17;
+    slackScore * 0.17;
 
   /* 날씨는 순위에 넣지 않는다.
      체류 시간대 강수·기온을 감점으로 넣어 봤지만, 그 임계값(강수확률 30·60%,
@@ -1402,19 +1460,54 @@ function scoreCandidate(
   };
 }
 
+/* 점수 상위가 한 분류에 몰려 공원·문화유산·식당이 검증 단계에 도달하지 못하는
+   것을 막는다. 공식 KTO 분류별 큐에서 한 곳씩 순환하므로 각 분류 내부 점수순은
+   유지하면서 검증 풀의 발견 다양성을 확보한다. */
+function diversifyCandidatesByCategory(
+  candidates: WorkingCandidate[],
+): WorkingCandidate[] {
+  const buckets = new Map<string, WorkingCandidate[]>();
+  for (const candidate of candidates) {
+    const code = ktoTourismCategory(candidate.item).code;
+    const bucket = buckets.get(code) ?? [];
+    bucket.push(candidate);
+    buckets.set(code, bucket);
+  }
+
+  const diversified: WorkingCandidate[] = [];
+  while (diversified.length < candidates.length) {
+    let appended = false;
+    for (const bucket of buckets.values()) {
+      const candidate = bucket.shift();
+      if (!candidate) continue;
+      diversified.push(candidate);
+      appended = true;
+    }
+    if (!appended) break;
+  }
+  return diversified;
+}
+
 async function accessibilityDetails(
   candidates: WorkingCandidate[],
   audience: RecoveryRequest["audience"],
   signal?: AbortSignal,
+  deadlineAt?: number,
 ): Promise<{ details: Map<string, KtoItem>; audits: KtoAudit[] }> {
   if (audience === "general") return { details: new Map(), audits: [] };
 
   const details = new Map<string, KtoItem>();
   const audits: KtoAudit[] = [];
-  const targets = candidates.slice(0, 8);
 
-  for (let offset = 0; offset < targets.length; offset += 4) {
-    const group = targets.slice(offset, offset + 4);
+  for (let offset = 0; offset < candidates.length; offset += 4) {
+    if (
+      signal?.aborted ||
+      (deadlineAt !== undefined &&
+        deadlineAt - Date.now() <= ACCESSIBILITY_DETAIL_RESERVE_MS)
+    ) {
+      break;
+    }
+    const group = candidates.slice(offset, offset + 4);
     const settled = await Promise.allSettled(
       group.map((candidate) =>
         getAccessibilityDetail(candidate.contentId, { signal }),
@@ -1830,27 +1923,12 @@ async function enrichForContinuity(params: {
     const requiresOriginReturn = Boolean(
       context.openWindow && !context.nextFixed,
     );
-    /* A round trip is direction-sensitive. Query the return leg separately
-       and concurrently; copying the outbound duration is unsafe for one-way
-       roads, slopes, traffic and schedule-dependent transit. */
-    const [route, rawReturnRoute] = await Promise.all([
-      getRoute(routePoints, {
-        signal,
-        mode: input.travelMode,
-      }),
-      requiresOriginReturn
-        ? getRoute(
-            [
-              {
-                latitude: candidate.latitude,
-                longitude: candidate.longitude,
-              },
-              input.origin,
-            ],
-            { signal, mode: input.travelMode },
-          )
-        : Promise.resolve(undefined),
-    ]);
+    const route = await getRoute(routePoints, {
+      signal,
+      mode: input.travelMode,
+      departureAt: context.occurredAt.toISOString(),
+      arriveBy: context.nextFixed?.startAt,
+    });
     if (
       route.status !== "routed" ||
       route.legs.length < routePoints.length - 1
@@ -1866,6 +1944,31 @@ async function enrichForContinuity(params: {
       });
       return null;
     }
+    /* Return traffic/timetables depend on when the visit really ends. Query
+       only after the verified outbound duration is known; a preliminary
+       straight-line estimate must never become a provider departure time. */
+    const rawReturnRoute = requiresOriginReturn
+      ? await getRoute(
+          [
+            {
+              latitude: candidate.latitude,
+              longitude: candidate.longitude,
+            },
+            input.origin,
+          ],
+          {
+            signal,
+            mode: input.travelMode,
+            departureAt: new Date(
+              context.occurredAt.getTime() +
+                ((route.legs[0]?.durationMinutes ?? route.durationMinutes) +
+                  Math.max(minimumStay, context.originalDurationMinutes)) *
+                  60_000,
+            ).toISOString(),
+            arriveBy: context.openWindow?.endAt.toISOString(),
+          },
+        )
+      : undefined;
     if (
       requiresOriginReturn &&
       (!rawReturnRoute || rawReturnRoute.status !== "routed")
@@ -1889,10 +1992,10 @@ async function enrichForContinuity(params: {
       firstLeg?.distanceMeters ?? route.distanceMeters;
     const routedMinutes =
       firstLeg?.durationMinutes ?? route.durationMinutes;
-    let stayMinutes = Math.max(
-      minimumStay,
-      Math.min(context.originalDurationMinutes, input.availableMinutes),
-    );
+    /* 체류시간은 등록 일정 또는 빈 시간 입력의 계획값이 권위 원천이다.
+       레거시 availableMinutes로 조용히 줄이지 않고, 맞지 않으면 아래 연속성/창
+       검증에서 명시적으로 탈락시킨다. */
+    let stayMinutes = Math.max(minimumStay, context.originalDurationMinutes);
     scheduleDiff = itineraryScheduleDiff({
       context,
       candidate,
@@ -1968,31 +2071,10 @@ async function enrichForContinuity(params: {
       changedNodeCount: context.changeKind === "insert" ? 0 : 1,
     });
     if (operatingViolation) violations.push(operatingViolation);
-    if (routedDistance > input.maxDistanceMeters) {
-      const amount = Math.ceil(
-        routedDistance - input.maxDistanceMeters,
-      );
-      violations.push({
-        contentId: candidate.contentId,
-        title: candidate.title,
-        reasonCode: "DISTANCE_LIMIT",
-        reason: `실제 보행 경로 기준 최대 이동거리를 ${amount.toLocaleString("ko-KR")}m 늘려야 이 후보를 검토할 수 있습니다.`,
-        distanceMeters: routedDistance,
-        changedNodeCount: 1,
-        requiredRelaxation: {
-          constraint: "maximum_distance",
-          amount,
-          unit: "meters",
-          currentLimit: input.maxDistanceMeters,
-          requiredLimit: Math.ceil(routedDistance),
-          description: `최대 이동거리 ${input.maxDistanceMeters.toLocaleString("ko-KR")}m → ${Math.ceil(routedDistance).toLocaleString("ko-KR")}m`,
-          preservesLockedNodes: true,
-          preservesNextFixedAppointment: true,
-        },
-        verificationDepth: "route_verified",
-      });
-    }
-    if (routedMinutes > input.availableMinutes) {
+    /* 거리 자체는 탈락 조건이 아니다. 등록 일정/빈 시간에서는 아래 연속성·창
+       증명이 이동+체류+복귀(또는 다음 일정)를 실제 시각으로 fail-closed 한다.
+       컨텍스트 없는 구형 호출만 호환 시간 한도를 사용한다. */
+    if (!context && routedMinutes > input.availableMinutes) {
       const amount = Math.ceil(routedMinutes - input.availableMinutes);
       violations.push({
         contentId: candidate.contentId,
@@ -2579,6 +2661,7 @@ function toOption(
     longitude: candidate.longitude,
     imageUrl: candidate.imageUrl,
     contentTypeId: candidate.contentTypeId,
+    tourismCategory: ktoTourismCategory(candidate.item),
     score: candidate.baseScore,
     distanceMeters: Math.round(candidate.distanceMeters),
     estimatedTravelMinutes: candidate.estimatedTravelMinutes,
@@ -2888,11 +2971,9 @@ function pickOptions(
   }
 
   /* 전략 카드 세 장을 고른 뒤, **검증한 나머지 후보를 전부 점수순으로 아래에
-     붙인다.**
-     예전에는 세 장만 돌려주었다. 그래서 후보가 8곳 검증돼도 화면에는 3곳,
-     하나가 걸러지면 1곳만 남았다. 여행에 정답은 없고, 너무 멀지 않으면 폭넓게
-     보여 주고 고르는 것은 여행자가 할 일이다. 위에는 조건을 가장 잘 맞춘 곳,
-     아래에는 그 밖의 곳을 점수순으로 둔다. */
+     붙인다.** 예전에는 검증한 후보 중 세 장만 돌려주어 안전 조건을 통과한
+     선택지를 숨겼다. 여행에 정답은 없으므로 위에는 조건을 가장 잘 맞춘 곳,
+     아래에는 그 밖의 검증 완료 후보를 점수순으로 둔다. */
   const remaining = [...pool]
     .filter((candidate) => !used.has(candidate.contentId))
     .sort((a, b) => b.baseScore - a.baseScore);
@@ -3000,9 +3081,9 @@ export async function recoverTrip(
     nearby = await getNearbyTourism({
       longitude: input.origin.longitude,
       latitude: input.origin.latitude,
-      radius: input.radiusMeters,
-      regionCode: input.origin.areaCode,
-      districtCode: input.origin.sigunguCode,
+      radius: KTO_CANDIDATE_RADIUS_METERS,
+      pageNo: 1,
+      numOfRows: KTO_CANDIDATE_PAGE_SIZE,
       /* Candidate discovery is the one call the whole recovery depends on:
          without it there is nothing to filter and the request ends with no
          options at all. Its latency upstream is bimodal — measured at roughly
@@ -3015,7 +3096,6 @@ export async function recoverTrip(
          land rather than abandoning work that was nearly done, and the hedge,
          not the timeout, is what keeps the usual request fast. */
     }, { signal: execution.signal, timeoutMs: 9_000, retry: false });
-    sourceLedger.push(nearby.audit);
   } catch (error) {
     sourceLedger.push(
       auditFromFailure("KorService2", "locationBasedList2", error),
@@ -3044,6 +3124,94 @@ export async function recoverTrip(
       generatedAt: new Date().toISOString(),
       ruleVersion: RECOVERY_RULE_VERSION,
     };
+  }
+
+  sourceLedger.push(nearby.audit);
+  const discoveredItems: KtoItem[] = [];
+  const discoveredKeys = new Set<string>();
+  const appendDiscoveryPage = (items: KtoItem[]) => {
+    for (const item of items) {
+      const key = candidateDiscoveryKey(item);
+      if (discoveredKeys.has(key)) continue;
+      discoveredKeys.add(key);
+      discoveredItems.push(item);
+    }
+  };
+  appendDiscoveryPage(nearby.items);
+
+  const reportedTotal = Math.max(nearby.totalCount, nearby.items.length);
+  const reportedPages = Math.max(
+    1,
+    Math.ceil(reportedTotal / KTO_CANDIDATE_PAGE_SIZE),
+  );
+  const pageLimit = Math.min(reportedPages, CANDIDATE_DISCOVERY_MAX_PAGES);
+  let pagesFetched = 1;
+  let expansionStoppedByDeadline = false;
+
+  /* Page 1 is mandatory; pages 2+ are opportunistic. A later-page failure
+     never erases the valid first page. No user-entered radius participates:
+     20 km is the provider's documented endpoint maximum, not a rejection
+     rule imposed by this product. */
+  for (let pageNo = 2; pageNo <= pageLimit; pageNo += 1) {
+    const deadlineAt = execution.deadlineAt ?? Date.now() + 18_000;
+    const remainingMs = deadlineAt - Date.now();
+    if (
+      execution.signal?.aborted ||
+      remainingMs <= CANDIDATE_DISCOVERY_RESERVE_MS
+    ) {
+      expansionStoppedByDeadline = true;
+      break;
+    }
+
+    try {
+      const page = await getNearbyTourism(
+        {
+          longitude: input.origin.longitude,
+          latitude: input.origin.latitude,
+          radius: KTO_CANDIDATE_RADIUS_METERS,
+          pageNo,
+          numOfRows: KTO_CANDIDATE_PAGE_SIZE,
+        },
+        {
+          signal: execution.signal,
+          timeoutMs: Math.min(
+            CANDIDATE_EXPANSION_TIMEOUT_MS,
+            remainingMs - CANDIDATE_DISCOVERY_RESERVE_MS,
+          ),
+          retry: false,
+        },
+      );
+      sourceLedger.push(page.audit);
+      pagesFetched = pageNo;
+      appendDiscoveryPage(page.items);
+      if (page.items.length < KTO_CANDIDATE_PAGE_SIZE) break;
+    } catch (error) {
+      sourceLedger.push(
+        auditFromFailure("KorService2", "locationBasedList2", error),
+      );
+      warnings.push(
+        "후보 추가 페이지를 불러오지 못해 이미 확인한 관광지만 검증했습니다.",
+      );
+      break;
+    }
+  }
+
+  nearby = {
+    ...nearby,
+    items: discoveredItems,
+    totalCount: reportedTotal,
+  };
+  warnings.push(
+    "후보 탐색은 한국관광공사 locationBasedList2가 제공하는 최대 반경 20km 안에서 수행합니다.",
+  );
+  if (
+    expansionStoppedByDeadline ||
+    reportedPages > CANDIDATE_DISCOVERY_MAX_PAGES ||
+    pagesFetched < pageLimit
+  ) {
+    warnings.push(
+      `공사 API가 알린 ${reportedTotal.toLocaleString("ko-KR")}건 중 중복을 제외한 ${discoveredItems.length.toLocaleString("ko-KR")}건을 응답 시간·호출량 예산 안에서 탐색했습니다.`,
+    );
   }
 
   const firstCodes = nearby.items[0]
@@ -3125,7 +3293,7 @@ export async function recoverTrip(
       : getNearbyAccessibleTourism({
           longitude: input.origin.longitude,
           latitude: input.origin.latitude,
-          radius: input.radiusMeters,
+          radius: KTO_CANDIDATE_RADIUS_METERS,
         }, { signal: execution.signal, timeoutMs: 4_000, retry: false });
   const weatherPromise = context
       ? getWeatherEvidence(
@@ -3385,38 +3553,6 @@ export async function recoverTrip(
         latitude,
         longitude,
       });
-    const nearMissDistanceCeiling =
-      input.maxDistanceMeters +
-      Math.min(2_000, Math.max(500, input.maxDistanceMeters * 0.5));
-    if (
-      distanceMeters > input.maxDistanceMeters &&
-      (!context || distanceMeters > nearMissDistanceCeiling)
-    ) {
-      rejected.push({
-        contentId,
-        title,
-        reasonCode: "DISTANCE_LIMIT",
-        reason: `최대 이동거리 ${input.maxDistanceMeters.toLocaleString("ko-KR")}m를 초과합니다.`,
-        distanceMeters,
-        /* 사전 걸러내기에서도 "조건 하나만 풀면 검토 대상이 된다"를 계산해
-           둔다. 예전에는 이 단계 탈락에 완화량이 없어, 탈락이 서른 건이어도
-           반사실 설명이 항상 비어 있었다. 경로·운영시간은 아직 확인하지
-           않았으므로 보존은 주장하지 않는다. */
-        requiredRelaxation: {
-          constraint: "maximum_distance",
-          amount: Math.ceil(distanceMeters - input.maxDistanceMeters),
-          unit: "meters",
-          currentLimit: input.maxDistanceMeters,
-          requiredLimit: Math.ceil(distanceMeters),
-          description: `최대 이동거리 ${input.maxDistanceMeters.toLocaleString("ko-KR")}m → ${Math.ceil(distanceMeters).toLocaleString("ko-KR")}m`,
-          preservesLockedNodes: false,
-          preservesNextFixedAppointment: false,
-        },
-        verificationDepth: "pre_filter",
-      });
-      continue;
-    }
-
     /* 사전 걸러내기의 보수 추정. 자차는 직선거리를 도보 속도로 환산하면
        실제로 10분이면 닿는 후보가 "가용시간 초과"로 떨어진다. 수단별 속도로
        나눈다. 이 값은 걸러내기 전용이고, 살아남은 후보의 이동시간은 아래에서
@@ -3429,11 +3565,7 @@ export async function recoverTrip(
           : input.travelMode === "transit"
             ? conservativeTransitMinutes(distanceMeters)
             : conservativeWalkingMinutes(distanceMeters);
-    if (
-      estimatedTravelMinutes > input.availableMinutes &&
-      (!context ||
-        estimatedTravelMinutes > input.availableMinutes + 30)
-    ) {
+    if (!context && estimatedTravelMinutes > input.availableMinutes) {
       rejected.push({
         contentId,
         title,
@@ -3593,16 +3725,22 @@ export async function recoverTrip(
     (a, b) => b.baseScore - a.baseScore || a.distanceMeters - b.distanceMeters,
   );
 
+  const verificationPool = diversifyCandidatesByCategory(preliminary).slice(
+    0,
+    CONTINUITY_VERIFICATION_HARD_LIMIT,
+  );
+
   /* 제거실험으로 무장애 정보를 끈 경우에는 상세 조회도 하지 않는다. 목록만
      끄고 상세는 호출하면 "무장애 정보 없이도 검증된다"는 잘못된 비교가 된다. */
   const { details, audits: detailAudits } = await accessibilityDetails(
-    preliminary,
+    verificationPool,
     disabled.has("KorWithService2") ? "general" : input.audience,
     execution.signal,
+    execution.deadlineAt,
   );
   sourceLedger.push(...detailAudits);
 
-  const accessibilityVerified = preliminary
+  const accessibilityVerified = verificationPool
     .map((candidate) => {
       const accessibility = evaluateAccessibility(
         input.audience,
@@ -3671,32 +3809,20 @@ export async function recoverTrip(
      Failures stay per-candidate — one that cannot be verified drops out
      without taking the others with it. */
   const continuityCandidates: WorkingCandidate[] = [];
-  /* 검증 대상을 3곳에서 8곳으로 넓힌다.
-     실측: 대전 국립중앙과학관 주변에서 공사 목록이 37곳을 줬는데 검증은 3곳만
-     하고 그 3곳이 전부 운영시간으로 탈락해 대안이 **0건**이 됐다. 즉 "대안이
-     하나만 나온다"의 원인은 후보가 없는 것이 아니라 **우리가 3곳만 들여다본
-     것**이었다.
-
-     8곳이면 하나가 걸러져도 여러 장이 남는다. 검증은 4곳씩 병렬로 두 묶음이고
-     20초 예산 안에서 끝난다 — 후보당 상세조회 1회 + 경로 1회다. 더 늘리면
-     KTO 일 한도와 마감 예산이 함께 위험해지므로 여기서 멈춘다. */
-  const CONTINUITY_VERIFY_LIMIT = 8;
-  const shortlist = accessibilityVerified.slice(0, CONTINUITY_VERIFY_LIMIT);
+  /* 공식 분류를 순환해 최대 12곳을 검증한다. 각 후보는 실제 경로와 운영시간을
+     모두 통과해야 하며, 20초 요청 신호가 끝나면 미검증 후보는 결과에 넣지 않는다. */
+  const shortlist = diversifyCandidatesByCategory(
+    accessibilityVerified,
+  );
   if (Date.now() >= continuityDeadlineAt || execution.signal?.aborted) {
     warnings.push(
       "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",
     );
   } else {
-    /* 후보 지점의 예보를 따로 가져온다.
-       출발지 한 점의 예보로 모든 후보를 판단하고 있었는데, 기상청 격자는 약
-       5km이고 이 앱의 기본 반경은 도보 8km·대중교통 20km다. 실측(2026-08-05
-       17시 발표)에서 같은 체류 구간 18:30~20:00에 대해 서울시청 격자는 강수
-       확률 0%로 `dry`, 남쪽 20km 격자는 60%·소나기로 `rain_likely`였다. 한 점만
-       보면 두 곳이 같아 보인다.
-
-       검증 대상은 세 건이고 격자가 같은 후보는 한 번만 부르므로 추가 호출은
-       최대 3회다. 실패하면 출발지 예보로 물러서고, 그 사실을 밝힌다 — 다른
-       지점의 예보를 이 곳의 예보인 것처럼 쓰면 안 된다. */
+    /* 후보 지점의 예보를 따로 가져온다. 출발지 한 점의 예보를 모든 후보에
+       재사용하면 시간상 도달 가능한 먼 후보의 실제 날씨가 달라도 놓친다.
+       격자가 같은 후보는 한 번만 조회하며, 실패하면 출발지 예보로 물러서고
+       그 사실을 밝힌다 — 다른 지점의 예보를 이 곳의 예보인 것처럼 쓰면 안 된다. */
     const gridWeather = new Map<
       string,
       Awaited<ReturnType<typeof getWeatherEvidence>>
@@ -3738,28 +3864,64 @@ export async function recoverTrip(
       );
     }
 
-    const settled = await Promise.allSettled(
-      shortlist.map((candidate) =>
-        enrichForContinuity({
-          candidate,
-          input,
-          context,
-          sourceLedger,
-          rejected,
-          weatherEvidence:
-            gridWeather.get(gridKey(candidate)) ?? weatherEvidence,
-          signal: execution.signal,
-        }),
-      ),
-    );
-    for (const entry of settled) {
-      if (entry.status === "fulfilled" && entry.value) {
-        continuityCandidates.push(entry.value);
+    let attemptedCandidates = 0;
+    for (
+      let offset = 0;
+      offset < shortlist.length &&
+      continuityCandidates.length < CONTINUITY_RESULT_LIMIT;
+      offset += CONTINUITY_VERIFICATION_BATCH_SIZE
+    ) {
+      if (
+        execution.signal?.aborted ||
+        continuityDeadlineAt - Date.now() <=
+          CONTINUITY_VERIFICATION_RESERVE_MS
+      ) {
+        break;
       }
+
+      /* Three matches the KTO client's measured safe concurrency. A failed
+         route or closed venue therefore consumes only its own slot, and the
+         next category-diversified batch is tried while time remains. */
+      const batch = shortlist.slice(
+        offset,
+        offset + CONTINUITY_VERIFICATION_BATCH_SIZE,
+      );
+      attemptedCandidates += batch.length;
+      const settled = await Promise.allSettled(
+        batch.map((candidate) =>
+          enrichForContinuity({
+            candidate,
+            input,
+            context,
+            sourceLedger,
+            rejected,
+            weatherEvidence:
+              gridWeather.get(gridKey(candidate)) ?? weatherEvidence,
+            signal: execution.signal,
+          }),
+        ),
+      );
+      for (const entry of settled) {
+        if (entry.status === "fulfilled" && entry.value) {
+          continuityCandidates.push(entry.value);
+        }
+      }
+    }
+
+    if (
+      attemptedCandidates < shortlist.length &&
+      continuityCandidates.length < CONTINUITY_RESULT_LIMIT
+    ) {
+      warnings.push(
+        `응답 시간 예산 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 검증하지 못한 후보는 결과처럼 표시하지 않았습니다.`,
+      );
     }
   }
 
-  const options = pickOptions(continuityCandidates, requestId, input);
+  const options = pickOptions(continuityCandidates, requestId, input).slice(
+    0,
+    CONTINUITY_RESULT_LIMIT,
+  );
   const hasSourceFailure = sourceLedger.some(
     (audit) => audit.status === "error",
   );

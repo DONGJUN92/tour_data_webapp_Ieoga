@@ -8,8 +8,10 @@ import type {
 } from "@/lib/recovery/execution";
 import type { RejectionReasonCode } from "@/lib/recovery/types";
 import {
+  filterOptionsByTourismCategory,
   formatCrowd,
   sortSimpleOptions,
+  tourismCategoryCounts,
   MAX_APPOINTMENT_MINUTES,
   MIN_APPOINTMENT_MINUTES,
   appointmentAfterMinutesInKorea,
@@ -94,6 +96,19 @@ type RecoveryOption = {
   latitude: number;
   longitude: number;
   imageUrl?: string;
+  contentTypeId?: string;
+  tourismCategory?: {
+    code: string;
+    labelKo: string;
+    labelEn: string;
+    source:
+      | "KorService2.lclsSystm2"
+      | "KorService2.lclsSystm1"
+      | "KorService2.contenttypeid";
+    officialLevel1Code?: string;
+    officialLevel2Code?: string;
+    officialLevel3Code?: string;
+  };
   strategyLabel?: string;
   strategyLabelEn?: string;
   distanceMeters?: number;
@@ -162,10 +177,6 @@ const REJECTION_LABELS: Record<
   TIME_LIMIT: {
     ko: "약속 시각까지 왕복이 어려움",
     en: "Not enough time before the appointment",
-  },
-  DISTANCE_LIMIT: {
-    ko: "설정한 이동 거리 초과",
-    en: "Beyond your travel-distance limit",
   },
   TRAVEL_PURPOSE_MISMATCH: {
     ko: "원래 일정의 목적과 맞지 않음",
@@ -590,6 +601,7 @@ export default function FlowApp() {
   const [optionSort, setOptionSort] = useState<
     "recommended" | "nearest_first" | "quiet_first" | "busy_first"
   >("recommended");
+  const [tourismCategory, setTourismCategory] = useState("all");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionPriority, setActionPriority] = useState<"polite" | "assertive">(
     "polite",
@@ -670,6 +682,7 @@ export default function FlowApp() {
     setErrorText("");
     setErrorRequestId("");
     setOptions([]);
+    setTourismCategory("all");
     setRejectedCount(0);
     setRejectionSummary([]);
     setRecoveryRequestId("");
@@ -731,6 +744,14 @@ export default function FlowApp() {
   const verifiedOptionCount = options.filter(
     (option) => optionApplicationSafety(option, language).canApply,
   ).length;
+  const categoryCounts = tourismCategoryCounts(options);
+  /* 장소 종류를 먼저 좁힌 다음 그 안에서 정렬한다. 반대로 하면 화면별로
+     필터 결과의 추천 순서가 달라지고, 혼잡 값이 없는 후보를 별도 처리하다
+     잃어버리기 쉽다. 공용 정렬은 미측정 후보를 뒤로 보낼 뿐 삭제하지 않는다. */
+  const visibleOptions = sortFlowOptions(
+    filterOptionsByTourismCategory(options, tourismCategory),
+    optionSort,
+  );
   const currentExecutionStep = execution
     ? execution.steps.find(
         (entry) => entry.sequence === execution.currentStepSequence,
@@ -837,14 +858,6 @@ export default function FlowApp() {
         headline: tr(
           "다녀오면 다음 약속에 늦습니다. 약속 시각을 늦추거나 더 가까운 곳을 찾아보세요.",
           "Every candidate would make you late. Move the appointment later or search from a closer origin.",
-        ),
-      };
-    }
-    if (top === "DISTANCE_LIMIT") {
-      return {
-        headline: tr(
-          "이동 거리 조건 안에서는 대안이 없었습니다.",
-          "No alternative met your travel-distance limit.",
         ),
       };
     }
@@ -1170,6 +1183,7 @@ export default function FlowApp() {
     setRecoveryRequestId("");
     setRecoveryPersisted(false);
     setSelectedOptionId("");
+    setTourismCategory("all");
     setExecution(null);
     setProofShareLinks({ actionable: null, historical: null });
     setActionPriority("polite");
@@ -1279,9 +1293,7 @@ export default function FlowApp() {
         audience,
         /* 명시적으로 보낸 값이 엔진의 우천 기본값을 이긴다. */
         indoorOnly: incident === "rain" ? !includeOutdoor : false,
-        availableMinutes: Math.min(240, availableMinutes),
-        maxDistanceMeters: audience === "general" ? 2500 : 1500,
-        radiusMeters: 5000,
+        availableMinutes,
         safetyBufferMinutes: 15,
         minimumStayMinutes: 30,
         analyticsConsent: false,
@@ -2466,8 +2478,61 @@ export default function FlowApp() {
                 )}
               </>
             )}
+            <div className={styles.categoryFilter}>
+              <p className={styles.categoryFilterLabel}>
+                {tr("장소 종류", "Place category")}
+              </p>
+              <div
+                className={styles.sortRow}
+                role="radiogroup"
+                aria-label={tr("관광지 종류", "Tourism category")}
+              >
+                {[
+                  {
+                    code: "all",
+                    labelKo: "전체",
+                    labelEn: "All",
+                    count: options.length,
+                  },
+                  ...categoryCounts,
+                ].map((category) => {
+                  const active = tourismCategory === category.code;
+                  return (
+                    <button
+                      key={category.code}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      className={active ? styles.sortActive : styles.sortChip}
+                      onClick={() => {
+                        setTourismCategory(category.code);
+                        /* 필터 밖의 카드가 선택된 채 아래 실행 버튼만 남는 일을
+                           막는다. 보이는 카드가 아니면 사용자가 다시 고른다. */
+                        if (
+                          selectedOptionId &&
+                          !filterOptionsByTourismCategory(
+                            options,
+                            category.code,
+                          ).some((option) => option.id === selectedOptionId)
+                        ) {
+                          setSelectedOptionId("");
+                          setAcknowledgedOptionId("");
+                        }
+                      }}
+                    >
+                      <span>
+                        {language === "en"
+                          ? category.labelEn
+                          : category.labelKo}
+                      </span>
+                      <b className={styles.categoryCount}>{category.count}</b>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className={styles.body}>
-              {sortFlowOptions(options, optionSort).map((option, optionIndex) => {
+              {visibleOptions.map((option, optionIndex) => {
                 const safety = optionApplicationSafety(option, language);
                 const isBlocked = !safety.canApply;
                 const selected = selectedOptionId === option.id;
@@ -2500,6 +2565,13 @@ export default function FlowApp() {
                           `Suggestion ${optionIndex + 1}`,
                         )}
                       </span>
+                      {option.tourismCategory && (
+                        <p className={styles.cardCategory}>
+                          {language === "en"
+                            ? option.tourismCategory.labelEn
+                            : option.tourismCategory.labelKo}
+                        </p>
+                      )}
                       <h2 className={styles.cardTitle}>{option.title}</h2>
                       {option.address && (
                         <p className={styles.cardAddr}>{option.address}</p>

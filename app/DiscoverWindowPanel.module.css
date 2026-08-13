@@ -1,5 +1,6 @@
 /* 빈 시간 추천 화면. 복구 탭과 같은 토큰을 쓰되, 결정 순서가 다르므로
-   "지금 위치 → 언제까지 → 얼마나 머물기 → 결과"의 한 방향 흐름으로만 쌓는다. */
+   "지금 위치 → 출발 시각 → 언제까지 → 얼마나 머물기 → 결과"의 한 방향
+   흐름으로만 쌓는다. */
 
 .panel {
   display: grid;
@@ -110,10 +111,22 @@
   cursor: pointer;
 }
 
+.originActions button {
+  flex: 1 1 220px;
+}
+
 .primaryGhost {
   border-color: var(--brand) !important;
   background: var(--brand-tint) !important;
   color: var(--brand-deep) !important;
+}
+
+.chip:focus-visible,
+.chipActive:focus-visible,
+.originActions button:focus-visible,
+.originReady button:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
 }
 
 .originReady {
@@ -355,6 +368,18 @@
   color: var(--ink);
   font-size: 1.15rem;
   letter-spacing: -0.02em;
+}
+
+.categoryBadge {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border: 1px solid #b8d8d6;
+  border-radius: 999px;
+  background: #f2fbfa;
+  color: #075d5b;
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
 .score {

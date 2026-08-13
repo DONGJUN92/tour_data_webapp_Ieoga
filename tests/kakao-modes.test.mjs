@@ -229,42 +229,22 @@ function request(travelMode, offset = 0) {
   };
 }
 
-test("대중교통은 카카오로 계산하고 요금·환승·배차 한계를 함께 알린다", async () => {
+test("대중교통 왕복은 미래 복귀 배차를 검증할 수 없어 실패 폐쇄한다", async () => {
   await withKakaoUpstream(
     async (calls) => {
       const { recoverTrip } = await import("../lib/recovery/engine.ts");
-      const result = await recoverTrip(request("transit", 0.05), "mode-transit");
-      assert.ok(result.options.length >= 1, "대중교통 후보가 남아야 한다");
+      const currentTransit = request("transit", 0.05);
+      currentTransit.openWindow.departureAt = new Date().toISOString();
+      const result = await recoverTrip(currentTransit, "mode-transit");
+      assert.equal(result.options.length, 0);
+      assert.ok(
+        result.rejectionSummary.some(
+          (entry) => entry.reasonCode === "ROUTE_UNAVAILABLE",
+        ),
+      );
       assert.ok(calls.transit >= 1, "카카오 대중교통을 호출하지 않았다");
       assert.equal(calls.tmapWalk, 0, "대중교통인데 TMAP 보행을 호출했다");
       assert.equal(calls.tmapCar, 0, "대중교통인데 TMAP 자동차를 호출했다");
-
-      const option = result.options[0];
-      const evidence = option.continuityProof.routeEvidence;
-      assert.equal(evidence.provider, "kakao_transit");
-      assert.match(evidence.attribution, /카카오맵 대중교통/);
-      /* 여러 경로 중 가장 빠른 것을 골라야 한다 — 도착 시각이 판정 근거다. */
-      assert.equal(evidence.fareKrw, 1_650);
-      assert.equal(evidence.transfers, 1);
-      assert.equal(evidence.scheduleDependent, true);
-      assert.ok(
-        option.why.some((line) => line.includes("대중교통 경로 기준 요금")),
-        `요금이 문장에 없다: ${JSON.stringify(option.why)}`,
-      );
-      assert.ok(
-        option.why.some((line) => line.includes("복구 전체 대중교통 경로")),
-        `요금·환승의 구간 기준이 없다: ${JSON.stringify(option.why)}`,
-      );
-      assert.ok(
-        option.why.some((line) => line.includes("배차 간격에 따라")),
-        "배차 한계를 알리지 않아 도착 시각을 확정값처럼 제시한다",
-      );
-      assert.ok(
-        option.dataContributions.some(
-          (entry) => entry.source === "카카오맵 대중교통 길찾기",
-        ),
-        "기여 원장에 카카오 대중교통이 없다",
-      );
     },
     { offset: 0.05 },
   );
@@ -311,7 +291,13 @@ test("카카오가 status로 실패를 알리면 다른 수단으로 대체하�
     async (calls) => {
       const { recoverTrip } = await import("../lib/recovery/engine.ts");
       const result = await recoverTrip(
-        request("transit", 0.07),
+        {
+          ...request("transit", 0.07),
+          openWindow: {
+            ...request("transit", 0.07).openWindow,
+            departureAt: new Date().toISOString(),
+          },
+        },
         "mode-transit-fail",
       );
       /* 단위가 다른 경로로 메꾸면 "대중교통 30분"이 실제로는 도보 30분이 된다. */

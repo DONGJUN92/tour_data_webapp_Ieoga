@@ -81,7 +81,9 @@ import {
   todayInKorea,
   fetchJson,
   OPTION_SORTS,
+  filterOptionsByTourismCategory,
   sortOptionsByCrowd,
+  tourismCategoryCounts,
   type OptionSort,
   HALF_HOUR_TIMES,
   toHalfHour,
@@ -273,9 +275,6 @@ function counterfactualReasonText(
     return "IEOGA calculated the smallest condition change that may produce a safe alternative.";
   }
   const amount = relaxation.amount ?? 0;
-  if (relaxation.constraint === "maximum_distance") {
-    return `The maximum travel distance must increase by ${amount.toLocaleString("en-US")} metres before this place can be verified.`;
-  }
   if (relaxation.constraint === "available_time") {
     return `At least ${amount} more minute${amount === 1 ? "" : "s"} are needed before the next booking.`;
   }
@@ -300,9 +299,6 @@ function relaxationDescriptionText(
   if (!relaxation) return "Condition change required";
   const current = relaxation.currentLimit;
   const required = relaxation.requiredLimit;
-  if (relaxation.constraint === "maximum_distance") {
-    return `Maximum travel distance: ${(current ?? 0).toLocaleString("en-US")} m → ${(required ?? 0).toLocaleString("en-US")} m`;
-  }
   if (relaxation.constraint === "available_time") {
     return `Available time: ${current ?? 0} min → ${required ?? 0} min`;
   }
@@ -377,6 +373,7 @@ export function ProductApp() {
   /* 대안 목록의 정렬 축. 집중률을 점수에 녹여 두면 왜 이 순서인지 알 수 없고
      되돌릴 수도 없다. 축을 고른 행위가 곧 동의가 되게 한다. */
   const [optionSort, setOptionSort] = useState<OptionSort>("recommended");
+  const [optionCategory, setOptionCategory] = useState("all");
   const [language, setLanguage] = useState<Language>("ko");
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [regions, setRegions] = useState<Region[]>([]);
@@ -422,8 +419,6 @@ export function ProductApp() {
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
   const [minimumStayMinutes, setMinimumStayMinutes] = useState(30);
-  const [maxDistanceMeters, setMaxDistanceMeters] = useState(2500);
-  const [radiusMeters, setRadiusMeters] = useState(5000);
   const [audience, setAudience] = useState<Audience>("general");
   /* 우천이면 실내 조건을 기본으로 켠다. 엔진이 더 이상 우천을 이유로 실내를
      강제하지 않으므로(명시적으로 보낸 값이 이긴다) 그 기본값을 화면이 만들어야
@@ -454,15 +449,35 @@ export function ProductApp() {
   const [recoverState, setRecoverState] = useState<LoadState>("idle");
   const [recoverError, setRecoverError] = useState("");
   const [recovery, setRecovery] = useState<RecoveryResponse | null>(null);
+  const recoveryCategoryCounts = useMemo(
+    () => tourismCategoryCounts(recovery?.options ?? []),
+    [recovery],
+  );
+  const filteredRecoveryOptions = useMemo(
+    () =>
+      filterOptionsByTourismCategory(
+        recovery?.options ?? [],
+        optionCategory,
+      ),
+    [optionCategory, recovery],
+  );
+  const sortedRecoveryOptionGroups = useMemo(
+    () => sortOptionsByCrowd(filteredRecoveryOptions, optionSort),
+    [filteredRecoveryOptions, optionSort],
+  );
+  const displayedRecoveryOptions = useMemo(
+    () => [
+      ...sortedRecoveryOptionGroups.ranked,
+      ...sortedRecoveryOptionGroups.unranked,
+    ],
+    [sortedRecoveryOptionGroups],
+  );
   const [shareMessages, setShareMessages] = useState<Record<string, string>>({});
   const [appliedOptionId, setAppliedOptionId] = useState("");
   const [applyingOptionId, setApplyingOptionId] = useState("");
   const [outcomeMessage, setOutcomeMessage] = useState("");
   const [outcomePriority, setOutcomePriority] =
     useState<"polite" | "assertive">("polite");
-  /* 기본값을 전체 노출로 둔다. 대안을 폭넓게 보여 주기로 한 뒤에도 첫 장
-     외에는 접혀 있어서, 넓힌 후보가 사실상 보이지 않았다. */
-  const [showAllOptions, setShowAllOptions] = useState(true);
   const [activeExecution, setActiveExecution] =
     useState<JourneyExecution | null>(null);
   const [executionState, setExecutionState] =
@@ -476,6 +491,7 @@ export function ProductApp() {
   const recoveryFormRef = useRef<HTMLFormElement>(null);
   const applyInFlightRef = useRef(false);
   const applyRequestGenerationRef = useRef(0);
+  const geolocationRequestGenerationRef = useRef(0);
 
   const [insightRegions, setInsightRegions] = useState<Region[]>([]);
   const [insightListState, setInsightListState] = useState<LoadState>("idle");
@@ -718,9 +734,9 @@ export function ProductApp() {
   useEffect(() => {
     if (nextAppointmentMinutes === null) return;
     setAvailableMinutes(
-      Math.min(240, Math.max(15, nextAppointmentMinutes - safetyBufferMinutes)),
+      Math.min(1440, Math.max(15, nextAppointmentMinutes)),
     );
-  }, [nextAppointmentMinutes, safetyBufferMinutes, nextFixedStopId]);
+  }, [nextAppointmentMinutes, nextFixedStopId]);
 
   function dismissSimulationGuide() {
     window.localStorage.setItem(GUIDE_STORAGE_KEY, "seen");
@@ -1188,6 +1204,7 @@ export function ProductApp() {
   }
 
   function requestGeolocation() {
+    const requestGeneration = ++geolocationRequestGenerationRef.current;
     setGeoMessage("");
     setGeoAttribution("");
     if (!navigator.geolocation) {
@@ -1204,6 +1221,7 @@ export function ProductApp() {
     setGeoState("loading");
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        if (requestGeneration !== geolocationRequestGenerationRef.current) return;
         const nextLatitude = position.coords.latitude.toFixed(5);
         const nextLongitude = position.coords.longitude.toFixed(5);
         setLatitude(nextLatitude);
@@ -1222,6 +1240,7 @@ export function ProductApp() {
           }),
         })
           .then((payload) => {
+            if (requestGeneration !== geolocationRequestGenerationRef.current) return;
             const record = asRecord(payload);
             const resolved = asRecord(record?.location) ?? asRecord(record?.data) ?? record;
             const resolvedAreaCode = readText(resolved, ["areaCode", "regionCode"]);
@@ -1243,6 +1262,7 @@ export function ProductApp() {
             );
           })
           .catch(() => {
+            if (requestGeneration !== geolocationRequestGenerationRef.current) return;
             setLocationMode("manual");
             setGeoState("error");
             setGeoMessage(
@@ -1254,6 +1274,7 @@ export function ProductApp() {
           });
       },
       (error) => {
+        if (requestGeneration !== geolocationRequestGenerationRef.current) return;
         setLocationMode("manual");
         setGeoState("error");
         setGeoMessage(
@@ -1273,6 +1294,7 @@ export function ProductApp() {
   }
 
   function useManualLocation() {
+    geolocationRequestGenerationRef.current += 1;
     setLocationMode("manual");
     setGeoState("idle");
     setLatitude("");
@@ -1285,6 +1307,19 @@ export function ProductApp() {
         "Search for your current place or address.",
       ),
     );
+  }
+
+  function resetLocationSelection() {
+    geolocationRequestGenerationRef.current += 1;
+    setLocationMode("unselected");
+    setGeoState("idle");
+    setLatitude("");
+    setLongitude("");
+    setOriginLabel("");
+    setAreaCode("");
+    setSigunguCode("");
+    setGeoMessage("");
+    setGeoAttribution("");
   }
 
   async function submitRecovery(event: FormEvent<HTMLFormElement>) {
@@ -1335,13 +1370,7 @@ export function ProductApp() {
     if (
       !Number.isFinite(availableMinutes) ||
       availableMinutes < 15 ||
-      availableMinutes > 240 ||
-      !Number.isFinite(maxDistanceMeters) ||
-      maxDistanceMeters < 300 ||
-      maxDistanceMeters > 20000 ||
-      !Number.isFinite(radiusMeters) ||
-      radiusMeters < 500 ||
-      radiusMeters > 20000 ||
+      availableMinutes > 1440 ||
       !Number.isFinite(minimumStayMinutes) ||
       minimumStayMinutes < 10 ||
       minimumStayMinutes > 180
@@ -1349,8 +1378,8 @@ export function ProductApp() {
       setRecoverState("error");
       setRecoverError(
         tr(
-          "쓸 수 있는 시간은 15~240분, 머무는 시간은 10~180분, 이동 거리는 300~20,000m, 찾는 범위는 500~20,000m 사이로 넣어 주세요.",
-          "Enter 15–240 minutes available, a 10–180 minute stay, 300–20,000 metres travel distance and a 500–20,000 metre search radius.",
+          "쓸 수 있는 시간은 15~1,440분, 머무는 시간은 10~180분 사이로 넣어 주세요.",
+          "Enter 15–1,440 minutes available and a 10–180 minute stay.",
         ),
       );
       return;
@@ -1359,7 +1388,8 @@ export function ProductApp() {
     setRecoverState("loading");
     setRecovery(null);
     setAppliedOptionId("");
-    setShowAllOptions(false);
+    setOptionCategory("all");
+    setOptionSort("recommended");
     setOutcomeMessage("");
     try {
       const payload = await fetchJson("/api/v1/recover", {
@@ -1374,12 +1404,10 @@ export function ProductApp() {
           },
           incident,
           availableMinutes,
-          maxDistanceMeters,
           audience,
           indoorOnly,
           travelMode,
           disabledSources: disabledSources.length ? disabledSources : undefined,
-          radiusMeters,
           safetyBufferMinutes,
           minimumStayMinutes,
           analyticsConsent,
@@ -1443,9 +1471,7 @@ export function ProductApp() {
     if (!relaxation || typeof relaxation.requiredLimit !== "number") {
       return;
     }
-    if (relaxation.constraint === "maximum_distance") {
-      setMaxDistanceMeters(relaxation.requiredLimit);
-    } else if (relaxation.constraint === "available_time") {
+    if (relaxation.constraint === "available_time") {
       setAvailableMinutes(relaxation.requiredLimit);
     } else if (relaxation.constraint === "minimum_stay") {
       setMinimumStayMinutes(relaxation.requiredLimit);
@@ -2897,6 +2923,7 @@ export function ProductApp() {
                           "If you do not know the place name, choose a city and district. IEOGA searches from a representative point and does not treat it as your exact location.",
                         )}
                         onPick={(place) => {
+                          geolocationRequestGenerationRef.current += 1;
                           setLatitude(String(place.latitude));
                           setLongitude(String(place.longitude));
                           setOriginLabel(place.title);
@@ -3128,7 +3155,7 @@ export function ProductApp() {
                   </details>
                   <details className="advanced-constraints">
                     <summary>
-                      {tr("시간·거리 자세히 정하기", "Set time and distance limits")}
+                      {tr("시간 자세히 정하기", "Set time details")}
                     </summary>
                     <div className="field-grid three">
                       <label>
@@ -3138,12 +3165,12 @@ export function ProductApp() {
                         <span className="number-input">
                           <input
                             aria-label={tr(
-                              "지금부터 쓸 수 있는 시간 (15~240분)",
-                              "Time available from now (15 to 240 minutes)",
+                              "지금부터 쓸 수 있는 시간 (15~1,440분)",
+                              "Time available from now (15 to 1,440 minutes)",
                             )}
                             type="number"
                             min={15}
-                            max={240}
+                            max={1440}
                             step={5}
                             value={availableMinutes}
                             onChange={(event) => setAvailableMinutes(Number(event.target.value))}
@@ -3191,46 +3218,6 @@ export function ProductApp() {
                             }
                           />
                           <b aria-hidden="true">{tr("분", "min")}</b>
-                        </span>
-                      </label>
-                      <label>
-                        <span>
-                          {tr("여기까지만 이동", "Maximum travel distance")}
-                        </span>
-                        <span className="number-input">
-                          <input
-                            aria-label={tr(
-                              "여기까지만 이동 (300~20,000m)",
-                              "Maximum travel distance (300 to 20,000 metres)",
-                            )}
-                            type="number"
-                            min={300}
-                            max={20000}
-                            step={100}
-                            value={maxDistanceMeters}
-                            onChange={(event) => setMaxDistanceMeters(Number(event.target.value))}
-                          />
-                          <b aria-hidden="true">m</b>
-                        </span>
-                      </label>
-                      <label>
-                        <span>
-                          {tr("이 범위 안에서 찾기", "Search radius")}
-                        </span>
-                        <span className="number-input">
-                          <input
-                            aria-label={tr(
-                              "이 범위 안에서 찾기 (500~20,000m)",
-                              "Search radius (500 to 20,000 metres)",
-                            )}
-                            type="number"
-                            min={500}
-                            max={20000}
-                            step={500}
-                            value={radiusMeters}
-                            onChange={(event) => setRadiusMeters(Number(event.target.value))}
-                          />
-                          <b aria-hidden="true">m</b>
                         </span>
                       </label>
                     </div>
@@ -3403,8 +3390,8 @@ export function ProductApp() {
                     </h3>
                     <p>
                       {tr(
-                        "없는 후보를 만들어내지 않았습니다. 찾는 범위나 이동 거리를 조금 넓히거나, 실내 조건을 해제한 뒤 다시 확인해 주세요.",
-                        "IEOGA did not invent an option. Increase the search radius or travel limit, or remove the indoor-only condition, then verify again.",
+                        "없는 후보를 만들어내지 않았습니다. 머무는 시간과 다음 약속 전 여유를 조정하거나, 실내 조건을 해제한 뒤 다시 확인해 주세요.",
+                        "IEOGA did not invent an option. Adjust the stay or booking buffer, or remove the indoor-only condition, then verify again.",
                       )}
                     </p>
                     {typeof recovery.rejectedCount === "number" && (
@@ -3841,8 +3828,57 @@ export function ProductApp() {
                       </div>
                     )}
 
+                    <div
+                      className="option-sort option-category-filter"
+                      role="radiogroup"
+                      aria-label={
+                        language === "en"
+                          ? "Filter alternatives by official tourism category"
+                          : "공식 관광 분류로 대안 필터"
+                      }
+                    >
+                      <button
+                        type="button"
+                        role="radio"
+                        className={optionCategory === "all" ? "is-active" : ""}
+                        aria-checked={optionCategory === "all"}
+                        onClick={() => setOptionCategory("all")}
+                      >
+                        {tr("전체", "All")} {recovery.options.length}
+                      </button>
+                      {recoveryCategoryCounts.map((category) => (
+                        <button
+                          key={category.code}
+                          type="button"
+                          role="radio"
+                          className={
+                            optionCategory === category.code ? "is-active" : ""
+                          }
+                          aria-checked={optionCategory === category.code}
+                          onClick={() => setOptionCategory(category.code)}
+                        >
+                          {language === "en" ? category.labelEn : category.labelKo}{" "}
+                          {category.count}
+                        </button>
+                      ))}
+                      <p className="option-sort-hint">
+                        {tr(
+                          "한국관광공사 공식 관광 분류로 검증된 후보만 모아 봅니다.",
+                          "Filters use the official Korea Tourism Organization classification attached to each verified option.",
+                        )}
+                      </p>
+                    </div>
+                    {sortedRecoveryOptionGroups.unranked.length > 0 && (
+                      <p className="option-sort-hint">
+                        {tr(
+                          "집중률 예측이 없는 후보도 아래 목록에 그대로 보여줍니다. 더 나쁜 곳이라는 뜻이 아니라 측정되지 않았다는 뜻입니다.",
+                          "Options without a crowding forecast remain in the list below. They are not worse, only unmeasured.",
+                        )}
+                      </p>
+                    )}
+
                     <div className="option-list">
-                      {sortOptionsByCrowd(recovery.options, optionSort).ranked.map((option, index) => (
+                      {displayedRecoveryOptions.map((option, index) => (
                         <article
                           className={[
                             "option-card",
@@ -3855,7 +3891,6 @@ export function ProductApp() {
                             .join(" ")}
                           key={option.id || option.contentId || `${option.title}-${index}`}
                           data-testid="recovery-option"
-                          hidden={index > 0 && !showAllOptions}
                         >
                           <div className="option-image">
                             {option.imageUrl ? (
@@ -3880,6 +3915,13 @@ export function ProductApp() {
                                     {(language === "en" &&
                                       option.strategyLabelEn) ||
                                       option.strategyLabel}
+                                  </span>
+                                )}
+                                {option.tourismCategory && (
+                                  <span className="tourism-category-label">
+                                    {language === "en"
+                                      ? option.tourismCategory.labelEn
+                                      : option.tourismCategory.labelKo}
                                   </span>
                                 )}
                                 <p lang={language === "en" ? "ko" : undefined}>
@@ -4301,53 +4343,6 @@ export function ProductApp() {
                         </article>
                       ))}
                     </div>
-                    {/* 집중률 예측이 없어 이 축으로 줄을 세울 수 없는 후보.
-                        측정하면 유형별로 관광지 25~36%, 음식점·레포츠 0%만 값을
-                        갖는다. 중립값으로 한 목록에 섞으면 "왜 이 위치인가"를
-                        설명할 수 없으므로 이유를 적어 따로 내린다. */}
-                    {(() => {
-                      const { unranked } = sortOptionsByCrowd(
-                        recovery.options,
-                        optionSort,
-                      );
-                      if (!unranked.length) return null;
-                      return (
-                        <div className="option-unranked">
-                          <h4>
-                            {language === "en"
-                              ? "No crowding forecast for these"
-                              : "집중률 예측이 없는 곳"}
-                          </h4>
-                          <p>
-                            {language === "en"
-                              ? "The official concentration dataset does not cover these places, so this sort cannot order them. They are not worse — only unmeasured."
-                              : "한국관광공사 집중률 데이터가 이 곳들을 다루지 않아 이 기준으로는 줄을 세울 수 없습니다. 더 나쁜 곳이라는 뜻이 아니라 측정되지 않았다는 뜻입니다."}
-                          </p>
-                          <ul>
-                            {unranked.map((option) => (
-                              <li key={option.id}>{option.title}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      );
-                    })()}
-                    {recovery.options.length > 1 && (
-                      <button
-                        type="button"
-                        className="option-toggle"
-                        onClick={() =>
-                          setShowAllOptions((current) => !current)
-                        }
-                      >
-                        {showAllOptions
-                          ? tr("최우선 복구안만 보기", "Show only the top recovery")
-                          : tr(
-                              `다른 검증안 ${recovery.options.length - 1}개 비교`,
-                              `Compare ${recovery.options.length - 1} other verified option${recovery.options.length - 1 === 1 ? "" : "s"}`,
-                            )}
-                      </button>
-                    )}
-
                     {recovery.counterfactual?.title && (
                       <aside className="counterfactual-card">
                         <div>
@@ -4488,17 +4483,20 @@ export function ProductApp() {
               geoAttribution={geoAttribution}
               analyticsConsent={analyticsConsent}
               onRequestLocation={requestGeolocation}
+              onResetLocation={resetLocationSelection}
               /* 직접 입력한 위치를 **이 화면에서 그대로 받는다.**
                  예전에는 여기서 복구 탭으로 화면을 바꿔 버려, 버튼을 누른
                  사용자가 지금 하려던 일과 입력한 조건을 함께 잃었다. 좌표
                  절삭·POST 전송·보관 정책은 요청을 만드는 쪽에 그대로 있으므로
                  개인정보 처리가 흩어지지 않는다. */
               onManualLocation={(place: ManualPlace) => {
+                geolocationRequestGenerationRef.current += 1;
                 setLatitude(String(place.latitude));
                 setLongitude(String(place.longitude));
                 setOriginLabel(place.title);
                 setAreaCode(place.areaCode ?? "");
                 setSigunguCode(place.sigunguCode ?? "");
+                setLocationMode("manual");
                 setGeoState("success");
                 setGeoMessage(
                   `${place.title} 기준으로 찾습니다. 위치 권한은 쓰지 않았습니다.`,

@@ -264,6 +264,18 @@ export type RecoveryOption = {
   longitude: number;
   imageUrl?: string;
   contentTypeId: string;
+  tourismCategory: {
+    code: string;
+    labelKo: string;
+    labelEn: string;
+    source:
+      | "KorService2.lclsSystm2"
+      | "KorService2.lclsSystm1"
+      | "KorService2.contenttypeid";
+    officialLevel1Code?: string;
+    officialLevel2Code?: string;
+    officialLevel3Code?: string;
+  };
   score: number;
   distanceMeters: number;
   estimatedTravelMinutes: number;
@@ -304,7 +316,6 @@ export type EvidenceGap = {
    0건 화면 첫 줄에 `INDOOR_UNVERIFIED` 같은 내부 코드가 그대로 찍혔다. */
 export type RejectionReasonCode =
   | "INVALID_COORDINATE"
-  | "DISTANCE_LIMIT"
   | "TIME_LIMIT"
   | "INDOOR_UNVERIFIED"
   | "ACCESSIBILITY_UNVERIFIED"
@@ -335,7 +346,6 @@ export type RejectedCandidate = {
   arrivalBufferMinutes?: number;
   requiredRelaxation?: {
     constraint:
-      | "maximum_distance"
       | "available_time"
       | "minimum_stay"
       | "safety_buffer"
@@ -400,6 +410,7 @@ export type RecoveryResult = {
   /* 빈 시간 추천에서 사용자가 알려 준 창 조건. 어떤 제약으로 계산했는지를
      결과와 같은 객체에 남긴다. */
   openWindowSummary?: {
+    windowStartAt: string;
     windowEndAt: string;
     windowMinutes: number;
     plannedStayMinutes: number;

@@ -59,7 +59,6 @@ export async function GET() {
              보존 계약만 공표해, 응답의 counterfactual이 항상 null인데도 기계
              판독 계약은 지원한다고 말했다. */
           relaxableConstraints: [
-            "maximum_distance",
             "available_time",
             "minimum_stay",
             "safety_buffer",

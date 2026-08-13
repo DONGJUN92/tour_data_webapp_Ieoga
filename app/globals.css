@@ -1716,6 +1716,18 @@ input:disabled {
   font-weight: 900;
 }
 
+.tourism-category-label {
+  display: inline-block;
+  margin: 0 0 6px 6px;
+  padding: 4px 8px;
+  border: 1px solid #b8d8d6;
+  border-radius: 999px;
+  background: #f2fbfa;
+  color: #075d5b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .option-title-row h3 {
   margin-top: 5px;
   font-size: 16px;
@@ -6504,6 +6516,11 @@ body .hero-promise {
   margin: 0;
   color: #4e5968;
   font-size: 13px;
+}
+
+.option-category-filter {
+  padding-top: 4px;
+  border-top: 1px solid #edf0f3;
 }
 
 /* 이 축으로 줄을 세울 수 없는 후보. 더 나쁜 곳이 아니라 측정되지 않은

@@ -521,6 +521,111 @@ test("가까운 순 정렬은 거리로 줄 세우고 값 없는 후보를 지�
   assert.deepEqual(sorted.unranked, []);
 });
 
+test("공식 관광 분류 카운트와 필터는 안정된 순서를 쓰고 정렬 전에 적용된다", async () => {
+  const {
+    filterOptionsByTourismCategory,
+    sortSimpleOptions,
+    tourismCategoryCounts,
+  } = await import("../app/product-app-model.ts");
+  const options = [
+    {
+      id: "food",
+      distanceMeters: 100,
+      tourismCategory: {
+        code: "FOOD",
+        labelKo: "식당",
+        labelEn: "Food",
+        source: "KorService2.lclsSystm1",
+      },
+    },
+    {
+      id: "park-far-unmeasured",
+      distanceMeters: 900,
+      tourismCategory: {
+        code: "PARK",
+        labelKo: "공원",
+        labelEn: "Parks",
+        source: "KorService2.lclsSystm2",
+      },
+    },
+    {
+      id: "park-near",
+      distanceMeters: 300,
+      crowd: { relativeRate: 20 },
+      tourismCategory: {
+        code: "PARK",
+        labelKo: "공원",
+        labelEn: "Parks",
+        source: "KorService2.lclsSystm2",
+      },
+    },
+    { id: "unclassified", distanceMeters: 50 },
+  ];
+
+  assert.deepEqual(tourismCategoryCounts(options), [
+    { code: "PARK", labelKo: "공원", labelEn: "Parks", count: 2 },
+    { code: "FOOD", labelKo: "식당", labelEn: "Food", count: 1 },
+    {
+      code: "OTHER",
+      labelKo: "기타 관광",
+      labelEn: "Other tourism",
+      count: 1,
+    },
+  ]);
+  const parks = filterOptionsByTourismCategory(options, "PARK");
+  assert.deepEqual(
+    sortSimpleOptions(parks, "nearest_first").map((option) => option.id),
+    ["park-near", "park-far-unmeasured"],
+  );
+  assert.equal(
+    filterOptionsByTourismCategory(options, "all").length,
+    options.length,
+  );
+  /* 혼잡 값이 없는 공원도 필터 뒤 정렬에서 삭제되지 않는다. */
+  assert.deepEqual(
+    sortSimpleOptions(parks, "quiet_first").map((option) => option.id),
+    ["park-near", "park-far-unmeasured"],
+  );
+});
+
+test("Flow 관광 분류 컨트롤은 숫자·번역·접근성 계약을 갖고 숨은 거리 상한을 보내지 않는다", async () => {
+  const flow = await src("../app/flow/FlowApp.tsx");
+  assert.match(flow, /tourismCategoryCounts\(options\)/);
+  assert.match(
+    flow,
+    /sortFlowOptions\(\s*filterOptionsByTourismCategory\(options, tourismCategory\),\s*optionSort/,
+  );
+  assert.match(flow, /role="radiogroup"/);
+  assert.match(flow, /role="radio"/);
+  assert.match(flow, /aria-checked=\{active\}/);
+  assert.doesNotMatch(flow, /role="radio"[^>]*aria-pressed/s);
+  assert.match(flow, /className=\{styles\.categoryCount\}/);
+  assert.match(flow, /option\.tourismCategory\.labelKo/);
+  assert.match(flow, /setTourismCategory\("all"\)/);
+  assert.doesNotMatch(flow, /maxDistanceMeters:/);
+  assert.doesNotMatch(flow, /radiusMeters:/);
+  assert.doesNotMatch(flow, /Math\.min\(240, availableMinutes\)/);
+});
+
+test("Product와 빈 시간 화면도 공식 분류를 먼저 필터하고 숫자를 표시한다", async () => {
+  const product = await src("../app/ProductApp.tsx");
+  const discover = await src("../app/DiscoverWindowPanel.tsx");
+
+  assert.match(product, /tourismCategoryCounts\(recovery\?\.options \?\? \[\]\)/);
+  assert.match(product, /filterOptionsByTourismCategory\(\s*recovery\?\.options \?\? \[\],\s*optionCategory/s);
+  assert.match(product, /aria-label=\{language === "en"[\s\S]*official tourism category/);
+  assert.match(product, /\{category\.count\}/);
+
+  assert.match(discover, /tourismCategoryCounts\(result\.options\)/);
+  assert.match(discover, /filterOptionsByTourismCategory\(result\.options, category\)/);
+  assert.match(discover, /role="radiogroup"/);
+  assert.match(discover, /aria-checked=\{category === entry\.code\}/);
+  assert.match(discover, /\{entry\.count\}/);
+  assert.doesNotMatch(discover, /maxDistanceMeters:/);
+  assert.doesNotMatch(discover, /radiusMeters:/);
+  assert.doesNotMatch(discover, /Math\.min\(240, effectiveWindowMinutes\)/);
+});
+
 test("모바일과 데스크톱이 같은 탭을 가리킨다", async () => {
   const product = await src("../app/ProductApp.tsx");
   /* 예전에는 모바일 하단 바가 `/flow`·`/policy`·`/sources` 세 라우트로 갔고

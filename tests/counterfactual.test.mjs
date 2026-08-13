@@ -160,7 +160,7 @@ test("우천에 실외 후보만 있어도 반사실 설명이 나온다", async
   });
 });
 
-test("거리 초과 탈락도 완화량을 남긴다", async () => {
+test("레거시 거리 상한은 후보를 탈락시키지 않는다", async () => {
   await withOutdoorOnly(async () => {
     const { recoverTrip } = await import("../lib/recovery/engine.ts");
     const result = await recoverTrip(
@@ -174,7 +174,8 @@ test("거리 초과 탈락도 완화량을 남긴다", async () => {
         },
         incident: "delay",
         availableMinutes: 180,
-        /* 후보가 500m인데 한도를 300m로 낮춰 거리 초과를 만든다. */
+        /* 이전 클라이언트의 작은 값을 보내도 실제 이동·체류·복귀 시간으로만
+           판정해야 한다. */
         maxDistanceMeters: 300,
         audience: "general",
         indoorOnly: false,
@@ -190,14 +191,16 @@ test("거리 초과 탈락도 완화량을 남긴다", async () => {
       },
       "cf-distance",
     );
-    const counterfactual = result.counterfactual;
-    assert.ok(counterfactual, "거리 초과 탈락에 완화량이 없다");
     assert.equal(
-      counterfactual.requiredRelaxation.constraint,
+      result.rejectionSummary.some(
+        (entry) => entry.reasonCode === "DISTANCE_LIMIT",
+      ),
+      false,
+    );
+    assert.notEqual(
+      result.counterfactual?.requiredRelaxation?.constraint,
       "maximum_distance",
     );
-    assert.equal(counterfactual.requiredRelaxation.unit, "meters");
-    assert.ok(counterfactual.requiredRelaxation.amount > 0);
   });
 });
 
@@ -209,6 +212,7 @@ test("capabilities가 실제 완화 대상과 검증 단계를 공표한다", as
   /* 예전에는 supported:true와 보존 계약만 적어, 응답이 항상 null인데도
      계약은 지원한다고 말했다. */
   assert.match(source, /relaxableConstraints/);
+  assert.doesNotMatch(source, /maximum_distance/);
   assert.match(source, /indoor_requirement/);
   assert.match(source, /verificationDepths/);
   assert.match(source, /preservedContractAppliesTo: "route_verified"/);

@@ -22,9 +22,21 @@ export type RouteLeg = {
   durationMinutes: number;
 };
 
+export type RouteTimeBasis =
+  | "time_independent"
+  | "provider_departure_prediction"
+  | "provider_current_schedule";
+
 /* 여행자가 고르는 이동수단. 도착 시각이 "다음 약속을 지킬 수 있는가"의 판정
    근거이므로, 어느 수단으로 계산했는지는 결과와 함께 반드시 드러나야 한다. */
 export type TravelMode = "walk" | "car" | "transit" | "bicycle";
+
+export type RouteRequestOptions = {
+  signal?: AbortSignal;
+  mode?: TravelMode;
+  departureAt?: string;
+  arriveBy?: string;
+};
 
 export type WalkingRouteProvider =
   | "tmap_pedestrian"
@@ -57,6 +69,10 @@ export type WalkingRouteEvidence =
       /* 배차에 따라 달라지는 소요시간인가. 참이면 도착 시각을 확정값처럼
          제시해서는 안 된다. */
       scheduleDependent?: boolean;
+      /* Whether the provider actually evaluated a requested clock time. */
+      timeBasis: RouteTimeBasis;
+      requestedDepartureAt?: string;
+      requestedArriveBy?: string;
     }
   | {
       status: "unavailable";
@@ -96,8 +112,26 @@ function routeKey(points: RoutePoint[]) {
 
 /* 캐시 키에 이동수단을 포함한다. 빠뜨리면 같은 좌표쌍에서 도보로 52분인 결과가
    자차 조회에 그대로 반환되고, 그 값으로 도착 가능 판정이 내려진다. */
-function cacheKey(points: RoutePoint[], mode: TravelMode) {
-  return `${mode}:${routeKey(points)}`;
+function normalizedInstant(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toISOString()
+    : undefined;
+}
+
+function cacheKey(
+  points: RoutePoint[],
+  mode: TravelMode,
+  departureAt?: string,
+  arriveBy?: string,
+) {
+  /* Walking and bicycle providers expose geometry/pace, not a traffic or
+     timetable prediction. Their result is explicitly time-independent. */
+  if (mode === "walk" || mode === "bicycle") {
+    return `${mode}:static:${routeKey(points)}`;
+  }
+  return `${mode}:${departureAt ?? "provider-now"}:${arriveBy ?? "no-deadline"}:${routeKey(points)}`;
 }
 
 /* Paces calls to the shared public router, which asks for no more than one
@@ -137,16 +171,18 @@ async function respectPublicRoutingLimit(signal?: AbortSignal): Promise<void> {
 
 export async function getWalkingRoute(
   points: RoutePoint[],
-  options: { signal?: AbortSignal } = {},
+  options: Omit<RouteRequestOptions, "mode"> = {},
 ): Promise<WalkingRouteEvidence> {
   return getRoute(points, { ...options, mode: "walk" });
 }
 
 export async function getRoute(
   points: RoutePoint[],
-  options: { signal?: AbortSignal; mode?: TravelMode } = {},
+  options: RouteRequestOptions = {},
 ): Promise<WalkingRouteEvidence> {
   const mode: TravelMode = options.mode ?? "walk";
+  const requestedDepartureAt = normalizedInstant(options.departureAt);
+  const requestedArriveBy = normalizedInstant(options.arriveBy);
   const calculatedAt = new Date().toISOString();
   const attribution =
     mode === "walk"
@@ -164,7 +200,31 @@ export async function getRoute(
     };
   }
 
-  const key = cacheKey(points, mode);
+  /* Kakao transit accepts only coordinates and cannot prove a future
+     timetable. Arrive-by constraints need temporal routing too: a current
+     transit result cannot honestly prove a later appointment. */
+  if (
+    mode === "transit" &&
+    ((requestedDepartureAt &&
+      Date.parse(requestedDepartureAt) > Date.now() + 60_000) ||
+      Boolean(requestedArriveBy))
+  ) {
+    return {
+      status: "unavailable",
+      provider: "kakao_transit",
+      reason:
+        "The transit provider cannot verify the requested future departure or arrival deadline.",
+      calculatedAt,
+      attribution,
+    };
+  }
+
+  const key = cacheKey(
+    points,
+    mode,
+    requestedDepartureAt,
+    requestedArriveBy,
+  );
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
@@ -182,7 +242,10 @@ export async function getRoute(
       };
     }
     try {
-      const car = await getTmapCarRoute(points, { signal: options.signal });
+      const car = await getTmapCarRoute(points, {
+        signal: options.signal,
+        departureAt: requestedDepartureAt,
+      });
       if (car) {
         const routed: WalkingRouteEvidence = {
           status: "routed",
@@ -195,6 +258,11 @@ export async function getRoute(
           attribution: ATTRIBUTION.tmap_car,
           taxiFareKrw: car.taxiFareKrw,
           tollFareKrw: car.tollFareKrw,
+          timeBasis: requestedDepartureAt
+            ? "provider_departure_prediction"
+            : "provider_current_schedule",
+          requestedDepartureAt,
+          requestedArriveBy,
         };
         cache.set(key, {
           expiresAt: Date.now() + CACHE_TTL_MS,
@@ -252,6 +320,12 @@ export async function getRoute(
           transfers: kakao.transfers,
           transitSteps: kakao.transitSteps,
           scheduleDependent: kakao.scheduleDependent,
+          timeBasis:
+            mode === "transit"
+              ? "provider_current_schedule"
+              : "time_independent",
+          requestedDepartureAt,
+          requestedArriveBy,
         };
         cache.set(key, {
           expiresAt: Date.now() + CACHE_TTL_MS,
@@ -297,6 +371,9 @@ export async function getRoute(
           geometry: tmap.geometry,
           calculatedAt,
           attribution: ATTRIBUTION.tmap_pedestrian,
+          timeBasis: "time_independent",
+          requestedDepartureAt,
+          requestedArriveBy,
         };
         cache.set(key, {
           expiresAt: Date.now() + CACHE_TTL_MS,
@@ -390,6 +467,9 @@ export async function getRoute(
         ),
         calculatedAt,
         attribution,
+        timeBasis: "time_independent",
+        requestedDepartureAt,
+        requestedArriveBy,
       };
       break;
     } catch (error) {

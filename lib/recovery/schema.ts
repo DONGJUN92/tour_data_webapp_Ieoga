@@ -486,6 +486,7 @@ const openWindowNextPlaceSchema = z
 
 export const openWindowSchema = z
   .object({
+    departureAt: z.string().datetime({ offset: true }).optional(),
     /* 이 시각까지가 자유 시간이다. 다음 장소가 있으면 그 도착 시각과 같거나
        그보다 뒤일 수 없다. */
     availableUntil: z.string().datetime({ offset: true }),
@@ -501,9 +502,24 @@ export const openWindowSchema = z
     nextPlace: openWindowNextPlaceSchema.optional(),
   })
   .superRefine((window, context) => {
+    const departureAt = window.departureAt
+      ? Date.parse(window.departureAt)
+      : undefined;
+    const until = Date.parse(window.availableUntil);
+    if (
+      departureAt !== undefined &&
+      Number.isFinite(departureAt) &&
+      Number.isFinite(until) &&
+      departureAt >= until
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["departureAt"],
+        message: "출발 시각은 자유 시간 종료 시각보다 앞서야 합니다.",
+      });
+    }
     if (!window.nextPlace) return;
     const arriveBy = Date.parse(window.nextPlace.arriveBy);
-    const until = Date.parse(window.availableUntil);
     if (Number.isFinite(arriveBy) && Number.isFinite(until) && arriveBy < until) {
       context.addIssue({
         code: "custom",
@@ -523,8 +539,18 @@ export const recoveryRequestSchema = z
       })
       .superRefine(validateCoordinateAdministrativeScope),
     incident: z.enum(["rain", "delay", "crowd", "less_walk"]),
-    availableMinutes: z.number().int().min(15).max(240),
-    maxDistanceMeters: z.number().int().min(300).max(20_000),
+    /* 호환 입력이다. 일정·빈 시간 모드의 실제 판정은 등록된 시각 계약을 쓰며,
+       하루 일정도 표현할 수 있도록 과거 4시간 상한을 제거한다. */
+    availableMinutes: z.number().int().min(15).max(1_440),
+    /* @deprecated 이전 클라이언트 요청과 저장 데이터만을 위한 호환 필드다.
+       엔진은 이 값을 후보 조회·판정·점수에 사용하지 않는다. */
+    maxDistanceMeters: z
+      .number()
+      .int()
+      .min(300)
+      .max(20_000)
+      .optional()
+      .default(20_000),
     audience: z
       .enum(["general", "assisted", "stroller", "wheelchair", "senior"])
       .default("general"),
@@ -540,7 +566,15 @@ export const recoveryRequestSchema = z
     travelMode: z
       .enum(["walk", "car", "transit", "bicycle"])
       .default("walk"),
-    radiusMeters: z.number().int().min(500).max(20_000).default(5_000),
+    /* @deprecated 과거 반경 UI의 호환 필드. 후보 탐색은 공사 API 최대 반경
+       20km를 내부적으로 사용하고 실제 이동·체류·복귀 가능 시간으로 검증한다. */
+    radiusMeters: z
+      .number()
+      .int()
+      .min(500)
+      .max(20_000)
+      .optional()
+      .default(20_000),
     safetyBufferMinutes: z.number().int().min(5).max(90).default(15),
     minimumStayMinutes: z.number().int().min(10).max(180).default(30),
     /* 두 진입 경로 중 정확히 하나. 등록된 일정을 고치는 복구와, 지금 빈 시간을

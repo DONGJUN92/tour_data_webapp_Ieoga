@@ -1,4 +1,7 @@
-import { TMAP_CAR_URL } from "@/lib/external-providers";
+import {
+  TMAP_CAR_PREDICTION_URL,
+  TMAP_CAR_URL,
+} from "@/lib/external-providers";
 import { getRuntimeSecret } from "@/lib/runtime-env";
 
 /**
@@ -67,15 +70,39 @@ async function fetchSegment(
   from: { latitude: number; longitude: number },
   to: { latitude: number; longitude: number },
   signal: AbortSignal,
+  departureAt?: string,
 ): Promise<Segment> {
-  const response = await fetch(`${TMAP_CAR_URL}?version=1`, {
+  const target = departureAt ? TMAP_CAR_PREDICTION_URL : TMAP_CAR_URL;
+  const response = await fetch(`${target}?version=1`, {
     method: "POST",
     headers: {
       appKey,
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
+    body: JSON.stringify(departureAt ? {
+      routesInfo: {
+        departure: {
+          name: "origin",
+          lon: from.longitude,
+          lat: from.latitude,
+          depSearchFlag: "03",
+        },
+        destination: {
+          name: "destination",
+          lon: to.longitude,
+          lat: to.latitude,
+          destSearchFlag: "03",
+        },
+        /* TMAP's prediction enum is counter-intuitive: `arrival` means the
+           supplied predictionTime is the departure time. */
+        predictionType: "arrival",
+        predictionTime: departureAt,
+        searchOption: "00",
+        trafficInfo: "Y",
+        tollgateCarType: "car",
+      },
+    } : {
       startX: from.longitude,
       startY: from.latitude,
       endX: to.longitude,
@@ -139,7 +166,7 @@ async function fetchSegment(
 
 export async function getTmapCarRoute(
   points: Array<{ latitude: number; longitude: number }>,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; departureAt?: string } = {},
 ): Promise<TmapCarRoute | undefined> {
   const appKey = getRuntimeSecret("TMAP_APP_KEY");
   if (!appKey) return undefined;
@@ -152,13 +179,25 @@ export async function getTmapCarRoute(
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal;
   try {
-    const segments = await Promise.all(
-      points
-        .slice(0, -1)
-        .map((from, index) =>
-          fetchSegment(appKey, from, points[index + 1], signal),
-        ),
-    );
+    const segments: Segment[] = [];
+    let segmentDepartureAt = options.departureAt;
+    /* Each later segment begins after the previous one. Reusing one timestamp
+       for every prediction leg would understate schedule-dependent traffic. */
+    for (const [index, from] of points.slice(0, -1).entries()) {
+      const segment = await fetchSegment(
+        appKey,
+        from,
+        points[index + 1],
+        signal,
+        segmentDepartureAt,
+      );
+      segments.push(segment);
+      if (segmentDepartureAt) {
+        segmentDepartureAt = new Date(
+          Date.parse(segmentDepartureAt) + segment.durationSeconds * 1_000,
+        ).toISOString();
+      }
+    }
 
     const geometry: Array<{ latitude: number; longitude: number }> = [];
     for (const segment of segments) {

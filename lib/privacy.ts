@@ -2,7 +2,9 @@ export function timeBudgetBucket(minutes: number): string {
   if (minutes <= 30) return "15-30m";
   if (minutes <= 60) return "31-60m";
   if (minutes <= 120) return "61-120m";
-  return "121-240m";
+  if (minutes <= 360) return "121-360m";
+  if (minutes <= 720) return "361-720m";
+  return "721-1440m";
 }
 
 export function distanceLimitBucket(meters: number): string {

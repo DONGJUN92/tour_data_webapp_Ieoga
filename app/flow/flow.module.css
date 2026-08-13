@@ -594,6 +594,15 @@ a.cta {
   overflow-wrap: break-word;
 }
 
+.cardCategory {
+  width: fit-content;
+  margin: 0 0 5px;
+  color: var(--brand-deep);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
 .badge {
   flex: 0 0 auto;
   padding: 5px 10px;
@@ -1165,6 +1174,49 @@ a.cta {
   color: #5b6675;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.categoryFilter {
+  margin: 2px 0 18px;
+  padding-top: 14px;
+  border-top: 1px solid #e5eaf0;
+}
+
+.categoryFilterLabel {
+  margin: 0 0 9px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.categoryFilter .sortRow {
+  margin-bottom: 0;
+}
+
+.categoryFilter .sortChip,
+.categoryFilter .sortActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.categoryCount {
+  display: inline-grid;
+  min-width: 22px;
+  min-height: 22px;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #edf1f5;
+  color: #3d4856;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.sortActive .categoryCount {
+  background: rgb(255 255 255 / 18%);
+  color: #ffffff;
 }
 
 .staleNotice {

@@ -16,6 +16,12 @@ import type { KtoAudit, KtoCallResult, KtoItem } from "./types";
 
 const listDefaults = { pageNo: 1, numOfRows: 100 };
 
+/* `locationBasedList2`가 허용하는 최대 반경과 복구 후보 탐색용 페이지 크기.
+   화면의 과거 거리 설정은 더 이상 후보를 자르는 조건이 아니며, 이 값들은
+   공사 API에서 가능한 후보 풀을 넓게 확보하기 위한 내부 조회 규칙이다. */
+export const KTO_CANDIDATE_RADIUS_METERS = 20_000;
+export const KTO_CANDIDATE_PAGE_SIZE = 100;
+
 /* 월 단위 API의 기준월 해석.
 
    `baseYm`을 받는 공사 API는 직전 달이 아직 발행되지 않은 기간이 있다. 2026-08-04
@@ -113,48 +119,62 @@ export function getNearbyTourism(params: {
   longitude: number;
   latitude: number;
   radius: number;
+  pageNo?: number;
   numOfRows?: number;
   regionCode?: string;
   districtCode?: string;
 }, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
-  /* Candidate discovery gates the entire recovery, and this endpoint is the
-     one with the worst measured latency spread, so it is the call worth
-     hedging. */
-  return callKtoHedged(
+  const pageNo = Math.max(1, Math.trunc(params.pageNo ?? 1));
+  const query = {
+    pageNo,
+    numOfRows: params.numOfRows ?? KTO_CANDIDATE_PAGE_SIZE,
+    mapX: params.longitude,
+    mapY: params.latitude,
+    radius: params.radius,
+    arrange: "E",
+    lDongRegnCd: analysisRegionCode(params.regionCode),
+    lDongSignguCd: rawDistrictCode(
+      params.regionCode,
+      params.districtCode,
+    ),
+  };
+  const options = {
+    ...requestOptions,
+    fieldsUsed: [
+      "contentid",
+      "contenttypeid",
+      "title",
+      "addr1",
+      "mapx",
+      "mapy",
+      "dist",
+      "firstimage",
+      "modifiedtime",
+      "lDongRegnCd",
+      "lDongSignguCd",
+      "lclsSystm1",
+      "lclsSystm2",
+      "lclsSystm3",
+    ],
+  };
+
+  /* The first page gates the entire recovery, so it keeps the measured
+     latency hedge. Later pages are optional expansion work: issuing a hedge
+     for every page would double upstream traffic exactly when a request is
+     already broad, so those pages use one non-retrying call. */
+  if (pageNo === 1) {
+    return callKtoHedged(
+      "KorService2",
+      "locationBasedList2",
+      query,
+      options,
+    );
+  }
+  return callKto(
     "KorService2",
     "locationBasedList2",
-    {
-      pageNo: 1,
-      numOfRows: params.numOfRows ?? 60,
-      mapX: params.longitude,
-      mapY: params.latitude,
-      radius: params.radius,
-      arrange: "E",
-      lDongRegnCd: analysisRegionCode(params.regionCode),
-      lDongSignguCd: rawDistrictCode(
-        params.regionCode,
-        params.districtCode,
-      ),
-    },
-    {
-      ...requestOptions,
-      fieldsUsed: [
-        "contentid",
-        "contenttypeid",
-        "title",
-        "addr1",
-        "mapx",
-        "mapy",
-        "dist",
-        "firstimage",
-        "modifiedtime",
-        "lDongRegnCd",
-        "lDongSignguCd",
-        "lclsSystm1",
-        "lclsSystm2",
-        "lclsSystm3",
-      ],
-    },
+    query,
+    options,
   );
 }
 

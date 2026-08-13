@@ -82,7 +82,10 @@ async function withCarEnvironment(run, { failCar = false, offset = 0 } = {}) {
           tmapCarResponse({ distance: 4_000, time: 3_000 }),
         );
       }
-      if (url.pathname.endsWith("/routes")) {
+      if (
+        url.pathname.endsWith("/routes") ||
+        url.pathname.endsWith("/routes/prediction")
+      ) {
         calls.car += 1;
         if (failCar) return new Response("nope", { status: 500 });
         /* 같은 거리를 자동차는 훨씬 빠르게 간다. 수단이 실제로 갈렸는지

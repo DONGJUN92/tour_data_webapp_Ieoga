@@ -8,7 +8,7 @@
    시각은 30분 격자로만 받는다. 여행자는 분 단위로 계획하지 않으며, 분 단위
    입력을 허용하면 검증은 정확해지지만 아무도 세우지 않는 계획을 검증하게 된다. */
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import styles from "./DiscoverWindowPanel.module.css";
 import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
@@ -32,13 +32,20 @@ import {
   type RecoveryOption,
   type RecoveryResponse,
   type TravelMode,
+  filterOptionsByTourismCategory,
   sortSimpleOptions,
+  tourismCategoryCounts,
   type SimpleOptionSort,
 } from "./product-app-model";
 
 const STAY_CHOICES = [30, 60, 90, 120, 150, 180] as const;
 
 const WINDOW_CHOICES = [60, 90, 120, 150, 180, 240] as const;
+
+/* 출발 시각은 여행 중 한 손으로도 고를 수 있게 상대 시각 칩으로 받는다. 같은
+   화면의 종료 시각 선택과 마찬가지로 30분 단위를 쓰되, 계산할 때는 두 시각을
+   반드시 같은 `now`에 고정한다. */
+const DEPARTURE_DELAY_CHOICES = [0, 30, 60, 90, 120] as const;
 
 export type DiscoverOrigin = {
   latitude: string;
@@ -56,6 +63,9 @@ type Props = {
   geoAttribution: string;
   analyticsConsent: boolean;
   onRequestLocation: () => void;
+  /* 이미 고른 위치를 즉시 다시 조회하지 않고, 자동 입력과 직접 입력 중 하나를
+     다시 고르는 상태로 되돌린다. */
+  onResetLocation: () => void;
   /* 직접 입력한 위치를 받는다. 예전에는 이 자리에서 여행 복구 탭으로 화면을
      바꿔 버려, 버튼을 누른 사용자가 지금 하려던 일과 입력한 조건을 함께
      잃었다. */
@@ -76,10 +86,10 @@ function tr(language: Language, ko: string, en: string): string {
 
 function formatWindowEnd(iso: string, language: Language): string {
   return new Intl.DateTimeFormat(language === "en" ? "en-US" : "ko-KR", {
-      timeZone: "Asia/Seoul",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(new Date(iso));
+    timeZone: "Asia/Seoul",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(iso));
 }
 
 const REJECTION_COPY: Record<string, { ko: string; en: string }> = {
@@ -90,10 +100,6 @@ const REJECTION_COPY: Record<string, { ko: string; en: string }> = {
   OPEN_WINDOW_OVERFLOW: {
     ko: "이동·체류·복귀가 남은 시간을 초과함",
     en: "Travel, stay and return exceed the available window",
-  },
-  DISTANCE_LIMIT: {
-    ko: "설정한 이동 거리보다 멂",
-    en: "Beyond the selected travel-distance limit",
   },
   ROUTE_UNAVAILABLE: {
     ko: "실제 이동 경로를 확인하지 못함",
@@ -125,13 +131,19 @@ const REJECTION_COPY: Record<string, { ko: string; en: string }> = {
   },
 };
 
-function returnProviderLabel(provider: string | undefined, language: Language): string {
+function returnProviderLabel(
+  provider: string | undefined,
+  language: Language,
+): string {
   const labels: Record<string, { ko: string; en: string }> = {
     tmap_pedestrian: { ko: "TMAP 보행 경로", en: "TMAP pedestrian route" },
     tmap_car: { ko: "TMAP 자동차 경로", en: "TMAP driving route" },
     kakao_transit: { ko: "카카오 대중교통 경로", en: "Kakao transit route" },
     kakao_bicycle: { ko: "카카오 자전거 경로", en: "Kakao cycling route" },
-    openstreetmap_osrm: { ko: "OpenStreetMap OSRM 경로", en: "OpenStreetMap OSRM route" },
+    openstreetmap_osrm: {
+      ko: "OpenStreetMap OSRM 경로",
+      en: "OpenStreetMap OSRM route",
+    },
   };
   return provider && labels[provider]
     ? labels[provider][language]
@@ -213,7 +225,8 @@ function counterfactualGuidance(
   }
   const amount = relaxation.amount;
   const unit = relaxation.unit ?? "";
-  if (language === "ko" && relaxation.description) return relaxation.description;
+  if (language === "ko" && relaxation.description)
+    return relaxation.description;
   if (relaxation.constraint === "available_time") {
     return language === "en"
       ? `Allow about ${amount ?? "more"} ${unit || "minutes"} more.`
@@ -223,11 +236,6 @@ function counterfactualGuidance(
     return language === "en"
       ? `Shorten the stay by about ${amount ?? "a few"} ${unit || "minutes"}.`
       : `체류 시간을 약 ${amount ?? "조금"}${unit || "분"} 줄여 보세요.`;
-  }
-  if (relaxation.constraint === "maximum_distance") {
-    return language === "en"
-      ? `Increase the distance limit by about ${amount ?? "a little"} ${unit || "metres"}.`
-      : `이동 거리 한도를 약 ${amount ?? "조금"}${unit || "m"} 늘려 보세요.`;
   }
   return language === "en"
     ? "Adjust the stated constraint and search again."
@@ -245,6 +253,20 @@ function minutesLabel(language: Language, minutes: number): string {
   );
 }
 
+function departureDelayLabel(language: Language, minutes: number): string {
+  if (minutes === 0) return tr(language, "지금", "Now");
+  if (minutes < 60) {
+    return tr(language, `${minutes}분 후`, `In ${minutes} min`);
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return tr(
+    language,
+    remainder ? `${hours}시간 ${remainder}분 후` : `${hours}시간 후`,
+    remainder ? `In ${hours}h ${remainder}m` : `In ${hours}h`,
+  );
+}
+
 export default function DiscoverWindowPanel({
   language,
   origin,
@@ -253,11 +275,15 @@ export default function DiscoverWindowPanel({
   geoAttribution,
   analyticsConsent,
   onRequestLocation,
+  onResetLocation,
   onManualLocation,
   onPlanFromPlace,
 }: Props) {
   /* 직접 입력을 이 화면 안에서 편다. 탭을 바꾸면 지금 하려던 일이 사라진다. */
   const [manualOpen, setManualOpen] = useState(false);
+  const [originSelectionOpen, setOriginSelectionOpen] = useState(false);
+  const automaticLocationButtonRef = useRef<HTMLButtonElement>(null);
+  const [departureDelayMinutes, setDepartureDelayMinutes] = useState(0);
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
   const [windowEndIso, setWindowEndIso] = useState(() =>
     windowEndIsoFromMinutes(120),
@@ -268,9 +294,9 @@ export default function DiscoverWindowPanel({
   const [indoorOnly, setIndoorOnly] = useState(false);
   const [nextPlaceKeyword, setNextPlaceKeyword] = useState("");
   const [nextPlace, setNextPlace] = useState<PlaceSearchResult | null>(null);
-  const [nextPlaceResults, setNextPlaceResults] = useState<
-    PlaceSearchResult[]
-  >([]);
+  const [nextPlaceResults, setNextPlaceResults] = useState<PlaceSearchResult[]>(
+    [],
+  );
   const [nextPlaceState, setNextPlaceState] = useState<LoadState>("idle");
   const [nextPlaceError, setNextPlaceError] = useState("");
   const [state, setState] = useState<LoadState>("idle");
@@ -281,17 +307,57 @@ export default function DiscoverWindowPanel({
     () => formatWindowEnd(windowEndIso, language),
     [windowEndIso, language],
   );
-  const modeConfig =
-    TRAVEL_MODES.find((item) => item.value === travelMode) ?? TRAVEL_MODES[0];
+  /* 표시용 시작 시각도 종료 시각과 같은 기준점에서 역산한다. 사용자가 조건을
+     바꿀 때 두 라벨의 기준 시각이 몇 초씩 어긋나는 일을 막는다. 제출 직전에는
+     아래 `submit`에서 하나의 최신 now로 둘을 다시 확정한다. */
+  const departureAtIso = useMemo(
+    () =>
+      new Date(
+        Date.parse(windowEndIso) -
+          (windowMinutes - departureDelayMinutes) * 60_000,
+      ).toISOString(),
+    [departureDelayMinutes, windowEndIso, windowMinutes],
+  );
+  const departureAtLabel = useMemo(
+    () => formatWindowEnd(departureAtIso, language),
+    [departureAtIso, language],
+  );
   const originReady =
+    geoState === "success" &&
     Number.isFinite(Number(origin.latitude)) &&
     Number.isFinite(Number(origin.longitude)) &&
     origin.latitude.trim() !== "" &&
-    origin.longitude.trim() !== "";
+    origin.longitude.trim() !== "" &&
+    origin.label.trim() !== "";
 
-  /* 체류 시간이 창보다 길면 애초에 성립하지 않는다. 서버가 거절하기 전에 화면에서
-     먼저 알려 준다. */
-  const stayTooLong = plannedStayMinutes >= windowMinutes;
+  /* 출발을 미루는 동안은 여행에 쓸 수 있는 시간이 아니다. 예를 들어 지금부터
+     2시간 비어 있어도 1시간 뒤에 출발하면 실제 이동·체류·복귀 창은 1시간이다. */
+  const effectiveWindowMinutes = Math.max(
+    0,
+    windowMinutes - departureDelayMinutes,
+  );
+  const departureOutsideWindow = departureDelayMinutes >= windowMinutes;
+  const stayTooLong =
+    !departureOutsideWindow && plannedStayMinutes >= effectiveWindowMinutes;
+
+  function beginOriginReselection() {
+    setManualOpen(false);
+    setOriginSelectionOpen(true);
+    /* 이전 위치로 계산한 추천은 새 위치를 고르는 순간 더 이상 유효하지 않다. */
+    setResult(null);
+    setState("idle");
+    setError("");
+    onResetLocation();
+    window.requestAnimationFrame(() =>
+      automaticLocationButtonRef.current?.focus(),
+    );
+  }
+
+  function requestAutomaticLocation() {
+    setManualOpen(false);
+    setOriginSelectionOpen(false);
+    onRequestLocation();
+  }
 
   async function searchNextPlace() {
     const keyword = nextPlaceKeyword.trim();
@@ -348,13 +414,24 @@ export default function DiscoverWindowPanel({
       );
       return;
     }
+    if (departureOutsideWindow) {
+      setState("error");
+      setError(
+        tr(
+          language,
+          "출발 시각이 자유 시간 종료 시각과 같거나 늦습니다. 더 이른 출발 시각이나 더 긴 남은 시간을 선택해 주세요.",
+          "Your departure is at or after the end of your free time. Leave earlier or choose a longer window.",
+        ),
+      );
+      return;
+    }
     if (stayTooLong) {
       setState("error");
       setError(
         tr(
           language,
-          "머무는 시간이 남은 시간과 같거나 더 깁니다. 이동 시간이 들어갈 자리가 없습니다.",
-          "Your stay is as long as the whole window, leaving no time to travel.",
+          "선택한 출발 시각 뒤의 실제 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
+          "Your stay fills the time remaining after departure, leaving no room to travel and return.",
         ),
       );
       return;
@@ -362,12 +439,16 @@ export default function DiscoverWindowPanel({
     setState("loading");
     setResult(null);
     try {
-      /* 표시와 POST가 같은 deadline을 가리키게 한 시각을 한 번만 만든다.
-         선택 시간을 시계 격자로 내림하지 않으므로 60분 선택은 정확히
-         60분이며, 요청 경계가 29분/59분이어도 짧아지지 않는다. */
+      /* 출발과 종료를 같은 기준 시각에서 만든다. `Date.now()`를 두 번 읽으면
+         30분 뒤 출발과 2시간 뒤 종료 사이가 네트워크·렌더 시간만큼 조용히
+         짧아질 수 있다. */
+      const requestNowMs = Date.now();
+      const requestDepartureAtIso = new Date(
+        requestNowMs + departureDelayMinutes * 60_000,
+      ).toISOString();
       const requestWindowEndIso = windowEndIsoFromMinutes(
         windowMinutes,
-        Date.now(),
+        requestNowMs,
       );
       setWindowEndIso(requestWindowEndIso);
       const payload = await fetchJson("/api/v1/recover", {
@@ -383,18 +464,16 @@ export default function DiscoverWindowPanel({
           /* 이 화면은 사고가 아니라 빈 시간이 출발점이다. 상황 입력을 강요하지
              않고, 실내 조건을 켠 경우에만 우천 취급으로 넘긴다. */
           incident: indoorOnly ? "rain" : "delay",
-          availableMinutes: Math.min(240, windowMinutes),
-          /* 자차는 같은 시간에 훨씬 멀리 간다. 도보 기준 반경을 그대로 쓰면
-             차로 20분이면 닿는 곳이 후보에 들어오지도 않는다. */
-          maxDistanceMeters: modeConfig.distance,
+          /* 대기시간을 여행 가능 시간으로 세지 않는다. */
+          availableMinutes: effectiveWindowMinutes,
           audience,
           indoorOnly,
           travelMode,
-          radiusMeters: modeConfig.radius,
           safetyBufferMinutes: 15,
           minimumStayMinutes: Math.min(plannedStayMinutes, 180),
           analyticsConsent,
           openWindow: {
+            departureAt: requestDepartureAtIso,
             availableUntil: requestWindowEndIso,
             plannedStayMinutes,
             nextPlace: nextPlace
@@ -473,8 +552,8 @@ export default function DiscoverWindowPanel({
         <p className={styles.lead}>
           {tr(
             language,
-            "일정을 등록하지 않아도 됩니다. 지금 어디에 있고 언제까지 비어 있는지만 알려 주세요.",
-            "No itinerary needed. Just tell us where you are and until when you are free.",
+            "일정을 등록하지 않아도 됩니다. 지금 어디에 있고, 언제 출발해 언제까지 비어 있는지만 알려 주세요.",
+            "No itinerary needed. Tell us where you are, when you will leave and until when you are free.",
           )}
         </p>
 
@@ -482,19 +561,20 @@ export default function DiscoverWindowPanel({
           <h3 id="discover-origin">
             {tr(language, "지금 어디에 있나요?", "Where are you now?")}
           </h3>
-          {originReady ? (
+          {originReady && !originSelectionOpen ? (
             <p className={styles.originReady}>
               <strong>{origin.label || "현재 위치"}</strong>
-              <button type="button" onClick={onRequestLocation}>
+              <button type="button" onClick={beginOriginReselection}>
                 {tr(language, "다시 확인", "Refresh")}
               </button>
             </p>
           ) : (
-            <div className={styles.originActions}>
+            <div className={styles.originActions} id="discover-origin-actions">
               <button
+                ref={automaticLocationButtonRef}
                 type="button"
                 className={styles.primaryGhost}
-                onClick={onRequestLocation}
+                onClick={requestAutomaticLocation}
                 disabled={geoState === "loading"}
               >
                 {geoState === "loading"
@@ -518,10 +598,11 @@ export default function DiscoverWindowPanel({
             <ManualLocationPicker
               language={language}
               geoBusy={geoState === "loading"}
-              onRetryGeolocation={onRequestLocation}
+              onRetryGeolocation={requestAutomaticLocation}
               onPick={(place) => {
                 onManualLocation(place);
                 setManualOpen(false);
+                setOriginSelectionOpen(false);
               }}
             />
           )}
@@ -540,11 +621,61 @@ export default function DiscoverWindowPanel({
           )}
         </section>
 
+        <section className={styles.block} aria-labelledby="discover-departure">
+          <h3 id="discover-departure">
+            {tr(language, "언제 출발할까요?", "When will you leave?")}
+          </h3>
+          <div
+            className={styles.chips}
+            role="radiogroup"
+            aria-label={tr(language, "출발 시각", "Departure time")}
+            aria-describedby="discover-departure-summary"
+          >
+            {DEPARTURE_DELAY_CHOICES.map((minutes) => (
+              <button
+                key={minutes}
+                type="button"
+                role="radio"
+                aria-checked={departureDelayMinutes === minutes}
+                className={
+                  departureDelayMinutes === minutes
+                    ? styles.chipActive
+                    : styles.chip
+                }
+                onClick={() => {
+                  const selectionNowMs = Date.now();
+                  setDepartureDelayMinutes(minutes);
+                  setWindowEndIso(
+                    windowEndIsoFromMinutes(windowMinutes, selectionNowMs),
+                  );
+                }}
+              >
+                {departureDelayLabel(language, minutes)}
+              </button>
+            ))}
+          </div>
+          <p className={styles.derived} id="discover-departure-summary">
+            {tr(
+              language,
+              departureDelayMinutes === 0
+                ? "현재 시각에 출발하는 것으로 계산합니다."
+                : `${departureAtLabel} 출발로 계산합니다. 기다리는 시간은 여행 가능 시간에서 제외합니다.`,
+              departureDelayMinutes === 0
+                ? "Calculated for departure now."
+                : `Calculated for departure at ${departureAtLabel}. Waiting time is excluded from the travel window.`,
+            )}
+          </p>
+        </section>
+
         <section className={styles.block} aria-labelledby="discover-window">
           <h3 id="discover-window">
             {tr(language, "언제까지 비어 있나요?", "Free until when?")}
           </h3>
-          <div className={styles.chips} role="radiogroup" aria-label={tr(language, "남은 시간", "Remaining time")}>
+          <div
+            className={styles.chips}
+            role="radiogroup"
+            aria-label={tr(language, "남은 시간", "Remaining time")}
+          >
             {WINDOW_CHOICES.map((minutes) => (
               <button
                 key={minutes}
@@ -566,10 +697,19 @@ export default function DiscoverWindowPanel({
           <p className={styles.derived}>
             {tr(
               language,
-              `${windowEndLabel}까지, 선택한 ${minutesLabel(language, windowMinutes)}을 줄이지 않고 계산합니다.`,
-              `Calculated until ${windowEndLabel}; the selected ${minutesLabel(language, windowMinutes)} window is not shortened.`,
+              `${windowEndLabel}까지 비어 있습니다. 출발 뒤 실제 이동·체류·복귀 가능 시간은 ${minutesLabel(language, effectiveWindowMinutes)}입니다.`,
+              `You are free until ${windowEndLabel}. ${minutesLabel(language, effectiveWindowMinutes)} remains after departure for travel, the visit and return.`,
             )}
           </p>
+          {departureOutsideWindow && (
+            <p className={styles.messageError} role="alert">
+              {tr(
+                language,
+                "출발 시각이 자유 시간 종료 시각과 같거나 늦습니다. 더 이른 출발 시각이나 더 긴 남은 시간을 선택해 주세요.",
+                "Your departure is at or after the end of your free time. Leave earlier or choose a longer window.",
+              )}
+            </p>
+          )}
         </section>
 
         <section className={styles.block} aria-labelledby="discover-stay">
@@ -580,7 +720,11 @@ export default function DiscoverWindowPanel({
               "How long will you stay?",
             )}
           </h3>
-          <div className={styles.chips} role="radiogroup" aria-label={tr(language, "머무는 시간", "Stay length")}>
+          <div
+            className={styles.chips}
+            role="radiogroup"
+            aria-label={tr(language, "머무는 시간", "Stay length")}
+          >
             {STAY_CHOICES.map((minutes) => (
               <button
                 key={minutes}
@@ -609,8 +753,8 @@ export default function DiscoverWindowPanel({
             <p className={styles.messageError} role="alert">
               {tr(
                 language,
-                "머무는 시간이 남은 시간과 같거나 더 깁니다. 이동 시간이 들어갈 자리가 없습니다.",
-                "Your stay fills the whole window, leaving no time to travel.",
+                "선택한 출발 시각 뒤의 실제 남은 시간보다 체류 시간이 깁니다. 이동과 복귀 시간이 들어갈 자리가 없습니다.",
+                "Your stay fills the time remaining after departure, leaving no room to travel and return.",
               )}
             </p>
           )}
@@ -717,7 +861,9 @@ export default function DiscoverWindowPanel({
                       >
                         <strong>{place.title}</strong>
                         <small>{place.address || "주소 정보 없음"}</small>
-                        {place.sourceLabel && <small>{place.sourceLabel}</small>}
+                        {place.sourceLabel && (
+                          <small>{place.sourceLabel}</small>
+                        )}
                       </button>
                     </li>
                   ))}
@@ -786,15 +932,11 @@ export default function DiscoverWindowPanel({
             <span>{tr(language, "이동·접근성 조건", "Accessibility")}</span>
             <select
               value={audience}
-              onChange={(event) =>
-                setAudience(event.target.value as Audience)
-              }
+              onChange={(event) => setAudience(event.target.value as Audience)}
             >
               {AUDIENCES.map((item) => (
                 <option key={item.value} value={item.value}>
-                  {language === "en"
-                    ? AUDIENCES_EN[item.value]
-                    : item.label}
+                  {language === "en" ? AUDIENCES_EN[item.value] : item.label}
                 </option>
               ))}
             </select>
@@ -806,9 +948,7 @@ export default function DiscoverWindowPanel({
               onChange={(event) => setIndoorOnly(event.target.checked)}
             />
             <span>
-              <strong>
-                {tr(language, "실내 후보만 찾기", "Indoor only")}
-              </strong>
+              <strong>{tr(language, "실내 후보만 찾기", "Indoor only")}</strong>
               <small>
                 {tr(
                   language,
@@ -823,14 +963,20 @@ export default function DiscoverWindowPanel({
         <button
           type="submit"
           className={styles.submit}
-          disabled={state === "loading" || !originReady || stayTooLong}
+          disabled={
+            state === "loading" ||
+            !originReady ||
+            originSelectionOpen ||
+            departureOutsideWindow ||
+            stayTooLong
+          }
         >
           {state === "loading"
             ? tr(language, "확인 중…", "Checking…")
             : tr(
                 language,
-                "지금 다녀올 수 있는 곳 찾기",
-                "Find places I can fit in",
+                "선택한 시간에 다녀올 수 있는 곳 찾기",
+                "Find places that fit this time",
               )}
         </button>
         <p className={styles.footnote}>
@@ -871,6 +1017,7 @@ export default function DiscoverWindowPanel({
         )}
         {state === "success" && result && (
           <DiscoverResults
+            key={result.requestId}
             language={language}
             result={result}
             onPlanFromPlace={onPlanFromPlace}
@@ -894,6 +1041,12 @@ function DiscoverResults({
      에서만 "가까운 순"으로 볼 수 있으면 여행자는 화면마다 규칙을 새로
      배워야 한다. */
   const [sort, setSort] = useState<SimpleOptionSort>("recommended");
+  const [category, setCategory] = useState("all");
+  const categoryCounts = tourismCategoryCounts(result.options);
+  const visibleOptions = sortSimpleOptions(
+    filterOptionsByTourismCategory(result.options, category),
+    sort,
+  );
   if (!result.options.length) {
     return (
       <div className={styles.noResult} role="status">
@@ -908,19 +1061,34 @@ function DiscoverResults({
           <p key={index}>{warning}</p>
         ))}
         {(result.rejectionSummary?.length ?? 0) > 0 && (
-          <section className={styles.rejectionPanel} aria-labelledby="discover-empty-reasons">
+          <section
+            className={styles.rejectionPanel}
+            aria-labelledby="discover-empty-reasons"
+          >
             <strong id="discover-empty-reasons">
-              {tr(language, "제외된 실제 이유", "Why nearby places were excluded")}
+              {tr(
+                language,
+                "제외된 실제 이유",
+                "Why nearby places were excluded",
+              )}
             </strong>
             <ul>
               {result.rejectionSummary?.map((entry) => (
                 <li key={entry.reasonCode}>
                   <span>
                     {REJECTION_COPY[entry.reasonCode]?.[language] ??
-                      tr(language, "필수 안전 조건을 충족하지 못함", "A required safety condition was not met")}
+                      tr(
+                        language,
+                        "필수 안전 조건을 충족하지 못함",
+                        "A required safety condition was not met",
+                      )}
                   </span>
                   <b>
-                    {tr(language, `${entry.count}곳`, `${entry.count} place${entry.count === 1 ? "" : "s"}`)}
+                    {tr(
+                      language,
+                      `${entry.count}곳`,
+                      `${entry.count} place${entry.count === 1 ? "" : "s"}`,
+                    )}
                   </b>
                 </li>
               ))}
@@ -929,7 +1097,13 @@ function DiscoverResults({
         )}
         {result.counterfactual && (
           <section className={styles.counterfactual}>
-            <strong>{tr(language, "결과를 만들 수 있는 최소 변경", "Smallest change that may produce a result")}</strong>
+            <strong>
+              {tr(
+                language,
+                "결과를 만들 수 있는 최소 변경",
+                "Smallest change that may produce a result",
+              )}
+            </strong>
             <p>{counterfactualGuidance(result.counterfactual, language)}</p>
           </section>
         )}
@@ -952,7 +1126,11 @@ function DiscoverResults({
     <>
       {result.options.length > 1 && (
         <>
-          <div className={styles.sortRow} role="group" aria-label={tr(language, "정렬", "Sort")}>
+          <div
+            className={styles.sortRow}
+            role="group"
+            aria-label={tr(language, "정렬", "Sort")}
+          >
             {(
               [
                 ["recommended", "추천순", "Recommended"],
@@ -983,8 +1161,41 @@ function DiscoverResults({
           )}
         </>
       )}
+      <div
+        className={styles.sortRow}
+        role="radiogroup"
+        aria-label={tr(
+          language,
+          "공식 관광 분류로 필터",
+          "Filter by official tourism category",
+        )}
+      >
+        <button
+          type="button"
+          role="radio"
+          className={category === "all" ? styles.sortActive : styles.sortChip}
+          aria-checked={category === "all"}
+          onClick={() => setCategory("all")}
+        >
+          {tr(language, "전체", "All")} {result.options.length}
+        </button>
+        {categoryCounts.map((entry) => (
+          <button
+            key={entry.code}
+            type="button"
+            role="radio"
+            className={
+              category === entry.code ? styles.sortActive : styles.sortChip
+            }
+            aria-checked={category === entry.code}
+            onClick={() => setCategory(entry.code)}
+          >
+            {language === "en" ? entry.labelEn : entry.labelKo} {entry.count}
+          </button>
+        ))}
+      </div>
       <ul className={styles.cards}>
-        {sortSimpleOptions(result.options, sort).map((option, index) => {
+        {visibleOptions.map((option, index) => {
           const window = option.scheduleDiff?.openWindow;
           /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
              화면 상태(선택한 수단)로 쓰면 자차 조회가 실패해 보행으로 내려간
@@ -1006,6 +1217,12 @@ function DiscoverResults({
                   : { ko: "걸어서", noun: "보행", en: "walk" };
           const safety = optionApplicationSafety(option, language);
           const isBlocked = !safety.canApply;
+          const resultGeneratedAtMs = Date.parse(result.generatedAt ?? "");
+          const windowStartAtMs = Date.parse(window?.windowStartAt ?? "");
+          const leavesLater =
+            Number.isFinite(resultGeneratedAtMs) &&
+            Number.isFinite(windowStartAtMs) &&
+            windowStartAtMs > resultGeneratedAtMs + 60_000;
           return (
             <li
               key={option.id || option.contentId || `${option.title}-${index}`}
@@ -1014,6 +1231,13 @@ function DiscoverResults({
             >
               <div className={styles.cardHead}>
                 <div>
+                  {option.tourismCategory && (
+                    <span className={styles.categoryBadge}>
+                      {language === "en"
+                        ? option.tourismCategory.labelEn
+                        : option.tourismCategory.labelKo}
+                    </span>
+                  )}
                   <p>{option.address || "주소 정보 확인 필요"}</p>
                   <h3>{option.title}</h3>
                 </div>
@@ -1028,7 +1252,15 @@ function DiscoverResults({
               {window && (
                 <ol className={styles.timeline}>
                   <li>
-                    <span>{tr(language, "지금 출발", "Leave now")}</span>
+                    <span>
+                      {window.windowStartAt && leavesLater
+                        ? tr(
+                            language,
+                            `${formatIsoTime(window.windowStartAt, language)} 출발`,
+                            `Leave at ${formatIsoTime(window.windowStartAt, language)}`,
+                          )
+                        : tr(language, "지금 출발", "Leave now")}
+                    </span>
                     <strong>
                       {tr(
                         language,
@@ -1082,7 +1314,10 @@ function DiscoverResults({
                     kind: "origin",
                   },
                   {
-                    point: { latitude: option.latitude, longitude: option.longitude },
+                    point: {
+                      latitude: option.latitude,
+                      longitude: option.longitude,
+                    },
                     label: option.title,
                     kind: "replacement",
                   },
@@ -1225,8 +1460,16 @@ function DiscoverResults({
                   }
                 >
                   {isBlocked
-                    ? tr(language, "안전 확인 전 추가 불가", "Cannot add until verified")
-                    : tr(language, "이 곳을 일정에 넣기", "Add this to my plan")}
+                    ? tr(
+                        language,
+                        "안전 확인 전 추가 불가",
+                        "Cannot add until verified",
+                      )
+                    : tr(
+                        language,
+                        "이 곳을 일정에 넣기",
+                        "Add this to my plan",
+                      )}
                 </button>
               )}
             </li>
@@ -1244,23 +1487,41 @@ function DiscoverResults({
           뭉개지 않고 사유별로 보여 주며, 사용자가 조건을 바꿔 다시 찾을 수 있는
           경우에는 counterfactual 안내도 함께 보존한다. */}
       {(result.rejectionSummary?.length ?? 0) > 0 ? (
-        <section className={styles.rejectionPanel} aria-labelledby="discover-rejection-reasons">
+        <section
+          className={styles.rejectionPanel}
+          aria-labelledby="discover-rejection-reasons"
+        >
           <strong id="discover-rejection-reasons">
-            {tr(language, "목록에서 제외된 이유", "Why other nearby places were excluded")}
+            {tr(
+              language,
+              "목록에서 제외된 이유",
+              "Why other nearby places were excluded",
+            )}
           </strong>
           <ul>
             {result.rejectionSummary?.map((entry) => (
               <li key={entry.reasonCode}>
                 <span>
                   {REJECTION_COPY[entry.reasonCode]?.[language] ??
-                    tr(language, "필수 안전 조건을 충족하지 못함", "A required safety condition was not met")}
+                    tr(
+                      language,
+                      "필수 안전 조건을 충족하지 못함",
+                      "A required safety condition was not met",
+                    )}
                 </span>
-                <b>{tr(language, `${entry.count}곳`, `${entry.count} place${entry.count === 1 ? "" : "s"}`)}</b>
+                <b>
+                  {tr(
+                    language,
+                    `${entry.count}곳`,
+                    `${entry.count} place${entry.count === 1 ? "" : "s"}`,
+                  )}
+                </b>
               </li>
             ))}
           </ul>
         </section>
-      ) : typeof result.rejectedCount === "number" && result.rejectedCount > 0 ? (
+      ) : typeof result.rejectedCount === "number" &&
+        result.rejectedCount > 0 ? (
         <p className={styles.rejected}>
           {tr(
             language,
@@ -1271,7 +1532,13 @@ function DiscoverResults({
       ) : null}
       {result.counterfactual && (
         <section className={styles.counterfactual}>
-          <strong>{tr(language, "조건을 최소한으로 바꾸려면", "Smallest useful condition change")}</strong>
+          <strong>
+            {tr(
+              language,
+              "조건을 최소한으로 바꾸려면",
+              "Smallest useful condition change",
+            )}
+          </strong>
           <p>{counterfactualGuidance(result.counterfactual, language)}</p>
         </section>
       )}

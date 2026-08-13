@@ -38,6 +38,8 @@ export const dynamic = "force-dynamic";
 const RECOVERY_RESPONSE_BUDGET_MS = 20_000;
 const PERSISTENCE_COMMIT_RESERVE_MS = 2_000;
 const MAX_CLIENT_CLOCK_SKEW_MS = 5 * 60_000;
+const MAX_OPEN_WINDOW_DEPARTURE_DELAY_MS = 6 * 60 * 60_000;
+const MAX_OPEN_WINDOW_MINUTES = 1_440;
 
 export async function POST(request: NextRequest) {
   const deadlineAt = Date.now() + RECOVERY_RESPONSE_BUDGET_MS;
@@ -225,10 +227,34 @@ export async function POST(request: NextRequest) {
      시각을 기준으로 다시 확인해, 기기 시각이 틀어진 채로 "아직 3시간 남았다"는
      계산이 통과하는 일을 막는다. */
   if (openWindow && !submittedItinerary) {
+    const departureAt = openWindow.departureAt
+      ? Date.parse(openWindow.departureAt)
+      : Date.parse(serverIncidentAt);
+    const serverNowMs = Date.parse(serverIncidentAt);
     const windowEndAt = Date.parse(openWindow.availableUntil);
     const remainingMinutes = Math.floor(
-      (windowEndAt - Date.parse(serverIncidentAt)) / 60_000,
+      (windowEndAt - departureAt) / 60_000,
     );
+    if (
+      !Number.isFinite(departureAt) ||
+      departureAt < serverNowMs - 60_000 ||
+      departureAt > serverNowMs + MAX_OPEN_WINDOW_DEPARTURE_DELAY_MS
+    ) {
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "OPEN_WINDOW_DEPARTURE_INVALID",
+            message:
+              "출발 시각은 서버 시각 이후 6시간 안으로 선택해 주세요.",
+            serverTime: serverIncidentAt,
+          },
+        },
+        { status: 400 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
     if (!Number.isFinite(windowEndAt) || remainingMinutes < 30) {
       const response = jsonResponse(
         {
@@ -237,6 +263,25 @@ export async function POST(request: NextRequest) {
             code: "OPEN_WINDOW_TOO_SHORT",
             message:
               "서버 시각 기준으로 남은 자유 시간이 30분 미만입니다. 종료 시각을 다시 확인해 주세요.",
+            serverTime: serverIncidentAt,
+          },
+        },
+        { status: 400 },
+      );
+      if (session.isNew) setSessionCookie(response, session.id);
+      return response;
+    }
+    /* `availableMinutes`는 아래에서 두 ISO 시각의 차이로 덮어쓰므로, 최초
+       스키마를 통과한 클라이언트 숫자의 상한에 기대면 48시간 창을 30분으로
+       위장할 수 있다. 권위 시각으로 다시 계산한 값 자체를 재검증한다. */
+    if (remainingMinutes > MAX_OPEN_WINDOW_MINUTES) {
+      const response = jsonResponse(
+        {
+          requestId,
+          error: {
+            code: "OPEN_WINDOW_TOO_LONG",
+            message:
+              "출발 뒤 자유 시간은 최대 24시간까지 확인할 수 있습니다. 종료 시각을 다시 확인해 주세요.",
             serverTime: serverIncidentAt,
           },
         },
@@ -289,8 +334,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const authoritativeOpenWindowInput: RecoveryRequest = {
+      ...parsed.data,
+      availableMinutes: remainingMinutes,
+      openWindow: {
+        ...openWindow,
+        departureAt: new Date(departureAt).toISOString(),
+      },
+    };
     return await runRecovery({
-      input: parsed.data,
+      input: authoritativeOpenWindowInput,
       session,
       requestId,
       deadlineAt,

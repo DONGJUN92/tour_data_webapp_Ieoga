@@ -111,6 +111,8 @@ export const TMAP_PEDESTRIAN_URL =
 /* 자동차 경로는 같은 `TMAP_APP_KEY`로 동작한다. 별도 발급·별도 승인이 필요하지
    않음을 2026-08-04 실호출로 확인했다. */
 export const TMAP_CAR_URL = "https://apis.openapi.sk.com/tmap/routes";
+export const TMAP_CAR_PREDICTION_URL =
+  "https://apis.openapi.sk.com/tmap/routes/prediction";
 
 export function tmapPedestrianConfigured(): boolean {
   return Boolean(getRuntimeSecret("TMAP_APP_KEY"));

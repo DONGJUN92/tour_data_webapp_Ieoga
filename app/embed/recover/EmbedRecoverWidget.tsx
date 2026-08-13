@@ -166,10 +166,6 @@ export function EmbedRecoverWidget({
     );
   }, []);
 
-  const radius = useMemo(
-    () => (mode === "walk" ? 8_000 : mode === "transit" ? 20_000 : 20_000),
-    [mode],
-  );
   const availableUntilLabel = useMemo(
     () =>
       new Intl.DateTimeFormat("ko-KR", {
@@ -223,12 +219,10 @@ export function EmbedRecoverWidget({
         body: JSON.stringify({
           origin,
           incident: "delay",
-          availableMinutes: Math.min(240, minutes),
-          maxDistanceMeters: mode === "walk" ? 5_000 : 20_000,
+          availableMinutes: minutes,
           audience: "general",
           indoorOnly: false,
           travelMode: mode,
-          radiusMeters: radius,
           safetyBufferMinutes: 15,
           minimumStayMinutes: EMBED_STAY_MINUTES,
           analyticsConsent: false,

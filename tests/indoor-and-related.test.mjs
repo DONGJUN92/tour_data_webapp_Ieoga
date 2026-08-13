@@ -5,6 +5,88 @@ import test from "node:test";
 
 register(new URL("./alias-loader.mjs", import.meta.url));
 
+test("공식 신분류로 공원·문화유산·식당을 구분한다", async () => {
+  const { ktoTourismCategory } = await import("../lib/kto/category.ts");
+  assert.equal(
+    ktoTourismCategory({
+      lclsSystm1: "VE",
+      lclsSystm2: "VE03",
+      lclsSystm3: "VE030100",
+      contenttypeid: "12",
+    }).code,
+    "PARK",
+  );
+  assert.equal(
+    ktoTourismCategory({
+      lclsSystm1: "HS",
+      lclsSystm2: "HS01",
+      lclsSystm3: "HS010700",
+      contenttypeid: "12",
+    }).code,
+    "HERITAGE",
+  );
+  assert.equal(
+    ktoTourismCategory({
+      lclsSystm1: "FD",
+      lclsSystm2: "FD02",
+      lclsSystm3: "FD020300",
+      contenttypeid: "39",
+    }).code,
+    "FOOD",
+  );
+  assert.equal(
+    ktoTourismCategory({
+      lclsSystm1: "VE",
+      lclsSystm2: "VE07",
+      lclsSystm3: "VE070100",
+      contenttypeid: "14",
+    }).code,
+    "CULTURE",
+  );
+});
+
+test("공식 신분류가 없는 넓은 관광지 유형 12를 자연으로 과장하지 않는다", async () => {
+  const { ktoTourismCategory } = await import("../lib/kto/category.ts");
+  assert.deepEqual(ktoTourismCategory({ contenttypeid: "12" }), {
+    code: "OTHER",
+    labelKo: "기타 관광",
+    labelEn: "Other tourism",
+    source: "KorService2.contenttypeid",
+    officialLevel1Code: undefined,
+    officialLevel2Code: undefined,
+    officialLevel3Code: undefined,
+  });
+  assert.equal(
+    ktoTourismCategory({ contenttypeid: "12", lclsSystm1: "NA" }).code,
+    "NATURE",
+    "공식 자연 분류가 있으면 그 값은 보존해야 한다",
+  );
+});
+
+test("신분류 전시시설은 실내, 공원은 실외로 판정한다", async () => {
+  const { hasVerifiedIndoorEvidence } = await import(
+    "../lib/recovery/engine.ts"
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      lclsSystm1: "VE",
+      lclsSystm2: "VE07",
+      lclsSystm3: "VE070100",
+      title: "공식 전시시설",
+    }),
+    true,
+  );
+  assert.equal(
+    hasVerifiedIndoorEvidence({
+      lclsSystm1: "VE",
+      lclsSystm2: "VE03",
+      lclsSystm3: "VE030100",
+      title: "도시공원",
+    }),
+    false,
+  );
+});
+
 function envelope(items) {
   return {
     response: {
@@ -357,8 +439,10 @@ test("이동 부담 감소가 실제로 순위를 바꾼다", async () => {
     engine.indexOf('input.incident === "less_walk"'),
   );
   const weights = branch.slice(0, 900);
-  /* 거리 가중이 다른 항목보다 확실히 커야 순위가 갈린다. */
-  assert.match(weights, /distanceScore \* 0\.38/);
+  /* 거리 상한은 제거했으며, 선택한 이동수단의 실제 이동시간 부담을
+     다른 항목보다 확실히 크게 반영해 순위를 갈라야 한다. */
+  assert.match(weights, /timeBurdenScore \* 0\.38/);
+  assert.doesNotMatch(weights, /distanceScore/);
   assert.match(weights, /accessScore \* 0\.22/);
   /* 무엇을 기준으로 정렬했는지 카드가 밝혀야 한다. */
   assert.match(engine, /이동 부담을 가장 크게 반영해 정렬했습니다/);

@@ -253,6 +253,185 @@ test("빈 시간 추천은 일정 없이 실행되고 창 안에 들어가는 �
   );
 });
 
+test("미래 출발은 대기시간을 제외하고 그 시각부터 경로·체류·복귀를 계산한다", async () => {
+  await withMockedEnvironment(
+    { near: [600], far: [3_000] },
+    async () => {
+      const { recoverTrip } = await import("../lib/recovery/engine.ts");
+      const now = Date.now();
+      const departureAt = new Date(now + 60 * 60_000).toISOString();
+      const availableUntil = new Date(now + 180 * 60_000).toISOString();
+      const result = await recoverTrip(
+        openWindowRequest({
+          /* API가 두 시각 사이의 실제 120분으로 재계산한 값과 동일하게 보낸다. */
+          availableMinutes: 120,
+          openWindow: {
+            departureAt,
+            availableUntil,
+            plannedStayMinutes: 30,
+          },
+        }),
+        "open-window-future-departure",
+      );
+
+      assert.equal(result.openWindowSummary?.windowStartAt, departureAt);
+      assert.equal(result.openWindowSummary?.windowEndAt, availableUntil);
+      assert.equal(result.openWindowSummary?.windowMinutes, 120);
+      assert.ok(result.options.length > 0);
+      for (const option of result.options) {
+        const visitStart = Date.parse(option.scheduleDiff.replacementNode.startAt);
+        assert.ok(
+          visitStart >= Date.parse(departureAt),
+          "대기 중에 방문이 시작된 것처럼 계산해서는 안 된다",
+        );
+        assert.equal(option.scheduleDiff.openWindow?.windowStartAt, departureAt);
+        assert.equal(option.scheduleDiff.openWindow?.windowMinutes, 120);
+      }
+    },
+  );
+});
+
+test("첫 페이지 후보가 모두 부적합하면 다음 KTO 페이지까지 탐색해 검증 후보를 보충한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.KTO_SERVICE_KEY;
+  const originalRouting = process.env.ROUTING_BASE_URL;
+  const originalWeather = process.env.WEATHER_API_URL;
+  process.env.KTO_SERVICE_KEY = "open-window-pagination-key";
+  process.env.ROUTING_BASE_URL = "https://managed-routing.test/route";
+  process.env.WEATHER_API_URL = "https://managed-weather.test/forecast";
+  const requestedPages = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
+    if (url.hostname === "managed-routing.test") {
+      return Response.json({
+        code: "Ok",
+        routes: [
+          {
+            distance: 800,
+            duration: 600,
+            legs: [{ distance: 800, duration: 600 }],
+            geometry: {
+              coordinates: [
+                [127.031, 37.601],
+                [127.032, 37.602],
+              ],
+            },
+          },
+        ],
+      });
+    }
+    if (url.hostname === "managed-weather.test") {
+      return Response.json({
+        current: {
+          time: "2026-08-13T10:00",
+          temperature_2m: 26,
+          apparent_temperature: 27,
+          precipitation: 0,
+          rain: 0,
+          showers: 0,
+          weather_code: 1,
+          wind_speed_10m: 3,
+        },
+        hourly: { precipitation_probability: [0] },
+      });
+    }
+
+    const [, service, operation] = url.pathname.match(
+      /\/B551011\/([^/]+)\/([^/]+)$/,
+    ) ?? [];
+    let items = [];
+    let totalCount = 0;
+    if (service === "KorService2" && operation === "locationBasedList2") {
+      const pageNo = Number(url.searchParams.get("pageNo") ?? 1);
+      requestedPages.push(pageNo);
+      totalCount = 101;
+      items =
+        pageNo === 1
+          ? Array.from({ length: 100 }, (_, index) => ({
+              contentid: `invalid-page-one-${index}`,
+              contenttypeid: "14",
+              title: `좌표 없는 후보 ${index}`,
+              mapx: "",
+              mapy: "",
+            }))
+          : [
+              {
+                contentid: "valid-page-two",
+                contenttypeid: "14",
+                title: "두 번째 페이지 문화관",
+                addr1: "서울특별시 성북구",
+                mapx: "127.032",
+                mapy: "37.602",
+                dist: "800",
+                lDongRegnCd: "11",
+                lDongSignguCd: "290",
+                lclsSystm1: "VE",
+                lclsSystm2: "VE07",
+                modifiedtime: "20260813",
+              },
+            ];
+    } else if (service === "KorService2" && operation === "detailIntro2") {
+      totalCount = 1;
+      items = [{ usetimeculture: "00:00~23:59" }];
+    }
+    return Response.json({
+      response: {
+        header: { resultCode: "0000", resultMsg: "OK" },
+        body: {
+          items: items.length ? { item: items } : "",
+          totalCount,
+          pageNo: Number(url.searchParams.get("pageNo") ?? 1),
+          numOfRows: 100,
+        },
+      },
+    });
+  };
+
+  try {
+    const { recoverTrip } = await import("../lib/recovery/engine.ts");
+    const now = Date.now();
+    const result = await recoverTrip(
+      openWindowRequest({
+        origin: {
+          latitude: 37.601,
+          longitude: 127.031,
+          label: "페이지 확장 테스트 출발지",
+          areaCode: "11",
+          sigunguCode: "11290",
+        },
+        openWindow: {
+          availableUntil: new Date(now + 180 * 60_000).toISOString(),
+          plannedStayMinutes: 30,
+        },
+      }),
+      "open-window-adaptive-pagination",
+      { deadlineAt: Date.now() + 20_000 },
+    );
+    assert.ok(requestedPages.includes(2), "KTO 두 번째 페이지를 조회하지 않았다");
+    assert.ok(
+      result.options.some((option) => option.contentId === "valid-page-two"),
+      "첫 페이지 탈락 뒤 다음 페이지의 검증 가능 후보를 보충하지 않았다",
+    );
+    assert.ok(
+      result.warnings.some((warning) => warning.includes("최대 반경 20km")),
+      "외부 제공자의 탐색 반경 한계를 숨겨서는 안 된다",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.KTO_SERVICE_KEY = originalKey;
+    if (originalRouting === undefined) delete process.env.ROUTING_BASE_URL;
+    else process.env.ROUTING_BASE_URL = originalRouting;
+    if (originalWeather === undefined) delete process.env.WEATHER_API_URL;
+    else process.env.WEATHER_API_URL = originalWeather;
+  }
+});
+
 test("왕복 빈시간은 경계 도착이 아니라 선언한 안전여유까지 남아야 통과한다", async () => {
   await withMockedEnvironment(
     { near: [300], far: [3_000] },
@@ -590,6 +769,26 @@ test("입력 스키마는 두 진입 경로를 배타로 강제하고 시간을 
     openWindow: { availableUntil: until, plannedStayMinutes: 90 },
   });
   assert.equal(onGrid.success, true);
+
+  const departureAt = new Date(Date.now() + 30 * 60_000).toISOString();
+  const futureDeparture = recoveryRequestSchema.safeParse({
+    ...base,
+    openWindow: { departureAt, availableUntil: until, plannedStayMinutes: 60 },
+  });
+  assert.equal(futureDeparture.success, true);
+  const reversedWindow = recoveryRequestSchema.safeParse({
+    ...base,
+    openWindow: {
+      departureAt: until,
+      availableUntil: until,
+      plannedStayMinutes: 60,
+    },
+  });
+  assert.equal(
+    reversedWindow.success,
+    false,
+    "출발이 종료와 같거나 늦은 창은 거절해야 한다",
+  );
 });
 
 test("새 탭이 링크·키보드·탭목록 어디에서도 빠지지 않는다", async () => {
@@ -705,6 +904,8 @@ test("빈 시간 추천도 저장에 실패하면 결과를 내주지 않는다"
   assert.match(source, /markPersistenceStarted\(\)/);
   assert.match(source, /RECOVERY_PERSISTENCE_FAILED/);
   assert.match(source, /OPEN_WINDOW_TOO_SHORT/);
+  assert.match(source, /OPEN_WINDOW_TOO_LONG/);
+  assert.match(source, /remainingMinutes > MAX_OPEN_WINDOW_MINUTES/);
   assert.ok(
     !/persistRecovery\(\{[\s\S]*persistRecovery\(\{/.test(source),
     "저장 호출이 두 번 복제되어 있으면 안 된다",

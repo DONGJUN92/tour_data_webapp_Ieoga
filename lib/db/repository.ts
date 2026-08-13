@@ -29,11 +29,7 @@ import {
   sourceHealth,
 } from "@/db/schema";
 import { distanceBucket, minutesBucket } from "@/lib/geo";
-import {
-  distanceLimitBucket,
-  expiresInDays,
-  timeBudgetBucket,
-} from "@/lib/privacy";
+import { expiresInDays, timeBudgetBucket } from "@/lib/privacy";
 import type { KtoAudit } from "@/lib/kto/types";
 import { hasExactKtoHealthSourceSet } from "@/lib/kto/health-snapshot";
 import type {
@@ -332,7 +328,11 @@ export async function persistRecovery(params: {
         regionCode: params.result.scope.regionCode ?? null,
         districtCode: params.result.scope.districtCode ?? "_all",
         timeBudgetBucket: timeBudgetBucket(params.input.availableMinutes),
-        distanceBucket: distanceLimitBucket(params.input.maxDistanceMeters),
+        /* User-facing distance caps were removed: eligibility is determined by
+           routed travel time, stay time and the protected appointment. Keep a
+           non-identifying policy marker in the legacy analytics column rather
+           than pretending that the request carried a distance preference. */
+        distanceBucket: "time-based",
         indoorRequired:
           params.input.indoorOnly || params.input.incident === "rain",
         status: params.result.status,

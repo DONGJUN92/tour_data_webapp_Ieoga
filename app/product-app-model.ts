@@ -180,6 +180,22 @@ export type RecoveryOption = {
   longitude: number;
   imageUrl?: string;
   contentTypeId?: string;
+  /* KorService2가 장소마다 돌려준 공식 신분류의 1단계 값이다. 화면은 장소명이나
+     넓은 contentTypeId로 공원·식당을 다시 추측하지 않고 이 계약만 사용한다.
+     `source`가 contenttypeid이면 공식 신분류가 비어 넓은 유형으로 물러난
+     경우이므로 카드에서도 그 출처를 그대로 보존한다. */
+  tourismCategory?: {
+    code: string;
+    labelKo: string;
+    labelEn: string;
+    source:
+      | "KorService2.lclsSystm2"
+      | "KorService2.lclsSystm1"
+      | "KorService2.contenttypeid";
+    officialLevel1Code?: string;
+    officialLevel2Code?: string;
+    officialLevel3Code?: string;
+  };
   score?: number;
   distanceMeters?: number;
   estimatedTravelMinutes?: number;
@@ -319,7 +335,7 @@ export const INCIDENTS_EN: Record<Incident, { title: string; description: string
   },
   less_walk: {
     title: "Reduce mobility burden",
-    description: "Ranks by travel distance and confirmed accessibility first.",
+    description: "Ranks by verified travel-time burden and confirmed accessibility first.",
   },
 };
 
@@ -334,36 +350,28 @@ export const INCIDENTS_EN: Record<Incident, { title: string; description: string
    않는다. 유효 priority가 RECOMMEND·TIME·DISTANCE뿐이고 대중교통·자전거 경로는
    404다. 처음 그 호스트만 확인해 두 수단이 불가능하다고 잘못 판단했다.)
 
-   반경·거리 상한은 수단별로 다르다. 도보 기준을 그대로 쓰면 차나 지하철로 20분이면
-   닿는 곳이 후보에 들어오지도 않는다. */
+   후보 탐색 범위는 엔진이 실제 이동·체류 가능 시간으로 판정하므로 이 표시 목록에
+   거리 상한을 중복해 두지 않는다. */
 export const TRAVEL_MODES = [
   {
     value: "walk",
     ko: "걸어서",
     en: "Walking",
-    radius: 8_000,
-    distance: 5_000,
   },
   {
     value: "transit",
     ko: "대중교통",
     en: "Transit",
-    radius: 20_000,
-    distance: 20_000,
   },
   {
     value: "bicycle",
     ko: "자전거",
     en: "Bicycle",
-    radius: 15_000,
-    distance: 12_000,
   },
   {
     value: "car",
     ko: "자차·택시",
     en: "By car",
-    radius: 20_000,
-    distance: 20_000,
   },
 ] as const;
 
@@ -1364,6 +1372,115 @@ export type SimpleOptionSort =
   | "nearest_first"
   | "quiet_first"
   | "busy_first";
+
+/* KorService2 `lclsSystmCode2`의 1단계 순서. API 응답 순서나 현재 카드 정렬에
+   따라 필터 칩이 움직이지 않게 화면의 탐색 순서를 고정한다. 알 수 없는 새
+   코드는 버리지 않고 이 목록 뒤에 코드순으로 붙인다. */
+export const TOURISM_CATEGORY_FILTERS = [
+  { code: "PARK", labelKo: "공원", labelEn: "Parks" },
+  { code: "HERITAGE", labelKo: "문화유산", labelEn: "Heritage" },
+  { code: "FOOD", labelKo: "식당", labelEn: "Food" },
+  { code: "CULTURE", labelKo: "문화", labelEn: "Culture" },
+  { code: "NATURE", labelKo: "자연", labelEn: "Nature" },
+  { code: "EXPERIENCE", labelKo: "체험관광", labelEn: "Experiences" },
+  { code: "EVENT", labelKo: "축제·공연·행사", labelEn: "Events" },
+  { code: "LEISURE", labelKo: "레저스포츠", labelEn: "Leisure sports" },
+  { code: "SHOPPING", labelKo: "쇼핑", labelEn: "Shopping" },
+  { code: "ACCOMMODATION", labelKo: "숙박", labelEn: "Accommodation" },
+  { code: "COURSE", labelKo: "추천코스", labelEn: "Travel courses" },
+  { code: "OTHER", labelKo: "기타 관광", labelEn: "Other tourism" },
+] as const;
+
+export type TourismCategoryCount = {
+  code: string;
+  labelKo: string;
+  labelEn: string;
+  count: number;
+};
+
+const TOURISM_CATEGORY_BY_CODE = new Map<
+  string,
+  { code: string; labelKo: string; labelEn: string }
+>(
+  TOURISM_CATEGORY_FILTERS.map(
+    (category) => [category.code, category] as const,
+  ),
+);
+
+function tourismCategoryCode(option: {
+  tourismCategory?: RecoveryOption["tourismCategory"];
+}): string {
+  const code = option.tourismCategory?.code?.trim().toUpperCase();
+  return code && code !== "ALL" ? code : "OTHER";
+}
+
+/**
+ * 현재 결과에 실제로 존재하는 카테고리만, KTO의 안정된 순서로 반환한다.
+ * `전체`는 각 화면에서 전체 결과 수와 함께 별도로 표시한다.
+ */
+export function tourismCategoryCounts<
+  T extends { tourismCategory?: RecoveryOption["tourismCategory"] },
+>(options: T[]): TourismCategoryCount[] {
+  const counts = new Map<string, number>();
+  const labels = new Map<string, { labelKo: string; labelEn: string }>();
+
+  for (const option of options) {
+    const code = tourismCategoryCode(option);
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+    const canonical = TOURISM_CATEGORY_BY_CODE.get(code);
+    const labelKo =
+      option.tourismCategory?.labelKo?.trim() ||
+      canonical?.labelKo ||
+      "기타 관광";
+    const labelEn =
+      option.tourismCategory?.labelEn?.trim() ||
+      canonical?.labelEn ||
+      "Other tourism";
+    const current = labels.get(code);
+    /* 같은 코드에 서로 다른 문구가 섞여도 응답 순서가 필터 이름을 바꾸지
+       않도록 사전순으로 하나를 고른다. */
+    if (
+      !current ||
+      `${labelKo}\u0000${labelEn}`.localeCompare(
+        `${current.labelKo}\u0000${current.labelEn}`,
+        "ko",
+      ) < 0
+    ) {
+      labels.set(code, { labelKo, labelEn });
+    }
+  }
+
+  const known = TOURISM_CATEGORY_FILTERS.flatMap((category) => {
+    const count = counts.get(category.code) ?? 0;
+    return count
+      ? [{ ...category, ...(labels.get(category.code) ?? {}), count }]
+      : [];
+  });
+  const knownCodes = new Set<string>(
+    TOURISM_CATEGORY_FILTERS.map(({ code }) => code),
+  );
+  const unknown = [...counts.entries()]
+    .filter(([code]) => !knownCodes.has(code))
+    .sort(([left], [right]) => left.localeCompare(right, "en"))
+    .map(([code, count]) => ({
+      code,
+      ...(labels.get(code) ?? {
+        labelKo: "기타 관광",
+        labelEn: "Other tourism",
+      }),
+      count,
+    }));
+  return [...known, ...unknown];
+}
+
+/** 필터가 먼저 후보 집합을 정하고, 호출 화면이 그 결과에 정렬을 적용한다. */
+export function filterOptionsByTourismCategory<
+  T extends { tourismCategory?: RecoveryOption["tourismCategory"] },
+>(options: T[], selectedCode: string): T[] {
+  if (selectedCode.trim().toLowerCase() === "all") return options;
+  const normalized = selectedCode.trim().toUpperCase() || "OTHER";
+  return options.filter((option) => tourismCategoryCode(option) === normalized);
+}
 
 export function sortSimpleOptions<
   T extends { distanceMeters?: number; crowd?: unknown },

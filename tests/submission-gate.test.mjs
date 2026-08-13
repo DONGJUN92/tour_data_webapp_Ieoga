@@ -15,6 +15,7 @@ import {
   verifyRemoteArtifactReferences,
 } from "../scripts/submission-gate.mjs";
 import {
+  CANONICAL_DEPLOYMENT_TARGETS,
   CANONICAL_DEPLOYMENT_ORIGIN,
   RELEASE_ASSET_MANIFEST_PATH,
   RELEASE_ATTESTATION_REPOSITORY,
@@ -432,7 +433,7 @@ test("release receipt canonicalization and Wrangler parsing bind one exact produ
         version: 1,
         worker_name: "ieoga-national-travel-resilience",
         version_id: versionId,
-        targets: [`${CANONICAL_DEPLOYMENT_ORIGIN}/`],
+        targets: [...CANONICAL_DEPLOYMENT_TARGETS],
       }),
     ].join("\n"),
   );
@@ -456,6 +457,8 @@ test("release receipt canonicalization and Wrangler parsing bind one exact produ
   for (const targets of [
     [`${CANONICAL_DEPLOYMENT_ORIGIN}/api/v1/release/version`],
     [`${CANONICAL_DEPLOYMENT_ORIGIN}/`, "https://attacker.example/"],
+    [`${CANONICAL_DEPLOYMENT_ORIGIN}/`, "schedule: * * * * *"],
+    [...CANONICAL_DEPLOYMENT_TARGETS, "https://attacker.example/"],
   ]) {
     assert.throws(
       () =>

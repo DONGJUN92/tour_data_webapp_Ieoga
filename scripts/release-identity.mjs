@@ -13,6 +13,10 @@ export const CANONICAL_DEPLOYMENT_ORIGIN =
   "https://ieoga-national-travel-resilience.sans5-poems-5045.workers.dev";
 export const CLOUDFLARE_API_ORIGIN = "https://api.cloudflare.com";
 export const CLOUDFLARE_WORKER_NAME = "ieoga-national-travel-resilience";
+export const CANONICAL_DEPLOYMENT_TARGETS = [
+  `${CANONICAL_DEPLOYMENT_ORIGIN}/`,
+  "schedule: 17 * * * *",
+];
 export const RELEASE_ATTESTATION_REPOSITORY =
   "DONGJUN92/tour_data_webapp_Ieoga";
 export const RELEASE_ATTESTATION_WORKFLOW =
@@ -189,24 +193,28 @@ export function parseWranglerDeployOutput(source) {
       }
     });
   const deployment = records.findLast((entry) => entry?.type === "deploy");
+  const normalizedTargets = Array.isArray(deployment?.targets)
+    ? deployment.targets.map((target) => {
+        if (target === "schedule: 17 * * * *") return target;
+        try {
+          const parsed = new URL(target);
+          return parsed.protocol === "https:" && !parsed.username && !parsed.password
+            ? parsed.href
+            : null;
+        } catch {
+          return null;
+        }
+      })
+    : [];
   if (
     deployment?.version !== 1 ||
     deployment.worker_name !== CLOUDFLARE_WORKER_NAME ||
     !WORKER_VERSION_ID_PATTERN.test(deployment.version_id ?? "") ||
-    !Array.isArray(deployment.targets) ||
-    deployment.targets.length !== 1 ||
-    !deployment.targets.every((target) => {
-      try {
-        const parsed = new URL(target);
-        return (
-          parsed.href === `${CANONICAL_DEPLOYMENT_ORIGIN}/` &&
-          !parsed.username &&
-          !parsed.password
-        );
-      } catch {
-        return false;
-      }
-    })
+    normalizedTargets.length !== CANONICAL_DEPLOYMENT_TARGETS.length ||
+    new Set(normalizedTargets).size !== CANONICAL_DEPLOYMENT_TARGETS.length ||
+    !CANONICAL_DEPLOYMENT_TARGETS.every((target) =>
+      normalizedTargets.includes(target),
+    )
   ) {
     throw new Error("Wrangler output does not identify the canonical production deployment.");
   }

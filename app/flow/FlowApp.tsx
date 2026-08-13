@@ -625,11 +625,13 @@ export default function FlowApp() {
 
   useEffect(() => {
     document.documentElement.lang = language;
+    document.documentElement.dataset.flowReady = "true";
     const original = document.title;
     if (language === "en") {
       document.title = "IEOGA | Recover your trip right now";
     }
     return () => {
+      delete document.documentElement.dataset.flowReady;
       document.documentElement.lang = "ko";
       document.title = original;
     };

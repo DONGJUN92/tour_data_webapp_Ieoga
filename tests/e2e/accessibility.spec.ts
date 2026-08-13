@@ -417,6 +417,7 @@ test("home skip link and main content work with keyboard only", async ({ page })
 
 test("flow language selection works with keyboard only", async ({ page }) => {
   await page.goto("/flow", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute("data-flow-ready", "true");
   const english = page.getByRole("button", { name: "EN", exact: true });
   await english.focus();
   await page.keyboard.press("Enter");

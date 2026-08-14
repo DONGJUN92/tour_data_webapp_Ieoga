@@ -55,15 +55,37 @@ test("S1-3 열려 있는 시각은 여전히 단정하지 않는다", async () =
   const { evaluateAvailabilityItem } = await import(
     "../lib/kto/availability.ts"
   );
-  /* 어느 요일 규칙이 적용되는지 모르는 상태에서 "열려 있다"고 말하는 것은 근거를
-     넘어서는 주장이다. 구간 안이면 미확정으로 남겨야 한다. */
-  const evidence = evaluateAvailabilityItem(
+  /* 이 페르소나가 지키는 것은 "요일을 모르면 말하지 말라"가 아니라 **근거를
+     넘어서지 말라**다. 두 규칙이 방문 구간에 대해 같은 답을 주면 요일을 몰라도
+     답은 하나다 — 13~14시는 평일에도 주말에도 열려 있다. 그때 미확정으로 미루는
+     것은 신중함이 아니라, 우리가 이미 아는 것을 여행자에게 숨기는 것이다. */
+  const agreeing = evaluateAvailabilityItem(
     { usetimeculture: "[평일] 10:00~19:00 / [주말] 10:00~20:00" },
     audit,
     at(13, 0),
     at(14, 0),
   );
-  assert.equal(evidence.status, "official_hours_unstructured");
+  assert.equal(agreeing.status, "confirmed_open");
+
+  /* 두 규칙이 갈리는 시각에서는 여전히 단정하지 않는다. 19시 30분은 주말에만
+     열려 있으므로, 무슨 요일인지 모르면 말할 수 없다. */
+  const disagreeing = evaluateAvailabilityItem(
+    { usetimeculture: "[평일] 10:00~19:00 / [주말] 10:00~20:00" },
+    audit,
+    at(19, 0),
+    at(19, 30),
+  );
+  assert.equal(disagreeing.status, "official_hours_unstructured");
+
+  /* 이 페르소나의 원래 사고는 그대로 막힌다 — 07시 20분에 조회했을 때 10시
+     개관인 곳이 1순위로 올라오던 일. 어느 규칙으로도 닫혀 있다. */
+  const beforeOpening = evaluateAvailabilityItem(
+    { usetimeculture: "[평일] 10:00~19:00 / [주말] 10:00~20:00" },
+    audit,
+    at(7, 20),
+    at(8, 20),
+  );
+  assert.equal(beforeOpening.status, "confirmed_closed");
 
   /* 표기가 명확한 단일 구간이면 그때는 열려 있다고 확정한다. */
   const clear = evaluateAvailabilityItem(

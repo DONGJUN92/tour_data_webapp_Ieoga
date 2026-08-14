@@ -111,6 +111,61 @@ const cache = new Map<
 >();
 let nextPublicRequestAt = 0;
 
+/* 카카오 경로 API는 한도를 초과해도 429가 아니라 **HTTP 400**에
+   `{"code":-10,"message":"API limit has been exceeded."}`를 담아 돌려준다.
+   400은 보통 "요청이 잘못됐다"는 뜻이라 재시도할 이유가 없는 실패로 읽히고,
+   실제로 그렇게 읽혀 왔다 — 한도에 걸린 후보가 "이 좌표로는 경로가 없다"와
+   구분되지 않은 채 조용히 탈락했다.
+
+   실측(2026-08-14, 자전거 44건): 동시 실행 수는 아무 영향이 없었다. 동시 12,
+   6, 3 모두 정확히 20건만 통과했고 나머지는 한도 초과였다. 반면 초당 약 11건으로
+   흘려보내면 44건 전부 통과했다. 즉 이것은 동시성 제한이 아니라 **속도 제한**
+   이며, 20건쯤의 버킷이 있고 그 뒤로는 보충 속도를 따라야 한다.
+
+   그래서 동시성 대신 간격을 둔다. 125ms는 초당 8건으로, 실측에서 전부 통과한
+   11건/초보다 여유를 둔 값이다. 36곳 검증에 필요한 72건이면 약 9초인데,
+   대부분은 캐시와 조기 종료로 그보다 훨씬 적게 부른다. */
+const KAKAO_MIN_REQUEST_SPACING_MS = 125;
+/* 실측에서 한도에 걸리기 전까지 스무 건 남짓이 즉시 통과했다. 즉 버킷에는
+   여유분이 있고, 조용하다가 들어온 요청까지 간격을 지킬 이유는 없다. 열여섯 건
+   까지는 밀린 시간을 미리 쓸 수 있게 해 두면, 후보가 적거나 경로가 캐시에 있는
+   보통의 요청은 전혀 느려지지 않고 긴 요청의 꼬리만 고르게 퍼진다. */
+const KAKAO_BURST_CREDIT = 16;
+const KAKAO_RATE_LIMIT_RETRIES = 2;
+let nextKakaoRequestAt = 0;
+
+function isKakaoRateLimit(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === "KAKAO_RATE_LIMITED"
+  );
+}
+
+async function respectKakaoRoutingLimit(signal?: AbortSignal): Promise<void> {
+  const now = Date.now();
+  /* 슬롯을 동기적으로 예약한다. 앞 호출의 프라미스에 사슬로 매다는 방식은
+     호출이 중도 포기되면 그 자리에서 영영 멈춘다 — 공개 라우터 쪽에서 이미
+     겪은 실패 방식이라 같은 실수를 반복하지 않는다. */
+  /* 예약 시각이 현재보다 뒤처져 있으면 그만큼이 쓰지 않은 여유분이다. 다만
+     아무리 오래 조용했어도 한 번에 몰아 쓸 수 있는 양은 버킷 크기까지다. */
+  const earliestSlot =
+    now - KAKAO_BURST_CREDIT * KAKAO_MIN_REQUEST_SPACING_MS;
+  const slotAt = Math.max(earliestSlot, nextKakaoRequestAt);
+  nextKakaoRequestAt = slotAt + KAKAO_MIN_REQUEST_SPACING_MS;
+  const waitMs = slotAt - now;
+  if (waitMs <= 0) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, waitMs);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function routeKey(points: RoutePoint[]) {
   return points
     .map((point) => `${point.longitude.toFixed(5)},${point.latitude.toFixed(5)}`)
@@ -320,11 +375,37 @@ export async function getRoute(
         attribution,
       };
     }
+    let kakao:
+      | Awaited<ReturnType<typeof getKakaoTransitRoute>>
+      | undefined;
+    let rateLimited = false;
     try {
-      const kakao =
-        mode === "transit"
-          ? await getKakaoTransitRoute(points, { signal: options.signal })
-          : await getKakaoBicycleRoute(points, { signal: options.signal });
+      /* 한도에 걸리면 잠시 물러났다가 다시 묻는다. 간격을 두어도 다른 요청이
+         같은 앱키의 버킷을 함께 쓰므로 완전히 피할 수는 없는데, 그때 후보를
+         버리면 "경로가 없어서"가 아니라 "우리가 너무 빨리 물어서" 사라진다. */
+      for (let attempt = 0; attempt <= KAKAO_RATE_LIMIT_RETRIES; attempt += 1) {
+        try {
+          await respectKakaoRoutingLimit(options.signal);
+          kakao =
+            mode === "transit"
+              ? await getKakaoTransitRoute(points, { signal: options.signal })
+              : await getKakaoBicycleRoute(points, { signal: options.signal });
+          rateLimited = false;
+          break;
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
+          if (!isKakaoRateLimit(error)) throw error;
+          rateLimited = true;
+          if (attempt === KAKAO_RATE_LIMIT_RETRIES) break;
+          /* 버킷이 다시 차기를 기다린다. 실측 보충 속도가 초당 10건 안팎이라
+             400ms면 몇 건은 회복된다. 시도마다 늘려 함께 밀린 호출들이 같은
+             순간에 다시 몰리지 않게 한다. */
+          nextKakaoRequestAt = Math.max(
+            nextKakaoRequestAt,
+            Date.now() + 400 * (attempt + 1),
+          );
+        }
+      }
       if (kakao) {
         const routed: WalkingRouteEvidence = {
           status: "routed",
@@ -359,11 +440,16 @@ export async function getRoute(
       }
       void error;
     }
+    /* 재시도까지 한도에 걸렸다면 "경로가 없다"가 아니라 "지금은 물어볼 수
+       없었다"이다. 사유를 갈라 적어야 다시 시도하면 되는 상황인지 알 수 있다. */
     return {
       status: "unavailable",
       provider,
-      reason:
-        mode === "transit"
+      reason: rateLimited
+        ? mode === "transit"
+          ? "대중교통 경로 조회 한도를 넘어 이번 요청에서는 확인하지 못했습니다. 잠시 후 다시 시도하면 확인할 수 있습니다."
+          : "자전거 경로 조회 한도를 넘어 이번 요청에서는 확인하지 못했습니다. 잠시 후 다시 시도하면 확인할 수 있습니다."
+        : mode === "transit"
           ? "대중교통 경로 공급자가 현재 응답하지 않습니다."
           : "자전거 경로 공급자가 현재 응답하지 않습니다.",
       calculatedAt,

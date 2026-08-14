@@ -124,7 +124,16 @@ function hoursLineEn(operatingHours: string, restDate: string): string {
     .join("\n");
 }
 
-function parseTimeRanges(value: string): Array<[number, number]> {
+/* 브레이크타임. 공사 원문은 이것을 운영시간과 **같은 줄에 같은 형식으로** 적는다
+   — `11:30~21:30 · 준비시간 15:00~17:00`. 시간 구간만 뽑으면 둘이 구분되지 않아,
+   문 닫는 시간이 여는 시간처럼 섞인다. 실표본에서 이 함정이 실재한다: 이태리국시
+   본점의 준비시간(15:00~17:00)을 운영 구간으로 읽으면 15시 40분 방문이 "열려
+   있음"으로 통과한다. 앞말을 보고 갈라 놓는다. */
+const BREAK_MARKER = /(준비\s*시간|브레이크|브레이크\s*타임|휴게\s*시간|쉬는\s*시간)[^0-9]{0,6}$/u;
+
+type HourRange = { start: number; end: number; kind: "open" | "break" };
+
+function parseTimeRanges(value: string): HourRange[] {
   const normalized = value
     .replace(/시\s*(\d{1,2})\s*분/g, ":$1")
     .replace(/(\d{1,2})시/g, "$1:00");
@@ -146,8 +155,50 @@ function parseTimeRanges(value: string): Array<[number, number]> {
     ) {
       return [];
     }
-    return [[startHour * 60 + startMinute, endHour * 60 + endMinute]];
+    /* 이 구간 바로 앞에 무엇이 적혀 있는가. `준비시간 15:00~17:00`의 15:00은
+       여는 시각이 아니라 닫는 시각이다. */
+    const preceding = normalized.slice(
+      Math.max(0, (match.index ?? 0) - 14),
+      match.index ?? 0,
+    );
+    return [
+      {
+        start: startHour * 60 + startMinute,
+        end: endHour * 60 + endMinute,
+        kind: BREAK_MARKER.test(preceding)
+          ? ("break" as const)
+          : ("open" as const),
+      },
+    ];
   });
+}
+
+/* 방문 구간이 이 구간 안에 통째로 들어오는가. 절반만 겹치는 것을 통과시키면
+   개관 40분 전에 도착해 문 앞에서 기다리는 일정을 추천하게 된다. */
+function coversWholly(
+  range: HourRange,
+  visitStartMinutes: number,
+  visitEndMinutes: number,
+): boolean {
+  return range.end < range.start
+    ? (visitStartMinutes >= range.start || visitStartMinutes <= range.end) &&
+        (visitEndMinutes >= range.start || visitEndMinutes <= range.end)
+    : visitStartMinutes >= range.start &&
+        visitEndMinutes <= range.end &&
+        visitEndMinutes >= visitStartMinutes;
+}
+
+function overlaps(
+  range: HourRange,
+  visitStartMinutes: number,
+  visitEndMinutes: number,
+): boolean {
+  return range.end < range.start
+    ? visitStartMinutes >= range.start ||
+        visitStartMinutes <= range.end ||
+        visitEndMinutes >= range.start ||
+        visitEndMinutes <= range.end
+    : visitEndMinutes >= range.start && visitStartMinutes <= range.end;
 }
 
 /* `detailIntro2`는 콘텐츠 유형마다 필드 이름이 다르다. 공통 `usetime`/`restdate`만
@@ -331,42 +382,69 @@ export function evaluateAvailabilityItem(
   }
 
   const ranges = parseTimeRanges(operatingHours);
+  const openRanges = ranges.filter((range) => range.kind === "open");
+  const breakRanges = ranges.filter((range) => range.kind === "break");
   const start = koreaDate(visitStart);
   const end = koreaDate(visitEnd);
   const sameVisitDate =
     start.getFullYear() === end.getFullYear() &&
     start.getMonth() === end.getMonth() &&
     start.getDate() === end.getDate();
-  const ambiguousHours =
-    ranges.length !== 1 ||
-    /(요일|평일|주말|공휴일|동절기|하절기|성수기|비수기|시즌|변동|문의|입장\s*마감|매표\s*마감)/u.test(
-      operatingHours,
+  const visitStartMinutes = start.getHours() * 60 + start.getMinutes();
+  const visitEndMinutes = end.getHours() * 60 + end.getMinutes();
+
+  /* 예전에는 표기에 `평일`·`하절기`·`문의` 같은 낱말이 하나라도 있으면 판정을
+     포기했다. 그 규칙은 **정보를 더 자세히 적은 곳을 벌주었다.** 실표본 60곳
+     가운데 31곳이 이 이유로 미확인이었는데, 그 대부분은 사람이 1초면 읽는
+     표기였다 — `09:00~18:00 ※ 자세한 사항은 전화문의 요망`이 `문의` 한 낱말
+     때문에 판정 불가가 됐고, `[3~10월] 10:00~19:00 [11~2월] 10:00~18:00`은
+     어느 계절이든 오후 4시가 열려 있는데도 미확인으로 빠졌다.
+
+     그래서 낱말이 아니라 **시간으로** 따진다. 규칙은 하나다: 적혀 있는 모든
+     운영 구간이 방문 구간을 통째로 담으면, 어느 요일·계절·해석을 적용하든
+     열려 있다. 그때만 열려 있다고 말한다. 이것은 아래에 이미 있던 "어느
+     해석으로도 닫혀 있다"의 정확한 거울상이며, 요일표나 공휴일 달력이 없어도
+     성립한다 — 우리가 갖고 있지 않은 지식에 기대지 않는다.
+
+     구간 중 일부만 담는 경우(예: 하절기에는 열지만 동절기에는 닫는 시각)는
+     여전히 판정하지 않는다. 그때는 어느 규칙이 적용되는지가 실제로 답을
+     가르기 때문이다. */
+  if (openRanges.length && sameVisitDate) {
+    const everyRangeCovers = openRanges.every((range) =>
+      coversWholly(range, visitStartMinutes, visitEndMinutes),
     );
-  if (ranges.length && sameVisitDate && !ambiguousHours) {
-    const [rangeStart, rangeEnd] = ranges[0];
-    const visitStartMinutes =
-      start.getHours() * 60 + start.getMinutes();
-    const visitEndMinutes = end.getHours() * 60 + end.getMinutes();
-    const intervalInside =
-      rangeEnd < rangeStart
-        ? (visitStartMinutes >= rangeStart ||
-            visitStartMinutes <= rangeEnd) &&
-          (visitEndMinutes >= rangeStart ||
-            visitEndMinutes <= rangeEnd)
-        : visitStartMinutes >= rangeStart &&
-          visitEndMinutes <= rangeEnd &&
-          visitEndMinutes >= visitStartMinutes;
-    return {
-      status: intervalInside ? "confirmed_open" : "confirmed_closed",
-      operatingHours,
-      restDate: restDate || undefined,
-      contact: contact || undefined,
-      placeFacts: facts,
-      checkedAt,
-      note: hoursLine(operatingHours, restDate),
-      noteEn: hoursLineEn(operatingHours, restDate),
-      audit,
-    };
+    const breakOverlap = breakRanges.some((range) =>
+      overlaps(range, visitStartMinutes, visitEndMinutes),
+    );
+    if (everyRangeCovers && !breakOverlap) {
+      return {
+        status: "confirmed_open",
+        operatingHours,
+        restDate: restDate || undefined,
+        contact: contact || undefined,
+        placeFacts: facts,
+        checkedAt,
+        note: hoursLine(operatingHours, restDate),
+        noteEn: hoursLineEn(operatingHours, restDate),
+        audit,
+      };
+    }
+    /* 브레이크타임에 걸리면 운영시간 안이어도 그 시간에는 앉을 수 없다. */
+    if (breakOverlap) {
+      return {
+        status: "confirmed_closed",
+        operatingHours,
+        restDate: restDate || undefined,
+        contact: contact || undefined,
+        placeFacts: facts,
+        checkedAt,
+        note: ["브레이크타임과 겹칩니다.", hoursLine(operatingHours, restDate)]
+          .filter(Boolean)
+          .join(" "),
+        noteEn: `Your stay overlaps the stated break time (${operatingHours}).`,
+        audit,
+      };
+    }
   }
 
   /* 표기가 모호해도 "어느 해석으로도 열려 있지 않다"는 판정은 안전하다.
@@ -380,28 +458,15 @@ export function evaluateAvailabilityItem(
 
      반대 방향(열려 있다)은 여전히 단정하지 않는다. 어느 요일 규칙이 적용되는지
      모르는 상태에서 "열려 있다"고 말하는 것은 근거를 넘어서는 주장이다. */
-  if (ranges.length && sameVisitDate) {
-    const visitStartMinutes = start.getHours() * 60 + start.getMinutes();
-    const visitEndMinutes = end.getHours() * 60 + end.getMinutes();
-    /* 단일 명확 구간과 같은 기준을 쓴다 — 도착부터 체류 종료까지 전체가 들어와야
-       "들어온다"고 본다. 절반만 겹치는 것을 통과시키면 개관 40분 전에 도착해
-       문 앞에서 기다리는 일정을 추천하게 된다. */
-    const fitsWholly = ([rangeStart, rangeEnd]: readonly [number, number]) =>
-      rangeEnd < rangeStart
-        ? (visitStartMinutes >= rangeStart || visitStartMinutes <= rangeEnd) &&
-          (visitEndMinutes >= rangeStart || visitEndMinutes <= rangeEnd)
-        : visitStartMinutes >= rangeStart &&
-          visitEndMinutes <= rangeEnd &&
-          visitEndMinutes >= visitStartMinutes;
-    const overlaps = ([rangeStart, rangeEnd]: readonly [number, number]) =>
-      rangeEnd < rangeStart
-        ? visitStartMinutes >= rangeStart ||
-          visitStartMinutes <= rangeEnd ||
-          visitEndMinutes >= rangeStart ||
-          visitEndMinutes <= rangeEnd
-        : visitEndMinutes >= rangeStart && visitStartMinutes <= rangeEnd;
-    if (!ranges.some(fitsWholly)) {
-      const partial = ranges.some(overlaps);
+  if (openRanges.length && sameVisitDate) {
+    if (
+      !openRanges.some((range) =>
+        coversWholly(range, visitStartMinutes, visitEndMinutes),
+      )
+    ) {
+      const partial = openRanges.some((range) =>
+        overlaps(range, visitStartMinutes, visitEndMinutes),
+      );
       return {
         status: "confirmed_closed",
         operatingHours,

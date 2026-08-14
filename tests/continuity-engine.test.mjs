@@ -343,6 +343,9 @@ test("availability confirms the full stay interval, not only arrival time", asyn
     ).status,
     "confirmed_open",
   );
+  /* 계절 규칙이 둘인데 **둘 다** 방문 구간을 담으면, 어느 계절을 적용하든
+     열려 있다. 예전에는 `하절기`라는 낱말만 보고 판정을 포기했는데, 그것은
+     정보를 더 자세히 적은 곳을 벌주는 규칙이었다. */
   assert.equal(
     evaluateAvailabilityItem(
       { usetime: "하절기 09:00~18:00 · 동절기 10:00~17:00" },
@@ -350,7 +353,55 @@ test("availability confirms the full stay interval, not only arrival time", asyn
       new Date("2026-07-16T10:00:00+09:00"),
       new Date("2026-07-16T11:00:00+09:00"),
     ).status,
+    "confirmed_open",
+  );
+
+  /* 규칙이 서로 **다른 답**을 주는 시각에서는 여전히 판정하지 않는다. 17:30은
+     하절기에는 열려 있고 동절기에는 닫혀 있으므로, 어느 쪽인지 모르면 말할 수
+     없다. 이것이 위 규칙의 경계다. */
+  assert.equal(
+    evaluateAvailabilityItem(
+      { usetime: "하절기 09:00~18:00 · 동절기 10:00~17:00" },
+      audit,
+      new Date("2026-07-16T17:00:00+09:00"),
+      new Date("2026-07-16T17:30:00+09:00"),
+    ).status,
     "official_hours_unstructured",
+  );
+
+  /* 어느 규칙으로도 닫혀 있으면 닫혔다고 말한다. */
+  assert.equal(
+    evaluateAvailabilityItem(
+      { usetime: "하절기 09:00~18:00 · 동절기 10:00~17:00" },
+      audit,
+      new Date("2026-07-16T20:00:00+09:00"),
+      new Date("2026-07-16T21:00:00+09:00"),
+    ).status,
+    "confirmed_closed",
+  );
+
+  /* 브레이크타임은 운영시간과 같은 줄에 같은 형식으로 적혀 온다. 여는 구간으로
+     읽으면 문 닫는 시각이 문 여는 시각이 된다 — 실표본에서 실제로 걸리는
+     함정이라 방향을 갈라 확인한다. */
+  const breakTime = evaluateAvailabilityItem(
+    { opentimefood: "11:30~21:30 · 준비시간 15:00~17:00 · 마지막 주문 20:50" },
+    audit,
+    new Date("2026-07-16T15:40:00+09:00"),
+    new Date("2026-07-16T16:40:00+09:00"),
+  );
+  assert.equal(breakTime.status, "confirmed_closed");
+  assert.match(breakTime.note, /브레이크타임/);
+
+  /* 같은 표기라도 브레이크타임을 벗어난 시각은 열려 있다. `마지막 주문 20:50`은
+     구간이 아니므로 운영 구간으로 세면 안 된다. */
+  assert.equal(
+    evaluateAvailabilityItem(
+      { opentimefood: "11:30~21:30 · 준비시간 15:00~17:00 · 마지막 주문 20:50" },
+      audit,
+      new Date("2026-07-16T18:00:00+09:00"),
+      new Date("2026-07-16T19:00:00+09:00"),
+    ).status,
+    "confirmed_open",
   );
 });
 

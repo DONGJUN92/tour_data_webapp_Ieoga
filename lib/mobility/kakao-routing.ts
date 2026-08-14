@@ -77,7 +77,21 @@ async function kakaoGet(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`KAKAO_HTTP_${response.status}`);
+  if (!response.ok) {
+    /* 한도 초과를 다른 400과 갈라 낸다. 카카오는 둘 다 400으로 돌려주지만
+       뜻이 정반대다 — "이 좌표로는 경로가 없다"는 다시 물어도 같은 답이고,
+       "한도를 초과했다"는 잠시 뒤 다시 물으면 답이 온다. 구분하지 않으면
+       한도에 걸린 후보가 경로 없는 후보처럼 조용히 탈락한다. */
+    if (response.status === 400) {
+      const body = await response.text().catch(() => "");
+      if (/limit has been exceeded/i.test(body)) {
+        throw new Error("KAKAO_RATE_LIMITED");
+      }
+      throw new Error(`KAKAO_HTTP_400`);
+    }
+    if (response.status === 429) throw new Error("KAKAO_RATE_LIMITED");
+    throw new Error(`KAKAO_HTTP_${response.status}`);
+  }
   return (await response.json()) as Record<string, unknown>;
 }
 

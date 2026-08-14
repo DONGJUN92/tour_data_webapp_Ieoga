@@ -60,6 +60,7 @@ import type {
   RejectionReasonCode,
   ScheduleDiff,
   ScheduleNodeSummary,
+  TravelerFact,
   TravelPurposeProof,
 } from "./types";
 
@@ -71,9 +72,17 @@ export const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
 const CANDIDATE_DISCOVERY_MAX_PAGES = 4;
 const CANDIDATE_EXPANSION_TIMEOUT_MS = 2_500;
 const CANDIDATE_DISCOVERY_RESERVE_MS = 10_000;
-const CONTINUITY_RESULT_LIMIT = 12;
-const CONTINUITY_VERIFICATION_HARD_LIMIT = 18;
-const CONTINUITY_VERIFICATION_BATCH_SIZE = 3;
+/* 후보 탐색은 20km 안에서 수백 곳을 가져오는데, 검증 풀이 18곳이라 그 뒤는 한 번도
+   확인되지 않은 채 버려졌다. 실사용에서 "선택지가 너무 적다"로 나타났다 — 조건을
+   통과할 수 있는 곳이 없어서가 아니라, 물어보지 않아서 없었다.
+
+   두 배로 넓힌다. 함께 배치를 3에서 6으로 키우는데, KTO 클라이언트가 자체적으로
+   동시 3건으로 대기열을 걸고 슬롯을 얻은 **뒤에** 타임아웃을 걸기 때문에
+   운영시간 조회는 더 밀리지 않는다. 늘어나는 것은 경로 제공자 쪽 동시성이고,
+   그만큼 응답 예산도 25초로 함께 올렸다. */
+const CONTINUITY_RESULT_LIMIT = 24;
+const CONTINUITY_VERIFICATION_HARD_LIMIT = 36;
+const CONTINUITY_VERIFICATION_BATCH_SIZE = 6;
 const CONTINUITY_VERIFICATION_RESERVE_MS = 2_500;
 const ACCESSIBILITY_DETAIL_RESERVE_MS = 8_000;
 
@@ -1026,8 +1035,13 @@ function buildTravelPurposeProof(params: {
       replacementTitle: params.replacementTitle,
       /* 보존할 목적이 없으므로 목적 근거로 쓴 공사 API도 없다. */
       evidenceSource: "none",
-      statement: `남은 시간 안에 다녀올 수 있는 ${replacement.label} 공식 관광 콘텐츠입니다. 원래 계획을 알려 주지 않으셨으므로 목적 유지 여부는 판단하지 않았습니다.`,
-      statementEn: `Official ${replacement.label} content you can visit and return from within your remaining time. You did not tell us an original plan, so no intent match is claimed.`,
+      /* 뒷문장("원래 계획을 알려 주지 않으셨으므로 목적 유지 여부는 판단하지
+         않았습니다")을 뺐다. 그것은 이 화면의 모든 카드에 똑같이 붙는 내부
+         판정 기록이고, 카드를 고르는 사람에게는 아무것도 알려 주지 않는다.
+         빈 시간 추천에서 원래 계획을 묻지 않는다는 사실은 입력 화면이 이미
+         말한다. */
+      statement: `남은 시간 안에 다녀올 수 있는 ${replacement.label}입니다.`,
+      statementEn: `Official ${replacement.label} content you can visit and return from within your remaining time.`,
     };
   }
 
@@ -2290,6 +2304,231 @@ async function enrichForContinuity(params: {
 /* 여행 목적 문장은 카드에 전용 블록(purpose-contract)이 따로 있다. 예전에는
    이 목록의 첫 항목으로도 넣어서 같은 문장이 카드마다 두 번 찍혔다.
    또한 영어 화면에서 이 목록만 한국어로 남았으므로 두 언어를 함께 만든다. */
+/* 카드에 실을 "장소에 대한 사실"을 모은다. 근거 문장(`buildWhy`)과 분리되어야
+   하는 이유는 둘이 답하는 질문이 다르기 때문이다 — 근거는 "이 추천을 믿어도
+   되는가"에 답하고, 이쪽은 "내가 거기서 무엇을 하게 되는가"에 답한다. 예전
+   카드는 앞의 것만 길게 말하고 뒤의 것은 하나도 말하지 않았다. */
+function buildTravelerFacts(
+  candidate: WorkingCandidate,
+  input: RecoveryRequest,
+): TravelerFact[] {
+  const facts: TravelerFact[] = [];
+  const add = (fact: TravelerFact) => {
+    const value = fact.value.replace(/\s+/gu, " ").trim();
+    if (!value) return;
+    facts.push({ ...fact, value });
+  };
+
+  const availability = candidate.availability;
+  const place = availability?.placeFacts;
+
+  /* 운영시간이 첫 줄이다. "문을 여는지 확인했습니다"가 아니라 **몇 시에 여는가**가
+     여행자가 물은 것이고, 그 값은 이미 손에 있었다. */
+  if (availability?.operatingHours) {
+    add({
+      code: "hours",
+      label: "운영시간",
+      labelEn: "Hours",
+      value: availability.operatingHours,
+      prominent: true,
+    });
+  }
+  if (availability?.restDate) {
+    add({
+      code: "rest_day",
+      label: "휴무",
+      labelEn: "Closed",
+      value: availability.restDate,
+      prominent: true,
+    });
+  }
+  if (place?.checkIn || place?.checkOut) {
+    add({
+      code: "check_in_out",
+      label: "입실·퇴실",
+      labelEn: "Check-in / out",
+      value: [place.checkIn, place.checkOut].filter(Boolean).join(" · "),
+      prominent: true,
+    });
+  }
+  if (place?.eventPeriod) {
+    add({
+      code: "event_period",
+      label: "행사 기간",
+      labelEn: "Event period",
+      value: place.eventPeriod,
+      prominent: true,
+    });
+  }
+  /* 식당 카드에서 대표메뉴는 사진 다음으로 먼저 보는 값이다. */
+  if (place?.signatureMenu) {
+    add({
+      code: "signature_menu",
+      label: "대표메뉴",
+      labelEn: "Signature dish",
+      value: place.signatureMenu,
+      prominent: true,
+    });
+  }
+  if (place?.menu) {
+    add({
+      code: "menu",
+      label: "취급메뉴",
+      labelEn: "Menu",
+      value: place.menu,
+    });
+  }
+  if (place?.fee) {
+    add({
+      code: "fee",
+      label: "이용요금",
+      labelEn: "Admission",
+      value: place.fee,
+      prominent: true,
+    });
+  }
+  if (place?.parking) {
+    add({
+      code: "parking",
+      label: "주차",
+      labelEn: "Parking",
+      value: place.parking,
+      /* 자차로 가는 사람에게만 앞줄 값이다. */
+      prominent: input.travelMode === "car",
+    });
+  }
+  if (place?.reservation) {
+    add({
+      code: "reservation",
+      label: "예약",
+      labelEn: "Booking",
+      value: place.reservation,
+    });
+  }
+  if (place?.creditCard) {
+    add({
+      code: "credit_card",
+      label: "카드 결제",
+      labelEn: "Cards",
+      value: place.creditCard,
+    });
+  }
+  if (place?.petFriendly) {
+    add({
+      code: "pet",
+      label: "반려동물",
+      labelEn: "Pets",
+      value: place.petFriendly,
+    });
+  }
+  if (availability?.contact) {
+    add({
+      code: "contact",
+      label: "문의",
+      labelEn: "Phone",
+      value: availability.contact,
+      prominent: true,
+    });
+  }
+
+  if (candidate.indoor && indoorRequirement(input)) {
+    add({
+      code: "indoor",
+      label: "실내",
+      labelEn: "Indoor",
+      value: "실내에서 머물 수 있는 곳입니다.",
+      valueEn: "You can stay indoors here.",
+    });
+  }
+
+  if (candidate.crowdRate !== undefined) {
+    const level = crowdLevelOf(candidate);
+    add({
+      code: "crowd",
+      label: "붐빔 예측",
+      labelEn: "Crowding",
+      value:
+        level === "easy"
+          ? "원활한 편"
+          : level === "busy"
+            ? "붐비는 편"
+            : "보통",
+      valueEn:
+        level === "easy" ? "Quiet" : level === "busy" ? "Busy" : "Average",
+      prominent: true,
+    });
+  }
+
+  if (candidate.routeEvidence.status === "routed") {
+    const route = candidate.routeEvidence;
+    add({
+      code: "distance",
+      label: "거리",
+      labelEn: "Distance",
+      value: `${Math.round(candidate.distanceMeters).toLocaleString("ko-KR")}m`,
+      valueEn: `${Math.round(candidate.distanceMeters).toLocaleString("en-US")} m`,
+    });
+    if (typeof route.fareKrw === "number" || typeof route.transfers === "number") {
+      add({
+        code: "transit_fare",
+        label: "대중교통",
+        labelEn: "Transit",
+        value: [
+          typeof route.fareKrw === "number"
+            ? `${route.fareKrw.toLocaleString("ko-KR")}원`
+            : "",
+          typeof route.transfers === "number" ? `환승 ${route.transfers}회` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        valueEn: [
+          typeof route.fareKrw === "number"
+            ? `${route.fareKrw.toLocaleString("en-US")} KRW`
+            : "",
+          typeof route.transfers === "number"
+            ? `${route.transfers} transfer${route.transfers === 1 ? "" : "s"}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        prominent: true,
+      });
+    }
+    /* 예전에는 "택시요금은 자차 비용이 아니므로 표시하지 않습니다"라고 적어
+       두고 실제로 표시하지 않았다. 여행자가 알고 싶은 값을 손에 쥔 채 왜 안
+       보여 주는지만 설명한 셈이다. 무엇의 값인지 밝히고 보여 준다. */
+    if (typeof route.taxiFareKrw === "number") {
+      add({
+        code: "taxi_fare",
+        label: "예상 택시요금",
+        labelEn: "Est. taxi fare",
+        value: `${route.taxiFareKrw.toLocaleString("ko-KR")}원 (자차 유류비·주차비는 별도)`,
+        valueEn: `${route.taxiFareKrw.toLocaleString("en-US")} KRW (excludes fuel and parking if you drive)`,
+        prominent: true,
+      });
+    }
+  }
+
+  const openWindow = candidate.scheduleDiff.openWindow;
+  if (openWindow) {
+    add({
+      code: "spare_time",
+      label: openWindow.returnBasis === "next_place_route"
+        ? "다음 장소까지 여유"
+        : "복귀 뒤 여유",
+      labelEn:
+        openWindow.returnBasis === "next_place_route"
+          ? "Slack before next place"
+          : "Spare time after returning",
+      value: `${openWindow.leftoverMinutes}분`,
+      valueEn: `${openWindow.leftoverMinutes} min`,
+      prominent: true,
+    });
+  }
+
+  return facts;
+}
+
 function buildWhy(
   candidate: WorkingCandidate,
   input: RecoveryRequest,
@@ -2303,57 +2542,26 @@ function buildWhy(
 
   const meters = Math.round(candidate.distanceMeters);
   if (candidate.routeEvidence.status === "routed") {
-    /* 어느 경로 공급자로 계산했는지 문장에 그대로 쓴다. 공급자 이름을
-       고정해 두면 TMAP으로 계산한 결과에도 OpenStreetMap이라고 적힌다. */
-    const provider = candidate.routeEvidence.provider;
-    const routeSource =
-      provider === "tmap_pedestrian"
-        ? { ko: "TMAP 보행자 경로", en: "TMAP pedestrian routing" }
-        : provider === "tmap_car"
-          ? { ko: "TMAP 자동차 경로", en: "TMAP car routing" }
-          : provider === "kakao_transit"
-            ? { ko: "카카오맵 대중교통", en: "KakaoMap transit" }
-            : provider === "kakao_bicycle"
-              ? { ko: "카카오맵 자전거 경로", en: "KakaoMap cycling route" }
-              : {
-                  ko: "OpenStreetMap 보행 경로",
-                  en: "OpenStreetMap walking route",
-                };
-    /* 수단도 문장에 드러나야 한다. 자차로 계산한 20분을 "보행 경로로 20분"이라고
-       적으면 여행자가 걸어서 갈 수 있다고 읽는다. */
-    const modeWords = PROVIDER_MODE_LABEL[provider];
-    push(
-      `실제 ${modeWords.ko} 경로로 ${meters.toLocaleString("ko-KR")}m, 약 ${candidate.estimatedTravelMinutes}분입니다. (${routeSource.ko})`,
-      `${meters.toLocaleString("en-US")} m on a real ${modeWords.en} route, about ${candidate.estimatedTravelMinutes} min (${routeSource.en}).`,
-    );
-    if (typeof candidate.routeEvidence.taxiFareKrw === "number") {
-      push(
-        "TMAP 자동차 경로가 반환한 택시요금은 자차 유류비·통행료·주차비와 다른 값이므로 자차 비용으로 표시하지 않습니다.",
-        "The taxi estimate returned with the TMAP car route is not shown as a driving cost because it is not fuel, toll or parking expense.",
-      );
-    }
-    const transitFare = candidate.routeEvidence.fareKrw;
-    const transfers = candidate.routeEvidence.transfers;
-    if (typeof transitFare === "number" || typeof transfers === "number") {
-      push(
-        `복구 전체 대중교통 경로 기준 요금 ${
-          typeof transitFare === "number"
-            ? `${transitFare.toLocaleString("ko-KR")}원`
-            : "미확인"
-        }, 환승 ${typeof transfers === "number" ? `${transfers}회` : "횟수 미확인"}입니다.`,
-        `For the whole recovered transit route, the fare is ${
-          typeof transitFare === "number"
-            ? `${transitFare.toLocaleString("en-US")} KRW`
-            : "unavailable"
-        } and transfers are ${typeof transfers === "number" ? transfers : "unavailable"}.`,
-      );
-    }
+    /* 거리·소요시간·요금은 더 이상 여기에 문장으로 적지 않는다. 같은 값이 카드
+       상단 타임라인과 `travelerFacts`에 이미 있어서, 불릿으로 한 번 더 적으면
+       카드만 길어지고 읽는 사람은 같은 숫자를 세 번 만난다. 어느 공급자로
+       계산했는지는 근거 상자가 이어서 밝힌다.
+
+       남기는 것은 **숫자를 그대로 믿으면 안 되는 경우**뿐이다. */
     /* 배차를 모르는 값이므로 확정 도착 시각처럼 제시하지 않는다. 도보·자차와
        같은 등급으로 보여 주면 도착 시각을 보증하는 셈이 된다. */
     if (candidate.routeEvidence.scheduleDependent) {
+      /* 미래 시각을 조회한 경우, 이 소요시간은 그 시각의 시각표가 아니라 조회
+         시점의 시각표로 계산된 값이다. 카카오 대중교통은 좌표만 받고 미래
+         시각표를 모른다. 그 차이를 적지 않으면 "그 시각 기준으로 검증했다"는
+         이 화면의 다른 문장들과 조용히 어긋난다. */
       push(
-        "대중교통 소요시간은 배차 간격에 따라 달라질 수 있습니다. 출발 직전 실시간 도착 정보를 확인해 주세요.",
-        "Transit time varies with service frequency. Check live arrivals before you set out.",
+        candidate.routeEvidence.assumesCurrentTimetable
+          ? "대중교통 소요시간은 조회 시점의 시각표로 계산한 값입니다. 선택한 시각의 배차·막차는 다를 수 있으니 출발 전 실시간 도착 정보를 확인해 주세요."
+          : "대중교통 소요시간은 배차 간격에 따라 달라질 수 있습니다. 출발 직전 실시간 도착 정보를 확인해 주세요.",
+        candidate.routeEvidence.assumesCurrentTimetable
+          ? "This transit duration uses the timetable at the time of the search, not the one for your selected time. Frequency and last services may differ — check live arrivals before you go."
+          : "Transit time varies with service frequency. Check live arrivals before you set out.",
       );
     }
   } else {
@@ -2363,16 +2571,9 @@ function buildWhy(
     );
   }
 
-  /* 연락처는 운영 정보 상자에서 뺐다. 그 상자는 "몇 시에 여는가" 하나만
-     답해야 읽히고, 전화번호는 그 답이 아니라 다음 행동이다. 버리지 않고
-     행동 목록인 이 불릿으로 옮긴다. */
-  const availabilityContact = candidate.availability?.contact;
-  if (availabilityContact) {
-    push(
-      `운영시간을 도착 전에 확인하려면 ${availabilityContact}로 문의할 수 있습니다.`,
-      `To confirm the hours before you go, call ${availabilityContact}.`,
-    );
-  }
+  /* 연락처는 `travelerFacts`의 "문의" 항목으로 옮겼다. 전화번호는 근거가 아니라
+     장소 정보이고, 문장으로 감싸면("…로 문의할 수 있습니다") 눌러야 할 번호가
+     문장 속에 묻힌다. */
 
   const appointment = candidate.scheduleDiff.nextFixedAppointment;
   if (appointment?.status === "preserved") {
@@ -2388,18 +2589,13 @@ function buildWhy(
      운영시간을 읽지 못했다는 문장도 뺐다. 같은 사실을 근거 항목이 **원문과
      함께** 말하므로("공식 운영시간은 …입니다"), 여기서 한 번 더 적으면 원문
      없는 쪽이 먼저 눈에 들어와 오히려 불친절하다. */
-  if (candidate.availability.status === "confirmed_open") {
-    push(
-      "도착 시각에 문을 여는지 한국관광공사 공식 운영정보로 확인했습니다.",
-      "Official operating data confirms it is open at your arrival time.",
-    );
-  }
-  if (candidate.indoor && indoorRequirement(input)) {
-    push(
-      "한국관광공사 콘텐츠 유형상 실내에서 지낼 수 있는 곳입니다.",
-      "The official content type indicates you can stay indoors here.",
-    );
-  }
+  /* "문을 여는지 확인했습니다"와 "실내에서 지낼 수 있습니다"를 뺐다. 앞의 것은
+     운영시간 원문이 카드에 그대로 있으면 여행자가 스스로 읽는 사실이고, 뒤의
+     것은 `travelerFacts`의 "실내" 항목이 같은 말을 더 짧게 한다. 확인했다는
+     선언이 확인된 값 자체보다 자리를 더 차지하고 있었다.
+
+     반대로 **확인하지 못한 것**은 계속 문장으로 남는다. 그것은 값이 아니라
+     경고이고, 짧게 줄이면 경고로 읽히지 않는다. */
   if (candidate.accessibility.status === "verified") {
     push(
       "요청한 이동 조건에 맞는 편의정보를 무장애여행정보에서 확인했습니다.",
@@ -2473,21 +2669,18 @@ function buildWhy(
       );
     }
   }
+  /* 판정("원활한 편입니다")은 `travelerFacts`의 "붐빔 예측 · 원활" 칸으로
+     옮겼다. 남는 것은 그 값을 잘못 읽지 않게 하는 단서 하나다.
+
+     이 한 줄은 지우지 않는다. 실측에서 청와대(30일 평균 37.1)가 경운동
+     민병옥가옥(81.5)보다 낮았다 — 좁은 곳은 적은 인원으로도 포화되므로 이
+     수치를 인원수로 읽으면 정반대의 결론에 이른다. 판정과 붙여 놓았을 때는
+     한 문장이 세 절이 되어 카드마다 세 줄을 먹었고, 그렇게 반복되는 단서는
+     읽히지 않는다. 값과 떼어 짧게 두는 편이 실제로 더 잘 읽힌다. */
   if (candidate.crowdRate !== undefined) {
     push(
-      /* 여행자가 알고 싶은 것은 "붐비나?" 하나다. 숫자와 백분위를 늘어놓으면
-         그 답을 직접 계산하라고 떠넘기는 것이 된다. 원문 수치는 근거 화면에
-         남아 있으므로 "무엇을 근거로 그렇게 말했는가"는 여전히 답할 수 있다. */
-      crowdLevelOf(candidate) === "easy"
-        ? "조회 기준일 예측으로는 원활한 편입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
-        : crowdLevelOf(candidate) === "busy"
-          ? "조회 기준일 예측으로는 붐비는 편입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다."
-          : "조회 기준일 예측으로는 보통 수준입니다. 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다.",
-      crowdLevelOf(candidate) === "easy"
-        ? "Forecast to be quiet. A crowding forecast, not a live headcount."
-        : crowdLevelOf(candidate) === "busy"
-          ? "Forecast to be busy. A crowding forecast, not a live headcount."
-          : "Forecast to be about average. A crowding forecast, not a live headcount.",
+      "붐빔 예측은 사람 수가 아니라 일별 붐빔 정도 예측이며, 현장 실시간 인원수는 아닙니다.",
+      "A crowding forecast, not a live headcount.",
     );
   }
   /* 붐빔 칸이 비어 이 순위가 그 자리로 올라간 경우에는 불릿에 다시 적지
@@ -2762,6 +2955,7 @@ function toOption(
           },
     relatedRank: candidate.relatedRank,
     purposePreservation: candidate.purposePreservation,
+    travelerFacts: buildTravelerFacts(candidate, input),
     ...(() => {
       const reasons = buildWhy(candidate, input);
       return { why: reasons.ko, whyEn: reasons.en };
@@ -3070,11 +3264,15 @@ export async function recoverTrip(
   const warnings = context
     ? [
         "운영시간·경로·날씨는 선택한 조회 기준 시각에 맞춰 검증합니다. 공식 데이터는 요청할 때 조회한 정보이므로 예약 자체와 현장 안전을 보증하지 않으며, 출발 직전 운영기관 안내를 확인하세요.",
+        /* 예전에는 여기에 "…별도로 조회했으며, 목적 유지 여부는 판단하지
+           않았습니다"까지 적었다. 우리가 무엇을 했고 무엇을 하지 않았는지의
+           기록이지, 결과를 읽는 사람이 쓸 정보가 아니다. 여행자가 알아야 할
+           것은 이 시간 계산에 **복귀 시간이 들어 있다**는 사실 하나다. */
         ...(context.changeKind === "insert"
           ? [
               context.openWindow?.nextPlaceLabel
-                ? `조회 기준 시각부터 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 알려 주신 다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 검증했습니다.`
-                : `조회 기준 시각부터 비어 있는 시간에 한 곳을 더 넣는 추천입니다. 다음 장소를 알려 주지 않으셨으므로 후보지에서 출발지로 돌아오는 실제 역방향 ${travelModeLabel(input.travelMode)} 경로를 별도로 조회했으며, 목적 유지 여부는 판단하지 않았습니다.`,
+                ? `다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 계산했습니다.`
+                : `돌아오는 ${travelModeLabel(input.travelMode)} 시간까지 포함해 계산했습니다.`,
             ]
           : []),
       ]
@@ -3163,7 +3361,7 @@ export async function recoverTrip(
      20 km is the provider's documented endpoint maximum, not a rejection
      rule imposed by this product. */
   for (let pageNo = 2; pageNo <= pageLimit; pageNo += 1) {
-    const deadlineAt = execution.deadlineAt ?? Date.now() + 18_000;
+    const deadlineAt = execution.deadlineAt ?? Date.now() + 23_000;
     const remainingMs = deadlineAt - Date.now();
     if (
       execution.signal?.aborted ||
@@ -3250,7 +3448,7 @@ export async function recoverTrip(
      즉 어느 쪽을 출발지로 잡아도 약 30%의 후보는 조회 대상조차 아니었고,
      그 후보들은 실제 혼잡도와 무관하게 중립값을 받았다.
 
-     후보 수가 많은 시군구부터 최대 3곳까지만 부른다. 20초 예산 안에서 병렬로
+     후보 수가 많은 시군구부터 최대 3곳까지만 부른다. 25초 예산 안에서 병렬로
      돌리되 무한정 늘릴 수는 없고, 자른 사실은 아래에서 밝힌다. */
   const candidateDistricts = (() => {
     const counts = new Map<
@@ -3816,7 +4014,7 @@ export async function recoverTrip(
     .sort((a, b) => a.evidenceGaps.length - b.evidenceGaps.length);
 
   const continuityDeadlineAt =
-    execution.deadlineAt ?? Date.now() + 18_000;
+    execution.deadlineAt ?? Date.now() + 23_000;
 
   /* Verifying the shortlist in sequence made the response time the sum of
      three candidates rather than roughly one. Each candidate waits on a
@@ -3827,8 +4025,8 @@ export async function recoverTrip(
      Failures stay per-candidate — one that cannot be verified drops out
      without taking the others with it. */
   const continuityCandidates: WorkingCandidate[] = [];
-  /* 공식 분류를 순환해 최대 12곳을 검증한다. 각 후보는 실제 경로와 운영시간을
-     모두 통과해야 하며, 20초 요청 신호가 끝나면 미검증 후보는 결과에 넣지 않는다. */
+  /* 공식 분류를 순환해 최대 24곳을 검증한다. 각 후보는 실제 경로와 운영시간을
+     모두 통과해야 하며, 25초 요청 신호가 끝나면 미검증 후보는 결과에 넣지 않는다. */
   const shortlist = diversifyCandidatesByCategory(
     accessibilityVerified,
   );

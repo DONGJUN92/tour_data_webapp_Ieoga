@@ -53,6 +53,32 @@ function pushPoint(
 
 const MAX_SEGMENTS = 8;
 
+/* TMAP 예측 경로는 `predictionTime`을 `yyyy-MM-ddTHH:mm:ss+0900`으로만 받는다.
+   `Date.prototype.toISOString()`이 주는 `2026-08-14T03:24:54.667Z`를 보내면 좌표가
+   멀쩡해도 `code 1100 요청 데이터 오류`로 400이 돌아온다. 예전 구현이 그 값을
+   그대로 보냈고, 엔진은 자차 조회에 항상 출발시각을 넘기므로 **자차 경로가 한 번도
+   성공한 적이 없었다** — 모든 후보가 ROUTE_UNAVAILABLE로 떨어져 자차·택시를 고르면
+   결과가 늘 0건이었다. 2026-08-14 실호출로 두 형식의 차이를 확인했다. */
+function tmapPredictionTime(iso: string): string {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return iso;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date(timestamp))
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+0900`;
+}
+
 type Segment = {
   distanceMeters: number;
   durationSeconds: number;
@@ -95,9 +121,11 @@ async function fetchSegment(
           destSearchFlag: "03",
         },
         /* TMAP's prediction enum is counter-intuitive: `arrival` means the
-           supplied predictionTime is the departure time. */
+           supplied predictionTime is the departure time. 2026-08-14 실측으로
+           확인 — `arrival`로 12:24를 보내면 응답의 `departure`가 12:24이고,
+           `departure`로 보내면 응답의 `arrival`이 12:24다. */
         predictionType: "arrival",
-        predictionTime: departureAt,
+        predictionTime: tmapPredictionTime(departureAt),
         searchOption: "00",
         trafficInfo: "Y",
         tollgateCarType: "car",

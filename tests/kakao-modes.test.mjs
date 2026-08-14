@@ -229,22 +229,40 @@ function request(travelMode, offset = 0) {
   };
 }
 
-test("대중교통 왕복은 미래 복귀 배차를 검증할 수 없어 실패 폐쇄한다", async () => {
+/* 예전 이름은 "대중교통 왕복은 미래 복귀 배차를 검증할 수 없어 실패 폐쇄한다"
+   였고, 실제로 그렇게 동작했다. 그런데 빈 시간 추천은 복귀 구간에 **항상**
+   도착 마감을 넘긴다. 그래서 이 규칙은 미래 조회만이 아니라 대중교통을 고른
+   모든 요청을 0건으로 만들었다 — 같은 시각·같은 장소에서 자전거는 결과가
+   나오는데 대중교통만 언제나 비어 있었고, 사용자는 그 이유를 알 수 없었다.
+
+   한 수단을 영구히 비워 두는 것은 정직함이 아니다. 지금은 경로를 받아 쓰되
+   소요시간이 조회 시점 시각표 기준이라는 것을 카드까지 들고 간다. */
+test("대중교통 왕복도 결과를 내고, 시각표 기준을 밝힌다", async () => {
   await withKakaoUpstream(
     async (calls) => {
       const { recoverTrip } = await import("../lib/recovery/engine.ts");
       const currentTransit = request("transit", 0.05);
       currentTransit.openWindow.departureAt = new Date().toISOString();
       const result = await recoverTrip(currentTransit, "mode-transit");
-      assert.equal(result.options.length, 0);
       assert.ok(
-        result.rejectionSummary.some(
-          (entry) => entry.reasonCode === "ROUTE_UNAVAILABLE",
-        ),
+        result.options.length >= 1,
+        `대중교통 후보가 다시 0건이다: ${JSON.stringify(result.rejectionSummary)}`,
       );
       assert.ok(calls.transit >= 1, "카카오 대중교통을 호출하지 않았다");
       assert.equal(calls.tmapWalk, 0, "대중교통인데 TMAP 보행을 호출했다");
       assert.equal(calls.tmapCar, 0, "대중교통인데 TMAP 자동차를 호출했다");
+
+      const option = result.options[0];
+      assert.equal(
+        option.continuityProof.routeEvidence.provider,
+        "kakao_transit",
+      );
+      /* 배차에 따라 달라지는 값이라는 단서는 남아야 한다. 도보·자차와 같은
+         등급으로 보여 주면 도착 시각을 보증하는 셈이 된다. */
+      assert.ok(
+        option.why.some((line) => /배차|시각표/.test(line)),
+        `배차 단서가 사라졌다: ${JSON.stringify(option.why)}`,
+      );
     },
     { offset: 0.05 },
   );

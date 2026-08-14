@@ -69,6 +69,13 @@ export type WalkingRouteEvidence =
       /* 배차에 따라 달라지는 소요시간인가. 참이면 도착 시각을 확정값처럼
          제시해서는 안 된다. */
       scheduleDependent?: boolean;
+      /* 요청한 시각과 제공자가 실제로 평가한 시각이 다른가. 카카오 대중교통은
+         좌표만 받고 미래 시각표를 모르므로, 미래 출발이나 도착 마감을 요청해도
+         돌아오는 값은 **조회 시점 시각표** 기준이다. 예전에는 그 사실 때문에
+         후보를 통째로 탈락시켰는데, 그러면 대중교통을 고른 여행자는 언제나
+         0건을 받았다. 값을 쓰되 이 표식을 함께 올려 화면이 "조회 시점 시각표
+         기준"이라고 말할 수 있게 한다. 조용히 확정값인 척하지 않는다. */
+      assumesCurrentTimetable?: boolean;
       /* Whether the provider actually evaluated a requested clock time. */
       timeBasis: RouteTimeBasis;
       requestedDepartureAt?: string;
@@ -125,11 +132,21 @@ function cacheKey(
   mode: TravelMode,
   departureAt?: string,
   arriveBy?: string,
+  transitAssumesCurrentTimetable = false,
 ) {
   /* Walking and bicycle providers expose geometry/pace, not a traffic or
      timetable prediction. Their result is explicitly time-independent. */
   if (mode === "walk" || mode === "bicycle") {
     return `${mode}:static:${routeKey(points)}`;
+  }
+  /* Kakao transit reads coordinates only, so two requests for the same pair
+     return the same duration whatever clock time was asked for. Keying by the
+     requested instant would re-fetch an identical answer for every candidate.
+     What must not be shared is the disclosure: a result computed for a future
+     departure carries the "current timetable" caveat and a live one does not,
+     so that distinction — and only that — stays in the key. */
+  if (mode === "transit") {
+    return `transit:${transitAssumesCurrentTimetable ? "assumed" : "live"}:${routeKey(points)}`;
   }
   return `${mode}:${departureAt ?? "provider-now"}:${arriveBy ?? "no-deadline"}:${routeKey(points)}`;
 }
@@ -201,29 +218,31 @@ export async function getRoute(
   }
 
   /* Kakao transit accepts only coordinates and cannot prove a future
-     timetable. Arrive-by constraints need temporal routing too: a current
-     transit result cannot honestly prove a later appointment. */
-  if (
+     timetable. This used to fail closed — any future departure or arrive-by
+     deadline returned `unavailable` before the provider was even called.
+
+     The open-window flow always supplies an arrive-by deadline for the return
+     leg, so that guard rejected **every** transit candidate on every request:
+     picking 대중교통 could not produce a single result, while 자전거 with the
+     same inputs worked. Failing closed did not make the product more honest —
+     it made one travel mode permanently empty.
+
+     So the route is fetched and the assumption is disclosed instead. The
+     duration reflects the timetable at the moment of the query; the flag below
+     travels with the evidence so the card can say exactly that, and
+     `scheduleDependent` still keeps the arrival from being shown as fixed. */
+  const transitAssumesCurrentTimetable =
     mode === "transit" &&
     ((requestedDepartureAt &&
       Date.parse(requestedDepartureAt) > Date.now() + 60_000) ||
-      Boolean(requestedArriveBy))
-  ) {
-    return {
-      status: "unavailable",
-      provider: "kakao_transit",
-      reason:
-        "The transit provider cannot verify the requested future departure or arrival deadline.",
-      calculatedAt,
-      attribution,
-    };
-  }
+      Boolean(requestedArriveBy));
 
   const key = cacheKey(
     points,
     mode,
     requestedDepartureAt,
     requestedArriveBy,
+    transitAssumesCurrentTimetable,
   );
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
@@ -320,6 +339,7 @@ export async function getRoute(
           transfers: kakao.transfers,
           transitSteps: kakao.transitSteps,
           scheduleDependent: kakao.scheduleDependent,
+          assumesCurrentTimetable: transitAssumesCurrentTimetable || undefined,
           timeBasis:
             mode === "transit"
               ? "provider_current_schedule"

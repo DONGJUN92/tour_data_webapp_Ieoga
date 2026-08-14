@@ -36,7 +36,11 @@ export const dynamic = "force-dynamic";
    error instead of an answer. Healthy requests still finish in about three to
    five seconds — the wider ceiling only changes what happens on the tail,
    where returning a verified answer late beats returning nothing. */
-const RECOVERY_RESPONSE_BUDGET_MS = 20_000;
+/* 25초로 넓혔다. 검증 풀을 18곳에서 36곳으로 키운 만큼, 예전 예산이면 늘어난
+   후보가 검증되기 전에 마감이 먼저 온다 — 후보만 늘리고 예산을 그대로 두면
+   "응답 시간 예산 안에서 N곳만 검증했습니다" 경고가 대신 늘어난다. 정상 요청은
+   여전히 3~5초에 끝나고, 이 수치는 꼬리에서만 의미가 있다. */
+const RECOVERY_RESPONSE_BUDGET_MS = 25_000;
 const PERSISTENCE_COMMIT_RESERVE_MS = 2_000;
 const MAX_OPEN_WINDOW_MINUTES = 1_440;
 
@@ -64,8 +68,8 @@ export async function POST(request: NextRequest) {
           code: "RECOVERY_DEADLINE_EXCEEDED",
           message:
             persistenceStatus === "unknown"
-              ? "20초 응답 기한을 넘겨 저장 결과를 확정할 수 없습니다. 이 결과를 적용하지 말고 요청 ID로 상태를 확인하거나 잠시 후 다시 시도해 주세요."
-              : "20초 응답 기한 안에 검증을 마치지 못해 저장을 시작하지 않았습니다. 확인하지 않은 후보는 표시하지 않습니다. 잠시 후 다시 시도해 주세요.",
+              ? "25초 응답 기한을 넘겨 저장 결과를 확정할 수 없습니다. 이 결과를 적용하지 말고 요청 ID로 상태를 확인하거나 잠시 후 다시 시도해 주세요."
+              : "25초 응답 기한 안에 검증을 마치지 못해 저장을 시작하지 않았습니다. 확인하지 않은 후보는 표시하지 않습니다. 잠시 후 다시 시도해 주세요.",
         },
       },
       { status: 504 },
@@ -514,7 +518,7 @@ export async function POST(request: NextRequest) {
 }
 
 /* 검증을 통과한 입력을 실행하고 저장하는 공통 구간. 일정 복구와 빈 시간 추천이
-   서로 다른 입구를 갖지만, 20초 기한·원자 저장·미저장 시 결과 미제공이라는
+   서로 다른 입구를 갖지만, 25초 기한·원자 저장·미저장 시 결과 미제공이라는
    동일한 보장을 받아야 하므로 이 부분을 복제하지 않고 공유한다. */
 async function runRecovery(params: {
   input: RecoveryRequest;

@@ -4,11 +4,21 @@ import {
 } from "./schema";
 
 /* One reference-time contract is shared by the first-party, embed and partner
-   recovery routes. Six hours is deliberately the same horizon that the
-   open-window flow already enforced: routing and hourly weather forecasts are
-   useful inside that window, while a longer horizon would present volatile
-   operating and transit information as if it were dependable. */
-export const MAX_REFERENCE_TIME_FUTURE_MINUTES = 360;
+   recovery routes.
+
+   A six-hour ceiling used to live here. It was justified as the horizon where
+   "routing and hourly weather forecasts are useful", but that conflated two
+   different questions. Whether a place is open at the arrival time is decided
+   by 한국관광공사 operating hours and rest days, which are not time-bounded at
+   all, and TMAP's car prediction answers ninety days out (measured
+   2026-08-14). Only the hourly weather forecast is genuinely limited, to about
+   three days.
+
+   So the ceiling is gone. What a longer horizon changes is not whether the
+   answer is trustworthy but which evidence backs it, and the engine records
+   that per source instead of refusing the request. The past tolerance stays:
+   a reference time behind the server clock is a contradiction, not a
+   preference. */
 export const REFERENCE_TIME_PAST_TOLERANCE_MS = 60_000;
 
 export type RecoveryReferenceTime = {
@@ -19,7 +29,6 @@ export type RecoveryReferenceTime = {
 export type RecoveryReferenceTimeError = {
   code:
     | "REFERENCE_TIME_IN_PAST"
-    | "REFERENCE_TIME_TOO_FAR"
     | "REFERENCE_TIME_CONFLICT"
     | "REFERENCE_TIME_CONTRACT_INVALID";
   message: string;
@@ -110,21 +119,7 @@ export function resolveRecoveryReferenceTime(
       error: {
         code: "REFERENCE_TIME_IN_PAST",
         message:
-          "조회 기준 시간은 현재 시각 또는 현재부터 6시간 이내로 선택해 주세요.",
-        serverTime,
-      },
-    };
-  }
-  if (
-    referenceMs >
-    serverMs + MAX_REFERENCE_TIME_FUTURE_MINUTES * 60_000
-  ) {
-    return {
-      success: false,
-      error: {
-        code: "REFERENCE_TIME_TOO_FAR",
-        message:
-          "조회 기준 시간은 현재부터 최대 6시간 뒤까지 선택할 수 있습니다.",
+          "조회 기준 시간이 이미 지났습니다. 현재 시각이나 이후 시각을 선택해 주세요.",
         serverTime,
       },
     };

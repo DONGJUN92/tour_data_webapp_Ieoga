@@ -80,10 +80,21 @@ test("운영 정보 상자는 가로 전체를 쓰고, 검증 칸은 붐빔이 �
   assert.ok(!/ko: "붐빔 정도"/.test(flow), "붐빔이 두 곳에 중복으로 남아 있다");
 });
 
-test("연락처는 버리지 않고 행동 목록으로 옮긴다", async () => {
+/* 연락처는 한 번 더 옮겼다. 예전에는 근거 불릿의 문장이었는데("운영시간을 도착
+   전에 확인하려면 …로 문의할 수 있습니다"), 전화번호는 근거가 아니라 장소
+   정보이고 문장으로 감싸면 눌러야 할 번호가 문장 속에 묻힌다. 지금은
+   `travelerFacts`의 "문의" 항목이다. 지켜야 할 것은 문장이 아니라 **버리지
+   않는다**는 사실이므로, 그것을 확인한다. */
+test("연락처는 버리지 않고 여행 정보 항목으로 옮긴다", async () => {
   const engine = await src("../lib/recovery/engine.ts");
-  assert.match(engine, /const availabilityContact = candidate\.availability\?\.contact;/);
-  assert.match(engine, /운영시간을 도착 전에 확인하려면 \$\{availabilityContact\}/);
+  assert.match(engine, /availability\?\.contact/);
+  const facts = engine.slice(
+    engine.indexOf("function buildTravelerFacts"),
+    engine.indexOf("function buildWhy"),
+  );
+  assert.match(facts, /code: "contact"/);
+  assert.match(facts, /value: availability\.contact/);
+  assert.match(facts, /prominent: true/);
 });
 
 test("모든 카드에 똑같이 붙던 목적 연속성 문장은 비운다", async () => {

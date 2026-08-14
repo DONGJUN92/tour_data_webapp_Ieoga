@@ -184,22 +184,28 @@ test("자차를 고르면 자동차 경로 제공자로 계산하고 도보를 �
       option.continuityProof.routeEvidence.attribution,
       /TMAP 자동차/,
     );
-    /* 4,000m를 8분으로 왔으므로 문장이 보행이라고 말해서는 안 된다. */
-    assert.ok(
-      option.why.some((line) => line.includes("자동차 경로로")),
-      `수단이 문장에 드러나지 않았다: ${JSON.stringify(option.why)}`,
-    );
+    /* 4,000m를 8분으로 왔으므로 결과가 보행이라고 말해서는 안 된다. 수단은
+       이제 근거 문장이 아니라 경로 제공자와 카드 타임라인이 밝힌다 — 같은
+       숫자를 문장으로 한 번 더 적으면 카드만 길어졌다. */
     assert.ok(
       !option.why.some((line) => line.includes("보행 경로로")),
       "자차 결과에 보행 경로라고 적혀 있다",
     );
+
+    /* 택시 추정값은 숨기지 않고 **무엇의 값인지 밝혀서** 보여 준다. 예전에는
+       "자차 비용으로 표시하지 않습니다"라고만 적고 정작 여행자가 알고 싶어 한
+       숫자는 주지 않았다. 지금은 라벨이 택시요금이라고 말하고, 자차 비용과
+       다르다는 단서를 값에 붙여 둔다. */
+    const taxi = option.travelerFacts.find((fact) => fact.code === "taxi_fare");
+    assert.ok(taxi, "택시 추정값을 아예 버렸다");
+    assert.match(taxi.label, /택시/);
+    assert.match(taxi.value, /8,420원/);
+    assert.match(taxi.value, /자차 유류비·주차비는 별도/);
     assert.ok(
-      option.why.some((line) => line.includes("자차 비용으로 표시하지 않습니다")),
-      "택시 추정값을 자차 비용과 분리해 설명하지 않았다",
-    );
-    assert.ok(
-      !option.why.some((line) => line.includes("8,420원")),
-      "택시 추정값을 자차 비용처럼 숫자로 노출했다",
+      !option.travelerFacts.some(
+        (fact) => fact.code !== "taxi_fare" && fact.value.includes("8,420원"),
+      ),
+      "택시 추정값이 자차 비용 자리에도 적혀 있다",
     );
   });
 });

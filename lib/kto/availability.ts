@@ -1,6 +1,27 @@
 import { getTourismIntro } from "@/lib/kto/adapters";
 import type { KtoAudit, KtoItem } from "@/lib/kto/types";
 
+/* 여행자가 그 장소에 대해 실제로 궁금해하는 것들. `detailIntro2` 한 번의 응답에
+   이미 들어 있는데 예전에는 운영시간·휴무·연락처만 꺼내고 나머지를 버렸다.
+   식당 카드에 대표메뉴가 없고 주차 가능 여부가 없으면, 화면은 "검증했다"는 말만
+   하고 정작 갈지 말지 정하는 데 필요한 것은 주지 않는다. 추가 호출은 없다 —
+   같은 응답에서 더 읽을 뿐이다. */
+export type PlaceFacts = {
+  /* 식당(39)의 대표메뉴·취급메뉴. */
+  signatureMenu?: string;
+  menu?: string;
+  parking?: string;
+  fee?: string;
+  reservation?: string;
+  creditCard?: string;
+  petFriendly?: string;
+  /* 숙박(32)의 입·퇴실 시각. 운영시간 대신 이 두 값이 답이다. */
+  checkIn?: string;
+  checkOut?: string;
+  /* 행사(15) 기간. */
+  eventPeriod?: string;
+};
+
 export type AvailabilityEvidence = {
   status:
     | "confirmed_open"
@@ -10,6 +31,9 @@ export type AvailabilityEvidence = {
   operatingHours?: string;
   restDate?: string;
   contact?: string;
+  /* 운영 판정과 무관하게 늘 채운다. 문을 닫는 곳이어도 여행자는 "몇 시에 여는
+     곳인지" "대표메뉴가 무엇인지"를 보고 다음 날을 고를 수 있다. */
+  placeFacts?: PlaceFacts;
   checkedAt: string;
   note: string;
   /* 같은 설명의 영어 표기. 영어 화면에서 운영 판정만 한국어로 남지 않게 한다. */
@@ -161,6 +185,69 @@ const CONTACT_FIELDS = [
   "infocenterlodging",
 ] as const;
 
+/* 유형별 필드 이름은 운영시간과 같은 사정이다 — 하나만 읽으면 값이 있는 유형에서
+   빈칸이 된다. 2026-08-04 실표본에서 확인한 이름을 유형별로 모두 넣는다. */
+const FACT_FIELDS = {
+  signatureMenu: ["firstmenu"],
+  menu: ["treatmenu"],
+  parking: [
+    "parking",
+    "parkingculture",
+    "parkingleports",
+    "parkingshopping",
+    "parkingfood",
+    "parkinglodging",
+    "parkingfee",
+    "parkingfeeculture",
+    "parkingleisure",
+  ],
+  /* `usetimefestival`은 이름과 달리 행사의 **이용요금**이다(실표본 `"무료"`).
+     운영시간 목록에 두지 않는 이유가 그것이고, 요금 자리에서는 제자리다.
+     `usetimeleports`는 넣지 않는다 — 그쪽은 이름대로 운영시간이라, 같은
+     응답에 `usetime`이 함께 오면 요금 칸에 운영시간이 적힌다. */
+  fee: ["usefee", "usetimefestival"],
+  reservation: [
+    "reservationurl",
+    "reservationlodging",
+    "reservationfood",
+    "bookingplace",
+  ],
+  creditCard: [
+    "chkcreditcard",
+    "chkcreditcardculture",
+    "chkcreditcardfood",
+    "chkcreditcardshopping",
+    "chkcreditcardleports",
+  ],
+  petFriendly: ["chkpet", "chkpetculture", "chkpetleports", "chkpetshopping"],
+  checkIn: ["checkintime"],
+  checkOut: ["checkouttime"],
+} as const satisfies Record<string, readonly string[]>;
+
+/* `usetimeleports`는 레포츠에서 운영시간으로도 읽는 필드다. 이용요금 자리에서는
+   운영시간이 이미 그 값을 쓴 경우 중복으로 적지 않는다. */
+function placeFacts(item: KtoItem, operatingHours: string): PlaceFacts {
+  const facts: PlaceFacts = {};
+  for (const [key, fields] of Object.entries(FACT_FIELDS)) {
+    const value = text(item, [...fields]);
+    if (!value) continue;
+    if (value === operatingHours) continue;
+    facts[key as keyof PlaceFacts] = value;
+  }
+  const eventStart = text(item, ["eventstartdate"]);
+  const eventEnd = text(item, ["eventenddate"]);
+  if (eventStart && eventEnd) {
+    const readable = (value: string) => {
+      const digits = value.replace(/\D/g, "");
+      return /^\d{8}$/.test(digits)
+        ? `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6, 8)}`
+        : value;
+    };
+    facts.eventPeriod = `${readable(eventStart)} ~ ${readable(eventEnd)}`;
+  }
+  return facts;
+}
+
 function isRestDay(restDate: string, now = new Date()): boolean {
   if (!restDate) return false;
   const currentDay = DAY_NAMES[koreaDate(now).getDay()];
@@ -180,6 +267,8 @@ export function evaluateAvailabilityItem(
   const operatingHours = text(item, [...OPERATING_HOURS_FIELDS]);
   const restDate = text(item, [...REST_DATE_FIELDS]);
   const contact = text(item, [...CONTACT_FIELDS]);
+  const rawFacts = placeFacts(item, operatingHours);
+  const facts = Object.keys(rawFacts).length ? rawFacts : undefined;
   const eventStart = compactDate(text(item, ["eventstartdate"]));
   const eventEnd = compactDate(text(item, ["eventenddate"]));
   const visitStartDay = currentDateNumber(visitStart);
@@ -201,6 +290,7 @@ export function evaluateAvailabilityItem(
       operatingHours: operatingHours || undefined,
       restDate: restDate || undefined,
       contact: contact || undefined,
+      placeFacts: facts,
       checkedAt,
       note:
         endsAfterEvent
@@ -232,6 +322,7 @@ export function evaluateAvailabilityItem(
       operatingHours,
       restDate: restDate || undefined,
       contact: contact || undefined,
+      placeFacts: facts,
       checkedAt,
       note: hoursLine(operatingHours, restDate),
       noteEn: hoursLineEn(operatingHours, restDate),
@@ -270,6 +361,7 @@ export function evaluateAvailabilityItem(
       operatingHours,
       restDate: restDate || undefined,
       contact: contact || undefined,
+      placeFacts: facts,
       checkedAt,
       note: hoursLine(operatingHours, restDate),
       noteEn: hoursLineEn(operatingHours, restDate),
@@ -315,6 +407,7 @@ export function evaluateAvailabilityItem(
         operatingHours,
         restDate: restDate || undefined,
         contact: contact || undefined,
+        placeFacts: facts,
         checkedAt,
         note: [
           partial
@@ -338,6 +431,7 @@ export function evaluateAvailabilityItem(
       operatingHours: operatingHours || undefined,
       restDate: restDate || undefined,
       contact: contact || undefined,
+      placeFacts: facts,
       checkedAt,
       /* **원문을 그대로 보여 준다.**
          예전 문구는 "운영시간은 있지만 자동으로 읽을 수 없는 형식입니다.
@@ -360,6 +454,7 @@ export function evaluateAvailabilityItem(
   return {
     status: "unknown",
     contact: contact || undefined,
+    placeFacts: facts,
     checkedAt,
     /* 여기는 정말로 값이 없는 경우다. 그때도 연락처가 있으면 함께 준다. */
     note: contact

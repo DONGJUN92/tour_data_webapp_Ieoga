@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import type { Language } from "./product-app-model";
 import {
-  MAX_REFERENCE_TIME_FUTURE_MINUTES,
   formatReferenceTime,
   koreaDateTimeLocalValue,
+  referenceTimeCaveat,
   resolveReferenceTime,
   scheduledReferenceFromOffset,
   type ReferenceTimeMode,
@@ -44,7 +44,16 @@ export function ReferenceTimePicker({
   /* 서버와 첫 클라이언트 렌더가 같은 값으로 시작해야 분 경계에서도 hydration이
      안정적이다. 실제 검증 시계는 첫 사용자 동작에서 채운다. */
   const [nowMs, setNowMs] = useState(0);
+  /* 아무것도 누르지 않았는데 "현재 시각"이 이미 초록색으로 칠해져 있으면, 그
+     화면은 사용자가 하지 않은 선택을 했다고 말하는 것이다. 실제로 그렇게 읽혀서
+     "왜 누르지도 않았는데 골라져 있나"는 혼동이 나왔다. 동작은 그대로 두고 —
+     고르지 않으면 여전히 현재 시각으로 조회한다 — 표시만 실제로 누른 뒤에
+     칠한다. */
+  const [modeChosen, setModeChosen] = useState(false);
   const resolution = resolveReferenceTime(mode, localValue, language, nowMs);
+  const caveat = resolution.ok
+    ? referenceTimeCaveat(resolution.timestamp, language, nowMs)
+    : "";
   const helpId = `${idPrefix}-reference-help`;
   const errorId = `${idPrefix}-reference-error`;
   const inputId = `${idPrefix}-reference-datetime`;
@@ -78,9 +87,10 @@ export function ReferenceTimePicker({
           type="button"
           role="radio"
           aria-checked={mode === "now"}
-          className={mode === "now" ? styles.active : styles.choice}
+          className={modeChosen && mode === "now" ? styles.active : styles.choice}
           onClick={() => {
             setNowMs(Date.now());
+            setModeChosen(true);
             onModeChange("now");
           }}
         >
@@ -93,10 +103,13 @@ export function ReferenceTimePicker({
           type="button"
           role="radio"
           aria-checked={mode === "scheduled"}
-          className={mode === "scheduled" ? styles.active : styles.choice}
+          className={
+            modeChosen && mode === "scheduled" ? styles.active : styles.choice
+          }
           onClick={() => {
             const actionNowMs = Date.now();
             setNowMs(actionNowMs);
+            setModeChosen(true);
             if (
               !resolveReferenceTime(
                 "scheduled",
@@ -124,9 +137,9 @@ export function ReferenceTimePicker({
               type="datetime-local"
               value={localValue}
               min={koreaDateTimeLocalValue(nowMs - 60_000)}
-              max={koreaDateTimeLocalValue(
-                nowMs + MAX_REFERENCE_TIME_FUTURE_MINUTES * 60_000,
-              )}
+              /* 상한을 두지 않는다. 운영시간·휴무일은 시각과 무관하게 유효하고
+                 자동차 경로예측도 먼 미래를 답한다. 확인할 수 없는 것은 아래
+                 안내로 밝힌다. */
               step={60}
               aria-invalid={!resolution.ok}
               aria-describedby={`${helpId}${!resolution.ok ? ` ${errorId}` : ""}`}
@@ -168,10 +181,18 @@ export function ReferenceTimePicker({
               {resolution.message}
             </p>
           )}
+          {caveat && (
+            <p className={styles.caveat} role="status">
+              {caveat}
+            </p>
+          )}
           <button
             className={styles.reset}
             type="button"
-            onClick={() => onModeChange("now")}
+            onClick={() => {
+              setModeChosen(true);
+              onModeChange("now");
+            }}
           >
             {language === "en" ? "Return to current time" : "현재 시각으로 되돌리기"}
           </button>

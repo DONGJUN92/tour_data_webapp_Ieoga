@@ -828,16 +828,22 @@ test("원래 계획을 모르면 목적을 유지했다고 주장하지 않는�
         "none",
         "보존할 목적이 없으면 공사 API를 목적 근거로 표기하지 않아야 한다",
       );
-      assert.match(
-        option.purposePreservation.statement,
-        /목적 유지 여부는 판단하지 않았습니다/,
+      /* 예전에는 "목적 유지 여부는 판단하지 않았습니다"라는 문장이 있는지
+         봤다. 그 문장은 모든 카드에 똑같이 붙는 내부 판정 기록이라 지웠다.
+         지켜야 할 것은 문장이 아니라 **주장하지 않는다**는 사실이므로,
+         유지했다고 말하지 않는지를 확인한다. */
+      assert.ok(
+        !/목적을 (유지|보존)|같은 (관광|체험) 목적으로 이어/.test(
+          option.purposePreservation.statement,
+        ),
+        `보존할 목적이 없는데 유지했다고 주장했다: ${option.purposePreservation.statement}`,
       );
     }
     assert.ok(
-      result.warnings.some((warning) =>
-        warning.includes("목적 유지 여부는 판단하지 않았습니다"),
+      !result.warnings.some((warning) =>
+        /목적을 (유지|보존)했/.test(warning),
       ),
-      "화면 경고에도 같은 한계가 적혀야 한다",
+      "화면 경고에서도 목적 보존을 주장해서는 안 된다",
     );
   });
 });
@@ -997,11 +1003,19 @@ test("빈 시간 화면은 확인하지 못한 조건과 복귀 기준을 숨기
   assert.match(panel, /safety\.canApply/);
   assert.match(panel, /origin_return_route/);
   assert.match(panel, /복귀 근거/);
-  /* outbound를 뒤집어 썼다고 오인할 수 없도록 별도 복귀 조회의 제공자와
-     거리·확인 시각을 근거로 밝힌다. */
+  /* outbound를 뒤집어 썼다고 오인할 수 없도록 별도 복귀 조회의 제공자와 거리를
+     근거로 밝힌다. 카드가 요약·상세로 나뉜 뒤 이 근거는 상세보기 안에 있는데,
+     지우지 않고 한 겹 아래로 옮긴 것이므로 여전히 존재해야 한다. */
   assert.match(
     panel,
-    /복귀는 \$\{returnProviderLabel\(window\.returnProvider, language\)\}로 별도 확인했습니다/,
+    /복귀 근거 · \$\{returnProviderLabel\(window\.returnProvider, language\)\}/,
+  );
+  assert.match(panel, /returnDistanceMeters/);
+  /* 안전 경고만은 접지 않는다. 한 번 더 눌러야 보이면 경고가 아니다. */
+  const detailBlock = panel.slice(panel.indexOf("{expanded && ("));
+  assert.ok(
+    !detailBlock.includes("공식 확인 전에는 선택할 수 없습니다"),
+    "선택 불가 경고가 상세보기 안으로 숨었다",
   );
   assert.match(panel, /존재하지 않는 장소를 만들어 추천하지는 않습니다/);
   /* 실패 폐쇄로 제외한 후보의 이유와 수를 결과 아래에 밝혀야 한다. */

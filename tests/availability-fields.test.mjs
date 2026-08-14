@@ -175,8 +175,28 @@ test("원장에 적는 필드 목록이 실제로 읽는 필드를 포함한다"
       `기여 원장의 fieldsUsed에 ${field}가 없다`,
     );
   }
+  /* 원장은 이제 `usetimefestival`도 적는다 — 행사의 **이용요금**으로 읽기
+     때문이고, 원장은 읽은 것을 전부 적어야 한다. 지켜야 할 것은 원장의 목록이
+     아니라 그 필드를 **운영시간으로 읽지 않는다**는 사실이므로, 판정이 실제로
+     쓰는 목록에서 확인한다. 이름과 달리 값이 요금 문자열("무료")이라 운영시간
+     자리에 들어가면 그대로 시간표인 척한다. */
+  const availability = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../lib/kto/availability.ts", import.meta.url), "utf8"),
+  );
+  const hoursList = availability.slice(
+    availability.indexOf("const OPERATING_HOURS_FIELDS"),
+    availability.indexOf("const REST_DATE_FIELDS"),
+  );
   assert.ok(
-    !intro.slice(0, intro.indexOf("],")).includes('"usetimefestival"'),
-    "이용요금 필드를 운영시간 근거로 원장에 적어서는 안 된다",
+    !hoursList.includes('"usetimefestival"'),
+    "이용요금 필드를 운영시간 판정에 써서는 안 된다",
+  );
+  const feeList = availability.slice(
+    availability.indexOf("  fee: ["),
+    availability.indexOf("  reservation: ["),
+  );
+  assert.ok(
+    !feeList.includes('"usetimeleports"'),
+    "레포츠 운영시간 필드를 이용요금으로 읽어서는 안 된다",
   );
 });

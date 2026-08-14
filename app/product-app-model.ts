@@ -163,6 +163,18 @@ export type PlaceSearchResult = {
   matchScore?: number;
 };
 
+/* 서버가 보내는 `travelerFacts` 한 칸. 운영시간·대표메뉴처럼 그 장소를 고를 때
+   보는 값이며, 검증 서술(`why`)과는 다른 자료다. 화면이 요약과 상세를 나눌 수
+   있도록 `prominent`가 어느 쪽에 놓일지를 서버에서 정해 준다. */
+export type TravelerFact = {
+  code: string;
+  label: string;
+  labelEn: string;
+  value: string;
+  valueEn?: string;
+  prominent?: boolean;
+};
+
 export type RecoveryOption = {
   id: string;
   strategyLabel?: string;
@@ -247,6 +259,7 @@ export type RecoveryOption = {
     statement?: string;
     statementEn?: string;
   };
+  travelerFacts?: TravelerFact[];
   why?: string[];
   whyEn?: string[];
   sources?: unknown[];

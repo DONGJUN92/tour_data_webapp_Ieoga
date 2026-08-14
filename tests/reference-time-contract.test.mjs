@@ -99,7 +99,7 @@ test("현재 시각 보정은 같은 다음 장소 시각만 옮기고 더 늦�
   assert.equal(preserved.input.openWindow.nextPlace.arriveBy, later);
 });
 
-test("미래 가정 시각은 6시간 안에서 경로·창의 공통 출발 시각이 된다", async () => {
+test("미래 가정 시각은 경로·창의 공통 출발 시각이 된다", async () => {
   const { recoveryRequestSchema } = await import("../lib/recovery/schema.ts");
   const { resolveRecoveryReferenceTime } = await import(
     "../lib/recovery/reference-time.ts"
@@ -123,7 +123,7 @@ test("미래 가정 시각은 6시간 안에서 경로·창의 공통 출발 시
   assert.equal(result.input.openWindow.departureAt, at);
 });
 
-test("과거·6시간 초과·경로별 시각 충돌은 fail-closed 한다", async () => {
+test("과거와 경로별 시각 충돌은 fail-closed 하고, 먼 미래는 통과시킨다", async () => {
   const { recoveryRequestSchema } = await import("../lib/recovery/schema.ts");
   const { resolveRecoveryReferenceTime } = await import(
     "../lib/recovery/reference-time.ts"
@@ -155,11 +155,30 @@ test("과거·6시간 초과·경로별 시각 충돌은 fail-closed 한다", as
   assert.equal(past.success, false);
   assert.equal(past.error.code, "REFERENCE_TIME_IN_PAST");
 
-  const tooFar = resolveAt(
-    new Date(server.getTime() + 361 * 60_000).toISOString(),
+  /* 6시간 상한은 없앴다. 서버도 먼 미래를 거절하지 않는다 — 도착 시각이
+     운영시간 안인지가 판정을 가르고, 그 원천은 시각과 무관하게 유효하다.
+     자유 시간의 끝은 그 가정 시각에서 다시 재야 하므로 함께 옮겨 보낸다. */
+  const nextWeekAt = new Date(
+    server.getTime() + 7 * 24 * 60 * 60_000,
+  ).toISOString();
+  const farFuture = resolveRecoveryReferenceTime(
+    recoveryRequestSchema.parse(
+      openWindowRequest(server, {
+        referenceTime: { mode: "assumed", at: nextWeekAt },
+        availableMinutes: 180,
+        openWindow: {
+          departureAt: nextWeekAt,
+          availableUntil: new Date(
+            Date.parse(nextWeekAt) + 180 * 60_000,
+          ).toISOString(),
+          plannedStayMinutes: 60,
+        },
+      }),
+    ),
+    server,
   );
-  assert.equal(tooFar.success, false);
-  assert.equal(tooFar.error.code, "REFERENCE_TIME_TOO_FAR");
+  assert.equal(farFuture.success, true, "다음 주 조회를 서버가 막았다");
+  assert.equal(farFuture.referenceTime.at, nextWeekAt);
 
   const at = new Date(server.getTime() + 2 * 60 * 60_000).toISOString();
   const conflict = resolveAt(

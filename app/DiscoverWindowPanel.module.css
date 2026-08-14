@@ -699,6 +699,89 @@
   outline-offset: 2px;
 }
 
+/* 운영시간·대표메뉴처럼 "갈지 말지"를 실제로 가르는 값. 문장이 아니라 표로
+   둔다 — 라벨과 값이 붙어 있으면 눈이 필요한 줄만 골라 읽을 수 있고, 같은
+   정보를 문장으로 풀었을 때보다 세 배쯤 짧다. */
+.factGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.fact {
+  min-width: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.fact dt {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fact dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+  /* 공사 원문은 줄바꿈을 담고 오는 경우가 있다(계절별 운영시간). 한 줄로
+     이어 붙이면 어느 시간이 어느 기간의 것인지 세어 가며 읽어야 한다. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.cardActions > * {
+  flex: 1 1 160px;
+  margin-top: 0 !important;
+}
+
+/* 상세보기. 근거를 지우지 않고 한 겹 아래로 옮긴 것이므로, 그 사실이 보이게
+   같은 폭의 버튼으로 둔다. */
+.detailToggle {
+  min-height: 48px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.detailToggle:hover {
+  background: var(--canvas);
+}
+
+.detailToggle:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.detail {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.detailNote {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 /* 찾은 곳을 일정으로 가져가는 버튼. 이 카드의 주 동작은 아니므로 테두리만
    두되, 손가락으로 누를 크기는 지킨다. */
 .planFromPlace {

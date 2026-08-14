@@ -34,6 +34,7 @@ import {
   type PlaceSearchResult,
   type RecoveryOption,
   type RecoveryResponse,
+  type TravelerFact,
   type TravelMode,
   filterOptionsByTourismCategory,
   sortSimpleOptions,
@@ -267,6 +268,13 @@ export default function DiscoverWindowPanel({
 }: Props) {
   /* 직접 입력을 이 화면 안에서 편다. 탭을 바꾸면 지금 하려던 일이 사라진다. */
   const [manualOpen, setManualOpen] = useState(false);
+  /* 두 버튼 중 사용자가 실제로 누른 쪽. 예전에는 "현재 위치 자동 입력"이 처음부터
+     초록색이라, 아무것도 고르지 않은 화면이 이미 고른 것처럼 보였다. 기본값을
+     권하는 것과 선택된 상태로 보이는 것은 다르다 — 후자는 화면이 사실이 아닌
+     것을 말한다. */
+  const [originChoice, setOriginChoice] = useState<
+    "none" | "automatic" | "manual"
+  >("none");
   const [originSelectionOpen, setOriginSelectionOpen] = useState(false);
   const automaticLocationButtonRef = useRef<HTMLButtonElement>(null);
   const [referenceTimeMode, setReferenceTimeMode] =
@@ -355,6 +363,7 @@ export default function DiscoverWindowPanel({
 
   function beginOriginReselection() {
     setManualOpen(false);
+    setOriginChoice("none");
     setOriginSelectionOpen(true);
     /* 이전 위치로 계산한 추천은 새 위치를 고르는 순간 더 이상 유효하지 않다. */
     setResult(null);
@@ -368,6 +377,7 @@ export default function DiscoverWindowPanel({
 
   function requestAutomaticLocation() {
     setManualOpen(false);
+    setOriginChoice("automatic");
     setOriginSelectionOpen(false);
     onRequestLocation();
   }
@@ -596,7 +606,9 @@ export default function DiscoverWindowPanel({
               <button
                 ref={automaticLocationButtonRef}
                 type="button"
-                className={styles.primaryGhost}
+                className={
+                  originChoice === "automatic" ? styles.primaryGhost : undefined
+                }
                 onClick={requestAutomaticLocation}
                 disabled={geoState === "loading"}
               >
@@ -606,7 +618,16 @@ export default function DiscoverWindowPanel({
               </button>
               <button
                 type="button"
-                onClick={() => setManualOpen((open) => !open)}
+                className={
+                  originChoice === "manual" ? styles.primaryGhost : undefined
+                }
+                onClick={() =>
+                  setManualOpen((open) => {
+                    const next = !open;
+                    setOriginChoice(next ? "manual" : "none");
+                    return next;
+                  })
+                }
                 aria-expanded={manualOpen}
               >
                 {tr(
@@ -986,8 +1007,8 @@ export default function DiscoverWindowPanel({
           <p className={styles.empty} role="status">
             {tr(
               language,
-              "공식 관광정보와 실제 보행 경로를 확인하고 있습니다. 최대 20초까지 걸릴 수 있어요.",
-              "Checking official tourism data and a real walking route. This can take up to 20 seconds.",
+              "공식 관광정보와 실제 이동 경로를 확인하고 있습니다. 최대 25초까지 걸릴 수 있어요.",
+              "Checking official tourism data and real routes. This can take up to 25 seconds.",
             )}
           </p>
         )}
@@ -1192,286 +1213,15 @@ function DiscoverResults({
         ))}
       </div>
       <ul className={styles.cards}>
-        {visibleOptions.map((option, index) => {
-          const window = option.scheduleDiff?.openWindow;
-          /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
-             화면 상태(선택한 수단)로 쓰면 자차 조회가 실패해 보행으로 내려간
-             경우에도 "차로 12분"이라고 적힌다. */
-          /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다.
-             화면 상태(선택한 수단)로 쓰면 조회가 실패해 다른 수단으로 내려간
-             경우에도 잘못된 이름이 적힌다. */
-          const routeProvider = readText(
-            asRecord(asRecord(option.continuityProof)?.routeEvidence),
-            ["provider"],
-          );
-          const modeVerb =
-            routeProvider === "tmap_car"
-              ? { ko: "차로", noun: "자동차", en: "drive" }
-              : routeProvider === "kakao_transit"
-                ? { ko: "대중교통으로", noun: "대중교통", en: "transit" }
-                : routeProvider === "kakao_bicycle"
-                  ? { ko: "자전거로", noun: "자전거", en: "cycle" }
-                  : { ko: "걸어서", noun: "보행", en: "walk" };
-          const safety = optionApplicationSafety(option, language);
-          const isBlocked = !safety.canApply;
-          const resultGeneratedAtMs = Date.parse(result.generatedAt ?? "");
-          const windowStartAtMs = Date.parse(window?.windowStartAt ?? "");
-          const leavesLater =
-            Number.isFinite(resultGeneratedAtMs) &&
-            Number.isFinite(windowStartAtMs) &&
-            windowStartAtMs > resultGeneratedAtMs + 60_000;
-          return (
-            <li
-              key={option.id || option.contentId || `${option.title}-${index}`}
-              className={isBlocked ? styles.cardUnverified : styles.card}
-              data-testid="discover-option"
-            >
-              <div className={styles.cardHead}>
-                <div>
-                  {option.tourismCategory && (
-                    <span className={styles.categoryBadge}>
-                      {language === "en"
-                        ? option.tourismCategory.labelEn
-                        : option.tourismCategory.labelKo}
-                    </span>
-                  )}
-                  <p>{option.address || "주소 정보 확인 필요"}</p>
-                  <h3>{option.title}</h3>
-                </div>
-                {typeof option.score === "number" && (
-                  <span className={styles.score}>
-                    <b>{Math.round(option.score)}</b>
-                    <small>{tr(language, "기초 적합도", "Base fit")}</small>
-                  </span>
-                )}
-              </div>
-
-              {window && (
-                <ol className={styles.timeline}>
-                  <li>
-                    <span>
-                      {window.windowStartAt && leavesLater
-                        ? tr(
-                            language,
-                            `${formatIsoTime(window.windowStartAt, language)} 출발`,
-                            `Leave at ${formatIsoTime(window.windowStartAt, language)}`,
-                          )
-                        : tr(language, "지금 출발", "Leave now")}
-                    </span>
-                    <strong>
-                      {tr(
-                        language,
-                        `${modeVerb.ko} ${window.travelToMinutes}분`,
-                        `${window.travelToMinutes} min ${modeVerb.en}`,
-                      )}
-                    </strong>
-                  </li>
-                  <li>
-                    <span>
-                      {formatIsoTime(
-                        option.scheduleDiff?.replacementNode?.startAt,
-                        language,
-                      )}
-                      {tr(language, " 도착", " arrive")}
-                    </span>
-                    <strong>
-                      {tr(
-                        language,
-                        `${window.appliedStayMinutes}분 머물기`,
-                        `stay ${window.appliedStayMinutes} min`,
-                      )}
-                    </strong>
-                  </li>
-                  <li>
-                    <span>
-                      {window.returnBasis === "next_place_route"
-                        ? tr(language, "다음 장소로", "On to next place")
-                        : tr(language, "돌아오기", "Return")}
-                    </span>
-                    <strong>
-                      {tr(
-                        language,
-                        `${window.returnMinutes}분`,
-                        `${window.returnMinutes} min`,
-                      )}
-                    </strong>
-                  </li>
-                </ol>
-              )}
-
-              {(() => {
-                /* 엔진이 이미 좌표열을 보내는데 화면에서 쓰지 않아, 여행자는
-                   "몇 분"만 보고 그 길이 어디로 가는지 알 수 없었다. */
-                const geometry = (option.routeGeometry ?? []) as RoutePoint[];
-                if (geometry.length < 2) return null;
-                const markers: RouteMapMarker[] = [
-                  {
-                    point: geometry[0],
-                    label: tr(language, "현재 위치", "You are here"),
-                    kind: "origin",
-                  },
-                  {
-                    point: {
-                      latitude: option.latitude,
-                      longitude: option.longitude,
-                    },
-                    label: option.title,
-                    kind: "replacement",
-                  },
-                ];
-                /* 다음 장소를 알려 준 경우에는 경로의 끝이 그 장소다. */
-                if (window?.returnBasis === "next_place_route") {
-                  markers.push({
-                    point: geometry[geometry.length - 1],
-                    label: tr(language, "다음 장소", "Next place"),
-                    kind: "destination",
-                  });
-                }
-                return (
-                  <RouteMap
-                    geometry={geometry}
-                    markers={markers}
-                    mode={
-                      routeProvider === "tmap_car"
-                        ? "car"
-                        : routeProvider === "kakao_transit"
-                          ? "transit"
-                          : routeProvider === "kakao_bicycle"
-                            ? "bicycle"
-                            : "walk"
-                    }
-                    attribution={readText(
-                      asRecord(asRecord(option.continuityProof)?.routeEvidence),
-                      ["attribution"],
-                    )}
-                    language={language}
-                    summary={tr(
-                      language,
-                      `현재 위치에서 ${option.title}까지 ${modeVerb.noun} 경로 개요. ${window ? `이동 ${window.travelToMinutes}분, 체류 ${window.appliedStayMinutes}분, 복귀 ${window.returnMinutes}분.` : ""}`,
-                      `Route outline from your location to ${option.title}.`,
-                    )}
-                  />
-                );
-              })()}
-              {window && (
-                <p
-                  className={
-                    window.leftoverMinutes >= window.requiredBufferMinutes
-                      ? styles.fitGood
-                      : styles.fitTight
-                  }
-                >
-                  {window.returnBasis === "next_place_route"
-                    ? tr(
-                        language,
-                        `다음 장소 도착까지 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다.`,
-                        `${window.leftoverMinutes} min of slack remains before your next place, meeting the ${window.requiredBufferMinutes}-min safety reserve.`,
-                      )
-                    : tr(
-                        language,
-                        `복귀 뒤 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다. 복귀는 ${returnProviderLabel(window.returnProvider, language)}로 별도 확인했습니다.`,
-                        `${window.leftoverMinutes} min remains after returning, meeting the ${window.requiredBufferMinutes}-min safety reserve. The return leg was separately verified with ${returnProviderLabel(window.returnProvider, language)}.`,
-                      )}
-                </p>
-              )}
-
-              {window?.returnBasis === "origin_return_route" && (
-                <p className={styles.returnEvidence}>
-                  {tr(
-                    language,
-                    `복귀 근거 · ${returnProviderLabel(window.returnProvider, language)}${
-                      typeof window.returnDistanceMeters === "number"
-                        ? ` · ${window.returnDistanceMeters.toLocaleString("ko-KR")}m`
-                        : ""
-                    }${window.returnCalculatedAt ? ` · ${new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit" }).format(new Date(window.returnCalculatedAt))} 확인` : ""}`,
-                    `Return evidence · ${returnProviderLabel(window.returnProvider, language)}${
-                      typeof window.returnDistanceMeters === "number"
-                        ? ` · ${window.returnDistanceMeters.toLocaleString("en-US")} m`
-                        : ""
-                    }${window.returnCalculatedAt ? ` · checked ${new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", hour: "numeric", minute: "2-digit" }).format(new Date(window.returnCalculatedAt))} KST` : ""}`,
-                  )}
-                </p>
-              )}
-
-              {isBlocked && (
-                <section className={styles.gaps} role="alert">
-                  <strong>
-                    {tr(
-                      language,
-                      safety.availabilityStatus === "confirmed_closed"
-                        ? "이 시간에는 문을 열지 않아 선택할 수 없습니다"
-                        : "공식 확인 전에는 선택할 수 없습니다",
-                      safety.availabilityStatus === "confirmed_closed"
-                        ? "Closed during this visit — unavailable"
-                        : "Unavailable until required evidence is verified",
-                    )}
-                  </strong>
-                  <ul>
-                    {safety.reasons.map((reason, reasonIndex) => (
-                      <li key={`${option.id}-safety-${reasonIndex}`}>
-                        {reason}
-                      </li>
-                    ))}
-                  </ul>
-                  <p>
-                    {tr(
-                      language,
-                      "헛걸음과 다음 일정 지연을 막기 위해 이 후보는 일정에 넣을 수 없습니다.",
-                      "This option cannot be added because it could cause a wasted trip or delay the next appointment.",
-                    )}
-                  </p>
-                </section>
-              )}
-
-              {option.purposePreservation?.statement && (
-                <p className={styles.purpose}>
-                  {(language === "en" &&
-                    option.purposePreservation.statementEn) ||
-                    option.purposePreservation.statement}
-                </p>
-              )}
-
-              <ul className={styles.why}>
-                {((language === "en" && option.whyEn) || option.why || []).map(
-                  (reason, reasonIndex) => (
-                    <li key={reasonIndex}>{reason}</li>
-                  ),
-                )}
-              </ul>
-
-              {/* 찾은 곳을 일정으로 가져간다. 이 화면은 "지금 갈 곳"을 알려
-                  주고 끝나서, 마음에 드는 곳을 찾아도 다음 약속과 맞는지
-                  따져 보려면 이름을 외워 다른 탭에 다시 입력해야 했다. */}
-              {onPlanFromPlace && (
-                <button
-                  type="button"
-                  className={styles.planFromPlace}
-                  disabled={isBlocked}
-                  onClick={() =>
-                    safety.canApply &&
-                    onPlanFromPlace({
-                      title: option.title,
-                      address: option.address ?? "",
-                      contentTypeId: option.contentTypeId,
-                    })
-                  }
-                >
-                  {isBlocked
-                    ? tr(
-                        language,
-                        "안전 확인 전 추가 불가",
-                        "Cannot add until verified",
-                      )
-                    : tr(
-                        language,
-                        "이 곳을 일정에 넣기",
-                        "Add this to my plan",
-                      )}
-                </button>
-              )}
-            </li>
-          );
-        })}
+        {visibleOptions.map((option, index) => (
+          <DiscoverOptionCard
+            key={option.id || option.contentId || `${option.title}-${index}`}
+            option={option}
+            language={language}
+            generatedAt={result.generatedAt}
+            onPlanFromPlace={onPlanFromPlace}
+          />
+        ))}
       </ul>
 
       {/* 예전에는 "조건을 통과하지 못한 후보 N곳은 제시하지 않았습니다"라고
@@ -1549,5 +1299,353 @@ function DiscoverResults({
         language={language}
       />
     </>
+  );
+}
+
+/* 카드 하나. 예전에는 이 내용이 전부 펼쳐진 채 세로로 이어져, 후보 세 곳만 있어도
+   화면을 한참 굴려야 다음 후보가 나왔다. 늘어난 것은 정보가 아니라 **우리가 무엇을
+   확인했는지에 대한 서술**이었다 — "…확인했습니다", "…판단하지 않았습니다".
+
+   그래서 두 층으로 나눈다. 요약은 고를 때 실제로 쓰는 값만 — 어디인지, 언제 나가
+   언제 돌아오는지, 그 길이 어디로 가는지, 그리고 운영시간·대표메뉴처럼 갈지 말지를
+   가르는 사실 몇 개. 나머지 근거는 상세보기 안에 둔다.
+
+   안전 경고만은 접지 않는다. 문을 닫는 곳이거나 검증되지 않은 후보라는 사실을
+   한 번 더 눌러야 보이게 하면, 접힌 채로 일정에 넣는 사람이 생긴다. */
+function DiscoverOptionCard({
+  option,
+  language,
+  generatedAt,
+  onPlanFromPlace,
+}: {
+  option: RecoveryOption;
+  language: Language;
+  generatedAt?: string;
+  onPlanFromPlace?: Props["onPlanFromPlace"];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const window = option.scheduleDiff?.openWindow;
+  /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다. 화면 상태
+     (선택한 수단)로 쓰면 조회가 실패해 다른 수단으로 내려간 경우에도 잘못된
+     이름이 적힌다. */
+  const routeProvider = readText(
+    asRecord(asRecord(option.continuityProof)?.routeEvidence),
+    ["provider"],
+  );
+  const modeVerb =
+    routeProvider === "tmap_car"
+      ? { ko: "차로", noun: "자동차", en: "drive" }
+      : routeProvider === "kakao_transit"
+        ? { ko: "대중교통으로", noun: "대중교통", en: "transit" }
+        : routeProvider === "kakao_bicycle"
+          ? { ko: "자전거로", noun: "자전거", en: "cycle" }
+          : { ko: "걸어서", noun: "보행", en: "walk" };
+  const safety = optionApplicationSafety(option, language);
+  const isBlocked = !safety.canApply;
+  const resultGeneratedAtMs = Date.parse(generatedAt ?? "");
+  const windowStartAtMs = Date.parse(window?.windowStartAt ?? "");
+  const leavesLater =
+    Number.isFinite(resultGeneratedAtMs) &&
+    Number.isFinite(windowStartAtMs) &&
+    windowStartAtMs > resultGeneratedAtMs + 60_000;
+
+  const facts = option.travelerFacts ?? [];
+  /* 요약에 넣는 값은 네 개까지. 그 이상은 요약이 아니라 목록이 된다. 나머지는
+     상세보기가 전부 보여 주므로 잘려서 사라지는 값은 없다. */
+  const summaryFacts = facts.filter((fact) => fact.prominent).slice(0, 4);
+  const detailFacts = facts.filter((fact) => !summaryFacts.includes(fact));
+  const reasons = (language === "en" && option.whyEn) || option.why || [];
+  const detailId = `discover-detail-${option.id || option.contentId}`;
+
+  const factValue = (fact: TravelerFact) =>
+    (language === "en" && fact.valueEn) || fact.value;
+  const factLabel = (fact: TravelerFact) =>
+    language === "en" ? fact.labelEn : fact.label;
+
+  return (
+    <li
+      className={isBlocked ? styles.cardUnverified : styles.card}
+      data-testid="discover-option"
+    >
+      <div className={styles.cardHead}>
+        <div>
+          {option.tourismCategory && (
+            <span className={styles.categoryBadge}>
+              {language === "en"
+                ? option.tourismCategory.labelEn
+                : option.tourismCategory.labelKo}
+            </span>
+          )}
+          <p>{option.address || "주소 정보 확인 필요"}</p>
+          <h3>{option.title}</h3>
+        </div>
+        {typeof option.score === "number" && (
+          <span className={styles.score}>
+            <b>{Math.round(option.score)}</b>
+            <small>{tr(language, "기초 적합도", "Base fit")}</small>
+          </span>
+        )}
+      </div>
+
+      {window && (
+        <ol className={styles.timeline}>
+          <li>
+            <span>
+              {window.windowStartAt && leavesLater
+                ? tr(
+                    language,
+                    `${formatIsoTime(window.windowStartAt, language)} 출발`,
+                    `Leave at ${formatIsoTime(window.windowStartAt, language)}`,
+                  )
+                : tr(language, "지금 출발", "Leave now")}
+            </span>
+            <strong>
+              {tr(
+                language,
+                `${modeVerb.ko} ${window.travelToMinutes}분`,
+                `${window.travelToMinutes} min ${modeVerb.en}`,
+              )}
+            </strong>
+          </li>
+          <li>
+            <span>
+              {formatIsoTime(
+                option.scheduleDiff?.replacementNode?.startAt,
+                language,
+              )}
+              {tr(language, " 도착", " arrive")}
+            </span>
+            <strong>
+              {tr(
+                language,
+                `${window.appliedStayMinutes}분 머물기`,
+                `stay ${window.appliedStayMinutes} min`,
+              )}
+            </strong>
+          </li>
+          <li>
+            <span>
+              {window.returnBasis === "next_place_route"
+                ? tr(language, "다음 장소로", "On to next place")
+                : tr(language, "돌아오기", "Return")}
+            </span>
+            <strong>
+              {tr(
+                language,
+                `${window.returnMinutes}분`,
+                `${window.returnMinutes} min`,
+              )}
+            </strong>
+          </li>
+        </ol>
+      )}
+
+      {(() => {
+        /* 엔진이 이미 좌표열을 보내는데 화면에서 쓰지 않아, 여행자는 "몇 분"만
+           보고 그 길이 어디로 가는지 알 수 없었다. */
+        const geometry = (option.routeGeometry ?? []) as RoutePoint[];
+        if (geometry.length < 2) return null;
+        const markers: RouteMapMarker[] = [
+          {
+            point: geometry[0],
+            label: tr(language, "현재 위치", "You are here"),
+            kind: "origin",
+          },
+          {
+            point: {
+              latitude: option.latitude,
+              longitude: option.longitude,
+            },
+            label: option.title,
+            kind: "replacement",
+          },
+        ];
+        /* 다음 장소를 알려 준 경우에는 경로의 끝이 그 장소다. */
+        if (window?.returnBasis === "next_place_route") {
+          markers.push({
+            point: geometry[geometry.length - 1],
+            label: tr(language, "다음 장소", "Next place"),
+            kind: "destination",
+          });
+        }
+        return (
+          <RouteMap
+            geometry={geometry}
+            markers={markers}
+            mode={
+              routeProvider === "tmap_car"
+                ? "car"
+                : routeProvider === "kakao_transit"
+                  ? "transit"
+                  : routeProvider === "kakao_bicycle"
+                    ? "bicycle"
+                    : "walk"
+            }
+            attribution={readText(
+              asRecord(asRecord(option.continuityProof)?.routeEvidence),
+              ["attribution"],
+            )}
+            language={language}
+            summary={tr(
+              language,
+              `현재 위치에서 ${option.title}까지 ${modeVerb.noun} 경로 개요. ${window ? `이동 ${window.travelToMinutes}분, 체류 ${window.appliedStayMinutes}분, 복귀 ${window.returnMinutes}분.` : ""}`,
+              `Route outline from your location to ${option.title}.`,
+            )}
+          />
+        );
+      })()}
+
+      {summaryFacts.length > 0 && (
+        <dl className={styles.factGrid}>
+          {summaryFacts.map((fact) => (
+            <div key={fact.code} className={styles.fact}>
+              <dt>{factLabel(fact)}</dt>
+              <dd>{factValue(fact)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {/* 접지 않는다. 이 후보를 일정에 넣으면 헛걸음하거나 다음 일정에 늦을 수
+          있다는 경고이며, 한 번 더 눌러야 보이면 경고가 아니다. */}
+      {isBlocked && (
+        <section className={styles.gaps} role="alert">
+          <strong>
+            {tr(
+              language,
+              safety.availabilityStatus === "confirmed_closed"
+                ? "이 시간에는 문을 열지 않아 선택할 수 없습니다"
+                : "공식 확인 전에는 선택할 수 없습니다",
+              safety.availabilityStatus === "confirmed_closed"
+                ? "Closed during this visit — unavailable"
+                : "Unavailable until required evidence is verified",
+            )}
+          </strong>
+          <ul>
+            {safety.reasons.map((reason, reasonIndex) => (
+              <li key={`${option.id}-safety-${reasonIndex}`}>{reason}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className={styles.cardActions}>
+        <button
+          type="button"
+          className={styles.detailToggle}
+          aria-expanded={expanded}
+          aria-controls={detailId}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded
+            ? tr(language, "상세정보 접기", "Hide details")
+            : tr(language, "상세보기", "See details")}
+        </button>
+        {/* 찾은 곳을 일정으로 가져간다. 이 화면은 "지금 갈 곳"을 알려 주고
+            끝나서, 마음에 드는 곳을 찾아도 다음 약속과 맞는지 따져 보려면
+            이름을 외워 다른 탭에 다시 입력해야 했다. */}
+        {onPlanFromPlace && (
+          <button
+            type="button"
+            className={styles.planFromPlace}
+            disabled={isBlocked}
+            onClick={() =>
+              safety.canApply &&
+              onPlanFromPlace({
+                title: option.title,
+                address: option.address ?? "",
+                contentTypeId: option.contentTypeId,
+              })
+            }
+          >
+            {isBlocked
+              ? tr(language, "안전 확인 전 추가 불가", "Cannot add until verified")
+              : tr(language, "이 곳을 일정에 넣기", "Add this to my plan")}
+          </button>
+        )}
+      </div>
+
+      {expanded && (
+        <div className={styles.detail} id={detailId}>
+          {detailFacts.length > 0 && (
+            <dl className={styles.factGrid}>
+              {detailFacts.map((fact) => (
+                <div key={fact.code} className={styles.fact}>
+                  <dt>{factLabel(fact)}</dt>
+                  <dd>{factValue(fact)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+
+          {/* 붐빔 수치를 인원수로 읽지 말라는 단서는 `why`가 들고 온다. 여기서
+              한 번 더 적으면 같은 상세 안에 두 번 나온다. */}
+          {option.purposePreservation?.statement && (
+            <p className={styles.purpose}>
+              {(language === "en" && option.purposePreservation.statementEn) ||
+                option.purposePreservation.statement}
+            </p>
+          )}
+
+          {reasons.length > 0 && (
+            <ul className={styles.why}>
+              {reasons.map((reason, reasonIndex) => (
+                <li key={reasonIndex}>{reason}</li>
+              ))}
+            </ul>
+          )}
+
+          {window && (
+            <p
+              className={
+                window.leftoverMinutes >= window.requiredBufferMinutes
+                  ? styles.fitGood
+                  : styles.fitTight
+              }
+            >
+              {window.returnBasis === "next_place_route"
+                ? tr(
+                    language,
+                    `다음 장소 도착까지 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다.`,
+                    `${window.leftoverMinutes} min of slack remains before your next place, meeting the ${window.requiredBufferMinutes}-min safety reserve.`,
+                  )
+                : tr(
+                    language,
+                    `복귀 뒤 ${window.leftoverMinutes}분 여유가 남아, 필수 안전여유 ${window.requiredBufferMinutes}분을 확보했습니다.`,
+                    `${window.leftoverMinutes} min remains after returning, meeting the ${window.requiredBufferMinutes}-min safety reserve.`,
+                  )}
+            </p>
+          )}
+
+          {window?.returnBasis === "origin_return_route" && (
+            <p className={styles.returnEvidence}>
+              {tr(
+                language,
+                `복귀 근거 · ${returnProviderLabel(window.returnProvider, language)}${
+                  typeof window.returnDistanceMeters === "number"
+                    ? ` · ${window.returnDistanceMeters.toLocaleString("ko-KR")}m`
+                    : ""
+                }`,
+                `Return evidence · ${returnProviderLabel(window.returnProvider, language)}${
+                  typeof window.returnDistanceMeters === "number"
+                    ? ` · ${window.returnDistanceMeters.toLocaleString("en-US")} m`
+                    : ""
+                }`,
+              )}
+            </p>
+          )}
+
+          {isBlocked && (
+            <p className={styles.detailNote}>
+              {tr(
+                language,
+                "헛걸음과 다음 일정 지연을 막기 위해 이 후보는 일정에 넣을 수 없습니다.",
+                "This option cannot be added because it could cause a wasted trip or delay the next appointment.",
+              )}
+            </p>
+          )}
+        </div>
+      )}
+    </li>
   );
 }

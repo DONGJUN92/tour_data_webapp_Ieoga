@@ -28,7 +28,7 @@ function deadlineResponse(requestId: string) {
       error: {
         code: "RECOVERY_DEADLINE_EXCEEDED",
         message:
-          "20초 안에 검증을 마치지 못했습니다. 확인되지 않은 후보는 반환하지 않습니다.",
+          "25초 안에 검증을 마치지 못했습니다. 확인되지 않은 후보는 반환하지 않습니다.",
       },
     },
     { status: 504 },

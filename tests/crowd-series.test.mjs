@@ -141,7 +141,15 @@ test("집중률을 사람 수로 말하지 않는다", async () => {
   assert.match(engine, /function crowdLevelOf\(candidate/);
   assert.match(engine, /if \(score >= 70\) return "easy";/);
   assert.match(engine, /if \(score >= 40\) return "normal";/);
-  assert.match(engine, /조회 기준일 예측으로는 붐비는 편입니다/);
+  /* 판정은 문장이 아니라 `travelerFacts`의 한 칸이 되었다. 단서는 위에서 계속
+     확인하므로, 여기서는 세 등급이 값으로 나오는지를 본다. */
+  const facts = engine.slice(
+    engine.indexOf("function buildTravelerFacts"),
+    engine.indexOf("function buildWhy"),
+  );
+  assert.match(facts, /code: "crowd"/);
+  assert.match(facts, /"붐비는 편"/);
+  assert.match(facts, /"원활한 편"/);
   /* 등급은 점수와 **같은 함수**에서 나와야 갈리지 않는다. */
   assert.match(engine, /const score = crowdComfortScore\(candidate\);/);
   /* 화면은 아이콘만으로 뜻을 나르지 않는다 — 색각 이상에서도 읽혀야 한다. */

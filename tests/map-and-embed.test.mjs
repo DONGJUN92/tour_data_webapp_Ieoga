@@ -203,13 +203,14 @@ test("공용 조회 기준시각 계약은 KST 입력, 과거, 6시간 상한을
     ).code,
     "past",
   );
+  /* 6시간 상한을 없앴으므로 먼 미래도 통과한다. 과거만 계속 막는다. */
   assert.equal(
     reference.resolveReferenceTime(
       "scheduled",
       "2026-08-14T15:01",
       "en",
       now,
-    ).code,
-    "too_far",
+    ).ok,
+    true,
   );
 });

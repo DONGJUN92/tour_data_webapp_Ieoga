@@ -17,6 +17,7 @@
 
 .intro,
 .summary,
+.caveat,
 .error {
   margin: 0;
   font-size: 0.86rem;
@@ -26,6 +27,16 @@
 .intro,
 .summary {
   color: var(--muted);
+}
+
+/* 조회를 막는 오류가 아니라 "이 시각에는 이것까지만 확인된다"는 사전 고지다.
+   빨간 오류색으로 칠하면 사용자는 잘못 입력했다고 읽는다. */
+.caveat {
+  padding: 8px 10px;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  background: var(--brand-tint);
+  color: var(--ink-soft);
 }
 
 .error {

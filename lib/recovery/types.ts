@@ -246,6 +246,39 @@ export type WeatherGlance = {
   temperatureCelsius?: number;
 };
 
+/* 여행자가 그 장소를 고르기 위해 보는 값 하나. 예전 카드는 `why` 문장만 나열해서
+   "무엇을 어떻게 확인했는지"는 길게 말하면서 "몇 시에 여는가", "대표메뉴가
+   무엇인가" 같은 정작 필요한 값은 한 줄도 주지 않았다. 검증 서술과 장소 정보를
+   서로 다른 자료구조로 나눠, 화면이 요약과 상세를 나눌 수 있게 한다. */
+export type TravelerFact = {
+  code:
+    | "hours"
+    | "rest_day"
+    | "signature_menu"
+    | "menu"
+    | "fee"
+    | "parking"
+    | "reservation"
+    | "credit_card"
+    | "pet"
+    | "check_in_out"
+    | "event_period"
+    | "contact"
+    | "crowd"
+    | "indoor"
+    | "transit_fare"
+    | "taxi_fare"
+    | "distance"
+    | "spare_time";
+  label: string;
+  labelEn: string;
+  value: string;
+  valueEn?: string;
+  /* 접지 않고 요약 카드에 바로 보여 줄 값인가. 갈지 말지를 실제로 가르는 값만
+     참이다 — 나머지는 상세보기에서 읽는다. */
+  prominent?: boolean;
+};
+
 export type RecoveryOption = {
   /* Conditions official data could not confirm for this option. */
   evidenceGaps: EvidenceGap[];
@@ -291,6 +324,8 @@ export type RecoveryOption = {
   crowd: CrowdEvidence;
   relatedRank?: number;
   purposePreservation: TravelPurposeProof;
+  /* 장소 자체에 대한 사실. 검증 서술(`why`)과 섞지 않는다. */
+  travelerFacts: TravelerFact[];
   why: string[];
   whyEn?: string[];
   sources: KtoServiceName[];

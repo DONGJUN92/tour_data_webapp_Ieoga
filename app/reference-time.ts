@@ -2,15 +2,22 @@ import type { Language } from "./product-app-model";
 
 export type ReferenceTimeMode = "now" | "scheduled";
 
-/* 복구 엔진이 검증할 수 있는 교통·날씨 예측 범위와 서버 계약을 맞춘다. 너무 먼
-   미래를 입력받아 놓고 현재 데이터로 추정한 것처럼 보여 주지 않는다. */
-export const MAX_REFERENCE_TIME_FUTURE_MINUTES = 6 * 60;
+/* 예전에는 여섯 시간이 상한이었다. 그 근거는 "실시간 이동·운영 정보를 확인할 수
+   있는 범위"였는데, 실제로 판정을 좌우하는 것은 실시간성이 아니라 **도착 시각이
+   운영시간 안에 있는가**이고 그 원천(한국관광공사 운영시간·휴무일)은 시각과
+   무관하게 유효하다. TMAP 자동차 경로예측도 90일 뒤까지 응답한다(2026-08-14
+   실측). 그래서 미래 상한을 두지 않는다.
+
+   대신 시각에 따라 확인할 수 있는 것이 달라지므로, 확인하지 못하는 항목은
+   막는 대신 그 사실을 결과에 적는다 — 기상청 단기예보는 약 3일까지이고,
+   카카오 대중교통은 미래 시각표를 모른다. */
+export const KMA_FORECAST_HORIZON_MINUTES = 3 * 24 * 60;
 
 export type ReferenceTimeResolution =
   | { ok: true; iso: string; timestamp: number }
   | {
       ok: false;
-      code: "required" | "invalid" | "past" | "too_far";
+      code: "required" | "invalid" | "past";
       message: string;
     };
 
@@ -96,17 +103,20 @@ export function resolveReferenceTime(
           : "선택한 시각이 지났습니다. 현재 시각이나 이후 시각을 선택해 주세요.",
     };
   }
-  if (timestamp > nowMs + MAX_REFERENCE_TIME_FUTURE_MINUTES * 60_000) {
-    return {
-      ok: false,
-      code: "too_far",
-      message:
-        language === "en"
-          ? "Choose a time within the next 6 hours so live travel and opening data can be verified."
-          : "실시간 이동·운영 정보를 확인할 수 있도록 6시간 이내의 시각을 선택해 주세요.",
-    };
-  }
   return { ok: true, iso: new Date(timestamp).toISOString(), timestamp };
+}
+
+/* 선택한 시각에 무엇을 확인할 수 없는지. 조회를 막지 않고 화면이 미리 말해
+   준다 — 결과를 받은 뒤에야 알게 되면 이미 계획을 세운 뒤다. */
+export function referenceTimeCaveat(
+  timestamp: number,
+  language: Language,
+  nowMs = Date.now(),
+): string {
+  if (timestamp <= nowMs + KMA_FORECAST_HORIZON_MINUTES * 60_000) return "";
+  return language === "en"
+    ? "Beyond three days the national hourly forecast does not reach, so opening hours and routes are verified but the weather is marked unconfirmed."
+    : "3일 이후는 기상청 단기예보가 닿지 않습니다. 운영시간과 이동 경로는 그대로 검증하되 날씨는 미확인으로 표시합니다.";
 }
 
 export function formatReferenceTime(

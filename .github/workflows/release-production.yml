@@ -89,6 +89,20 @@ jobs:
           --remote
           --config wrangler.jsonc
 
+      # 런타임 구성은 이 명령의 `--var`가 유일한 출처다. 대시보드에서 값을
+      # 바꾸지 말 것 — 여기 적힌 값이 매 배포마다 원격을 덮는다.
+      #
+      # `--strict`는 뺐다. 이 플래그는 **설정 파일**과 원격을 대조하는데
+      # `--var`로 넘긴 값은 그 비교에 들어가지 않는다. 그래서 `--var`로 세운
+      # 값이 원격에 남는 순간(첫 배포 직후) 설정 파일에는 없고 원격에는 있는
+      # 상태가 되어, 이후 모든 배포가 "원격에서 지워질 값이 있다"며 중단됐다.
+      # 값을 설정 파일로 옮기면 이번에는 동적인 DEPLOYMENT_COMMIT_SHA가 같은
+      # 이유로 충돌한다. 즉 `--var`로 구성을 관리하는 한 이 플래그와는 공존할
+      # 수 없다.
+      #
+      # 대신 `--keep-vars`를 남겨 원격의 다른 값이 지워지지 않게 하고, 구성
+      # 차이는 wrangler가 로그에 그대로 출력하므로 배포 로그에서 확인할 수
+      # 있다. 배포 자체도 main 브랜치에서 이 워크플로로만 일어난다.
       - name: Deploy the exact no-bundle artifact at 100 percent
         shell: bash
         env:
@@ -107,8 +121,7 @@ jobs:
             --var "WEATHER_API_URL:none" \
             --var "REVERSE_GEOCODE_URL:none" \
             --var "FORWARD_GEOCODE_URL:none" \
-            --keep-vars \
-            --strict
+            --keep-vars
 
       - name: Bind runtime metadata and Cloudflare receipt to the build
         env:

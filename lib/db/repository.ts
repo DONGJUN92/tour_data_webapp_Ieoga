@@ -46,6 +46,7 @@ import type {
 import {
   APPLICATION_SAFETY_CONTRACT_VERSION,
   createItineraryImpactSnapshot,
+  applicationSnapshotClass,
   decryptApplicationSnapshot,
   encryptApplicationSnapshot,
 } from "@/lib/recovery/application-snapshot";
@@ -234,6 +235,17 @@ export async function persistRecovery(params: {
         params.result.options.map(async (option) => {
           const nextFixed = option.scheduleDiff.nextFixedAppointment;
           const openWindow = option.scheduleDiff.openWindow;
+          /* 계약이 담을 수 있는 상태인가. 휴무로 확인된 곳은 애초에 결과에
+             오르지 않지만, 그 사실을 여기서 다시 단정하지 않는다 — 단정하면
+             엔진이 바뀌었을 때 이 자리가 조용히 거짓이 된다. 담을 수 없는
+             상태면 스냅숏을 만들지 않고, 아래 검사가 응답을 막는다. */
+          const snapshotStatus =
+            option.availability.status === "confirmed_open" ||
+            option.availability.status === "official_hours_unstructured" ||
+            option.availability.status === "unknown"
+              ? option.availability.status
+              : undefined;
+          if (!snapshotStatus) return [option.id, undefined] as const;
           return [
             option.id,
             await encryptApplicationSnapshot(
@@ -247,15 +259,17 @@ export async function persistRecovery(params: {
                 contractVersion: APPLICATION_SAFETY_CONTRACT_VERSION,
                 ruleVersion: params.result.ruleVersion,
                 recoveryMode: params.result.recoveryMode,
+                /* 확인한 그대로 담는다. 예전에는 `as "confirmed_open"`으로
+                   눌러 적었는데, 그러면 계약이 담을 수 없는 안이 목록에 오르는
+                   순간 스냅숏이 조용히 만들어지지 않고 **응답 전체가 저장 실패로
+                   버려졌다.** 계약이 두 갈래를 아는 지금은 사실대로 적으면 되고,
+                   갈래를 벗어난 안은 아래에서 스냅숏 없이 걸러진다. */
                 availability: {
-                  status: option.availability.status as "confirmed_open",
+                  status: snapshotStatus,
                   checkedAt: option.availability.checkedAt,
                 },
-                confirmationRequired:
-                  option.confirmationRequired as false,
-                evidenceGapCodes: option.evidenceGaps.map(
-                  (gap) => gap.code,
-                ) as [],
+                confirmationRequired: option.confirmationRequired as false,
+                evidenceGapCodes: option.evidenceGaps.map((gap) => gap.code),
                 visitStartAt: option.scheduleDiff.replacementNode.startAt,
                 visitEndAt: option.scheduleDiff.replacementNode.endAt,
                 nextFixed:
@@ -1067,6 +1081,8 @@ export async function activateRecoveryExecution(params: {
   sessionId: string;
   runId: string;
   optionId: string;
+  /* 운영시간 미확인 안에 대한 여행자의 동의. 화면이 보낸다. */
+  acknowledgeUnverifiedHours?: boolean;
 }): Promise<
   | { activated: true; execution: JourneyExecution }
   | {
@@ -1075,7 +1091,10 @@ export async function activateRecoveryExecution(params: {
         | "NOT_FOUND"
         | "INVALID_STATE"
         | "UPSTREAM_UNAVAILABLE"
-        | "DB_UNAVAILABLE";
+        | "DB_UNAVAILABLE"
+        /* 동의가 필요한 안인데 동의 없이 들어왔다. 상태가 잘못된 것이 아니라
+           한 단계가 빠진 것이므로 따로 답한다. */
+        | "ACKNOWLEDGEMENT_REQUIRED";
     }
 > {
   try {
@@ -1212,6 +1231,15 @@ export async function activateRecoveryExecution(params: {
          must be generated; mutable upstream data is never used as a bypass. */
       return { activated: false, reason: "INVALID_STATE" };
     }
+    /* 운영시간을 대조하지 못한 안은 여행자가 그 사실을 읽고 동의했을 때만
+       실행 계약이 된다. 화면에도 체크박스가 있지만 그것은 화면의 약속일 뿐이고,
+       요청을 직접 만들면 지나갈 수 있다. 계약을 만드는 자리에서 다시 묻는다. */
+    if (
+      applicationSnapshotClass(applicationSnapshot) === "hours_unconfirmed" &&
+      params.acknowledgeUnverifiedHours !== true
+    ) {
+      return { activated: false, reason: "ACKNOWLEDGEMENT_REQUIRED" };
+    }
     const optionLatitude = applicationSnapshot.latitude;
     const optionLongitude = applicationSnapshot.longitude;
     const optionAddress = applicationSnapshot.address;
@@ -1227,23 +1255,29 @@ export async function activateRecoveryExecution(params: {
         ? (scheduleDiff.replacementNode as Record<string, unknown>)
         : {};
     const SAFETY_EVIDENCE_MAX_AGE_MS = 15 * 60_000;
+    /* 저장된 행과 봉인된 스냅숏이 **서로 일치**해야 한다. 예전에는 양쪽에
+       `confirmed_open`과 공백 0을 각각 못박아 두 조건을 한꺼번에 검사했는데,
+       그러면 계약이 두 갈래가 된 순간 동의를 받은 안까지 막힌다. 못박는 대신
+       대조한다 — 위조를 막는 힘은 "값이 무엇이냐"가 아니라 "둘이 같으냐"에서
+       나오고, 어느 갈래에 드는지는 위에서 `applicationSnapshotClass`가 이미
+       판정했다. */
     if (
       option.safetyContractVersion !==
         APPLICATION_SAFETY_CONTRACT_VERSION ||
-      option.availabilityStatus !== "confirmed_open" ||
+      option.availabilityStatus !== applicationSnapshot.availability.status ||
       option.availabilityCheckedAt !==
         applicationSnapshot.availability.checkedAt ||
       option.visitStartAt !== applicationSnapshot.visitStartAt ||
       option.visitEndAt !== applicationSnapshot.visitEndAt ||
       option.confirmationRequired !== false ||
-      option.evidenceGapCount !== 0 ||
+      option.evidenceGapCount !==
+        applicationSnapshot.evidenceGapCodes.length ||
       applicationSnapshot.contractVersion !==
         APPLICATION_SAFETY_CONTRACT_VERSION ||
       applicationSnapshot.ruleVersion !== RECOVERY_RULE_VERSION ||
       applicationSnapshot.recoveryMode !== run.recoveryMode ||
       applicationSnapshot.confirmationRequired !== false ||
-      applicationSnapshot.evidenceGapCodes.length !== 0 ||
-      applicationSnapshot.availability.status !== "confirmed_open" ||
+      applicationSnapshotClass(applicationSnapshot) === undefined ||
       !Number.isFinite(checkedAtMs) ||
       checkedAtMs > nowMs + 60_000 ||
       nowMs - checkedAtMs > SAFETY_EVIDENCE_MAX_AGE_MS ||

@@ -6,7 +6,15 @@ import {
   koreaLongitude,
 } from "@/lib/validation/numbers";
 
-export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v2";
+/* v3에서 계약이 두 갈래가 됐다. 예전 계약은 "완전 검증된 안"만 담을 수 있었고,
+   운영시간을 대조하지 못한 안이 목록에 오르자 그 안의 스냅숏이 만들어지지 않아
+   **응답 전체가 저장 실패로 버려졌다.** 버전을 올려 예전에 저장된 스냅숏이 새
+   규칙으로 읽히지 않게 한다 — 옛 계약은 다시 실행해야 한다. */
+export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v3";
+
+/* 확인을 받으면 적용할 수 있는 유일한 근거 공백. 이 목록에 없는 공백이 있으면
+   그 안은 어느 쪽 계약에도 들지 못한다. */
+export const ACKNOWLEDGEABLE_GAP_CODE = "OPERATING_HOURS_UNVERIFIED";
 
 export type ItineraryImpactNodeSnapshot = {
   id: string;
@@ -35,6 +43,34 @@ export type ItineraryImpactSnapshot = {
   hash: string;
 };
 
+/**
+ * 이 스냅숏이 어느 계약에 드는가. `undefined`면 어느 쪽도 아니므로 적용할 수
+ * 없다. 저장·적용·검증이 같은 함수를 보게 해서, 한쪽만 느슨해지는 일을 막는다.
+ */
+export function applicationSnapshotClass(
+  snapshot: Pick<
+    RecoveryApplicationSnapshot,
+    "availability" | "evidenceGapCodes"
+  >,
+): "verified" | "hours_unconfirmed" | undefined {
+  const gaps = Array.isArray(snapshot.evidenceGapCodes)
+    ? snapshot.evidenceGapCodes
+    : undefined;
+  if (!gaps) return undefined;
+  if (snapshot.availability.status === "confirmed_open" && gaps.length === 0) {
+    return "verified";
+  }
+  if (
+    (snapshot.availability.status === "official_hours_unstructured" ||
+      snapshot.availability.status === "unknown") &&
+    gaps.length === 1 &&
+    gaps[0] === ACKNOWLEDGEABLE_GAP_CODE
+  ) {
+    return "hours_unconfirmed";
+  }
+  return undefined;
+}
+
 export type RecoveryApplicationSnapshot = {
   contentId: string;
   title: string;
@@ -46,11 +82,13 @@ export type RecoveryApplicationSnapshot = {
   ruleVersion: string;
   recoveryMode: RecoveryMode;
   availability: {
-    status: "confirmed_open";
+    /* 대조하지 못한 상태를 그대로 담는다. `confirmed_open`으로 눌러 적으면
+       적용 시점에 무엇을 확인했는지 서버가 알 수 없다. */
+    status: "confirmed_open" | "official_hours_unstructured" | "unknown";
     checkedAt: string;
   };
   confirmationRequired: false;
-  evidenceGapCodes: [];
+  evidenceGapCodes: string[];
   visitStartAt: string;
   visitEndAt: string;
   nextFixed?: {
@@ -276,11 +314,18 @@ async function snapshotIsValid(
       snapshot.contractVersion === APPLICATION_SAFETY_CONTRACT_VERSION &&
       snapshot.ruleVersion.trim() &&
       (registered || openWindow) &&
-      snapshot.availability.status === "confirmed_open" &&
+      /* 두 갈래 중 하나여야 한다.
+
+         (1) 완전 검증: 운영시간이 확인됐고 근거 공백이 없다. 바로 적용된다.
+         (2) 운영시간 미확인: 상태가 대조 불가이고, 공백이 운영시간 **하나뿐**
+             이다. 이 갈래는 적용 시점에 여행자의 동의를 따로 요구한다.
+
+         휴무로 확인된 곳(`confirmed_closed`)은 어느 갈래에도 들지 못한다 —
+         확인하지 못한 것이 아니라 확인된 사실이기 때문이다. 접근성 등 다른
+         공백이 섞여 있어도 마찬가지다. */
+      applicationSnapshotClass(snapshot) !== undefined &&
       validTimestamp(snapshot.availability.checkedAt) &&
       snapshot.confirmationRequired === false &&
-      Array.isArray(snapshot.evidenceGapCodes) &&
-      snapshot.evidenceGapCodes.length === 0 &&
       validTimestamp(snapshot.visitStartAt) &&
       validTimestamp(snapshot.visitEndAt) &&
       Date.parse(snapshot.visitEndAt) > Date.parse(snapshot.visitStartAt) &&

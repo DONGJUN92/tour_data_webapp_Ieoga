@@ -82,6 +82,7 @@ export async function POST(
     sessionId,
     runId,
     optionId: parsed.data.optionId,
+    acknowledgeUnverifiedHours: parsed.data.acknowledgeUnverifiedHours,
   });
   if (!activated.activated) {
     return jsonResponse(
@@ -91,6 +92,8 @@ export async function POST(
           message:
             activated.reason === "NOT_FOUND"
               ? "이 세션의 복구안이나 원래 일정을 찾지 못했습니다."
+              : activated.reason === "ACKNOWLEDGEMENT_REQUIRED"
+                ? "운영시간을 확인하지 못한 곳입니다. 안내를 읽고 동의한 뒤에 적용할 수 있습니다."
               : activated.reason === "INVALID_STATE"
                 ? "검증된 전체 경로를 실행 일정으로 만들 수 없습니다. 일정을 다시 확인해 주세요."
                 : activated.reason === "UPSTREAM_UNAVAILABLE"
@@ -102,7 +105,8 @@ export async function POST(
         status:
           activated.reason === "NOT_FOUND"
             ? 404
-            : activated.reason === "INVALID_STATE"
+            : activated.reason === "ACKNOWLEDGEMENT_REQUIRED" ||
+                activated.reason === "INVALID_STATE"
               ? 409
               : 503,
       },

@@ -653,6 +653,10 @@ export const recoveryOutcomeSchema = z
 export const recoveryApplySchema = z
   .object({
     optionId: z.string().trim().min(10).max(220),
+    /* 운영시간을 대조하지 못한 안을 적용할 때, 여행자가 그 사실을 읽고
+       동의했는가. 화면의 체크박스만으로는 계약이 되지 않는다 — 서버가 묻지
+       않으면 그 체크박스는 장식이고, 요청을 직접 만들면 우회된다. */
+    acknowledgeUnverifiedHours: z.boolean().optional(),
   })
   .strict();
 

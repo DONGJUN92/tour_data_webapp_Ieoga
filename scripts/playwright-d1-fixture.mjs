@@ -4,9 +4,31 @@ import {
   createHmac,
   randomBytes,
 } from "node:crypto";
+import { readFileSync } from "node:fs";
 
-const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v2";
-const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
+/* 두 버전은 소스에서 읽는다. 예전에는 여기에 문자열을 적어 두었는데, 계약이
+   v3로 올라갔을 때 이 파일만 v2에 남아 픽스처가 만든 행이 통째로 무효가 됐다.
+   실패 메시지는 `INVALID_STATE` 하나뿐이라 원인이 버전 불일치라는 것이 드러나지
+   않는다. 적어 두지 말고 읽는다. */
+function constantFromSource(file, name) {
+  const source = readFileSync(new URL(file, import.meta.url), "utf8");
+  const match = source.match(
+    new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`),
+  );
+  if (!match) {
+    throw new Error(`${name}을 ${file}에서 찾지 못했습니다.`);
+  }
+  return match[1];
+}
+
+const APPLICATION_SAFETY_CONTRACT_VERSION = constantFromSource(
+  "../lib/recovery/application-snapshot.ts",
+  "APPLICATION_SAFETY_CONTRACT_VERSION",
+);
+const RECOVERY_RULE_VERSION = constantFromSource(
+  "../lib/recovery/engine.ts",
+  "RECOVERY_RULE_VERSION",
+);
 
 export const PLAYWRIGHT_D1_FIXTURE = Object.freeze({
   primarySessionId: "11111111-1111-4111-8111-111111111111",

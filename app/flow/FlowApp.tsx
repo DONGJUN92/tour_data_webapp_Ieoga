@@ -1551,7 +1551,11 @@ export default function FlowApp() {
     try {
       const applyPayload = await postJson(
         `/api/v1/recover/${encodeURIComponent(expected.runId)}/apply`,
-        { optionId: expected.optionId },
+        {
+          optionId: expected.optionId,
+          /* 화면의 동의를 서버까지 들고 간다. */
+          ...(acknowledged ? { acknowledgeUnverifiedHours: true } : {}),
+        },
         controller.signal,
       );
       const applyExecution = normalizeJourneyExecution(applyPayload);

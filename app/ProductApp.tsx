@@ -1835,7 +1835,13 @@ export function ProductApp() {
         `/api/v1/recover/${encodeURIComponent(expected.runId)}/apply`,
         {
           method: "POST",
-          body: JSON.stringify({ optionId: option.id }),
+          /* 서버도 동의를 다시 묻는다. 화면에서 체크한 사실을 요청에 실어
+             보내지 않으면 적용이 409로 막힌다 — 체크박스가 장식이 아니라
+             계약의 일부라는 뜻이다. */
+          body: JSON.stringify({
+            optionId: option.id,
+            ...(acknowledged ? { acknowledgeUnverifiedHours: true } : {}),
+          }),
         },
       );
       const applyExecution = normalizeJourneyExecution(payload);

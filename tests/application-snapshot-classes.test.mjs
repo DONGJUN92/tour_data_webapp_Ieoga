@@ -5,10 +5,21 @@ import test from "node:test";
 
 register(new URL("./alias-loader.mjs", import.meta.url));
 
-const base = {
-  availability: { status: "confirmed_open", checkedAt: new Date().toISOString() },
-  evidenceGapCodes: [],
-};
+/* 엔진이 실제로 만드는 옵션과 **같은 모양**으로 스냅숏을 짓는다.
+   처음 이 파일을 쓸 때는 손으로 만든 객체에 `availability`와 `evidenceGapCodes`만
+   담았다. 그래서 `confirmationRequired`가 빠진 것을 아무도 눈치채지 못했고,
+   테스트는 통과하는데 운영에서는 계약이 만들어지지 않아 응답 전체가 503이 됐다.
+   엔진은 근거 공백이 하나라도 있으면 그 값을 참으로 세운다 — 필드를 빠뜨리면
+   검사도 함께 빠진다. 그래서 필요한 필드를 전부 갖춘 뒤 필요한 것만 바꾼다. */
+function snapshotFor({ status, gaps }) {
+  const at = new Date().toISOString();
+  return {
+    availability: { status, checkedAt: at },
+    evidenceGapCodes: gaps,
+    /* 엔진과 같은 규칙: 공백이 있으면 확인이 필요하다. */
+    confirmationRequired: gaps.length > 0,
+  };
+}
 
 /* 운영시간을 대조하지 못한 안을 목록에 올리면서 실행 계약이 그것을 담지 못하면,
    저장이 실패하고 **응답 전체가 버려진다.** 실제로 그렇게 됐다 — 화면에는
@@ -19,25 +30,51 @@ test("실행 계약은 완전 검증과 운영시간 미확인을 모두 담는�
     "../lib/recovery/application-snapshot.ts"
   );
 
-  assert.equal(applicationSnapshotClass(base), "verified");
+  assert.equal(
+    applicationSnapshotClass(
+      snapshotFor({ status: "confirmed_open", gaps: [] }),
+    ),
+    "verified",
+  );
+
+  for (const status of ["official_hours_unstructured", "unknown"]) {
+    assert.equal(
+      applicationSnapshotClass(
+        snapshotFor({ status, gaps: ["OPERATING_HOURS_UNVERIFIED"] }),
+      ),
+      "hours_unconfirmed",
+      `${status}가 계약에 들지 못한다`,
+    );
+  }
+});
+
+/* `confirmationRequired`는 공백과 같은 사실의 두 표현이다. 둘이 어긋난 스냅숏은
+   어느 쪽이 참인지 알 수 없으므로 계약에 넣지 않는다. 이 검사가 없어서 실제
+   장애가 났다. */
+test("확인 필요 표시가 근거 공백과 어긋나면 계약에 들지 못한다", async () => {
+  const { applicationSnapshotClass } = await import(
+    "../lib/recovery/application-snapshot.ts"
+  );
+  const at = new Date().toISOString();
 
   assert.equal(
     applicationSnapshotClass({
-      availability: {
-        status: "official_hours_unstructured",
-        checkedAt: new Date().toISOString(),
-      },
+      availability: { status: "official_hours_unstructured", checkedAt: at },
       evidenceGapCodes: ["OPERATING_HOURS_UNVERIFIED"],
+      confirmationRequired: false,
     }),
-    "hours_unconfirmed",
+    undefined,
+    "공백이 있는데 확인 불필요라고 적힌 스냅숏",
   );
 
   assert.equal(
     applicationSnapshotClass({
-      availability: { status: "unknown", checkedAt: new Date().toISOString() },
-      evidenceGapCodes: ["OPERATING_HOURS_UNVERIFIED"],
+      availability: { status: "confirmed_open", checkedAt: at },
+      evidenceGapCodes: [],
+      confirmationRequired: true,
     }),
-    "hours_unconfirmed",
+    undefined,
+    "공백이 없는데 확인 필요라고 적힌 스냅숏",
   );
 });
 
@@ -45,36 +82,60 @@ test("휴무·다른 근거 공백은 어느 계약에도 들지 못한다", asy
   const { applicationSnapshotClass } = await import(
     "../lib/recovery/application-snapshot.ts"
   );
-  const at = new Date().toISOString();
 
   /* 닫혀 있다고 **확인된** 곳. 동의를 받는다고 문이 열리지 않는다. */
   assert.equal(
-    applicationSnapshotClass({
-      availability: { status: "confirmed_closed", checkedAt: at },
-      evidenceGapCodes: [],
-    }),
+    applicationSnapshotClass(
+      snapshotFor({ status: "confirmed_closed", gaps: [] }),
+    ),
     undefined,
   );
 
   /* 접근성처럼 다른 조건이 미확인이면 동의로 열리지 않는다. */
   assert.equal(
-    applicationSnapshotClass({
-      availability: { status: "official_hours_unstructured", checkedAt: at },
-      evidenceGapCodes: [
-        "OPERATING_HOURS_UNVERIFIED",
-        "ACCESSIBILITY_UNVERIFIED",
-      ],
-    }),
+    applicationSnapshotClass(
+      snapshotFor({
+        status: "official_hours_unstructured",
+        gaps: ["OPERATING_HOURS_UNVERIFIED", "ACCESSIBILITY_UNVERIFIED"],
+      }),
+    ),
     undefined,
   );
 
   /* 운영시간은 확인됐는데 공백이 남아 있는 조합도 통과시키지 않는다. */
   assert.equal(
-    applicationSnapshotClass({
-      availability: { status: "confirmed_open", checkedAt: at },
-      evidenceGapCodes: ["ACCESSIBILITY_UNVERIFIED"],
-    }),
+    applicationSnapshotClass(
+      snapshotFor({
+        status: "confirmed_open",
+        gaps: ["ACCESSIBILITY_UNVERIFIED"],
+      }),
+    ),
     undefined,
+  );
+});
+
+/* 계약을 만들지 못한 안 하나가 조회 전체를 무너뜨리면 안 된다. 그 안은 어차피
+   적용 경로가 거절하므로 목록에 남길 이유가 없고, 나머지 여덟 곳이 멀쩡한데
+   전부 버릴 이유는 더더욱 없다. */
+test("봉인하지 못한 안은 그 안만 빠지고 응답은 살아남는다", async () => {
+  const repository = await readFile(
+    new URL("../lib/db/repository.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(repository, /const sealedOptions = params\.result\.options\.filter/);
+  assert.match(repository, /params\.result\.options = sealedOptions/);
+  assert.match(repository, /적용 계약을 만들지 못해 목록에서 제외했습니다/);
+  /* 전부 실패한 경우에만 요청 자체를 실패로 돌린다. */
+  assert.match(
+    repository,
+    /if \(unsealedCount > 0 && sealedOptions\.length === 0\)/,
+  );
+  /* 값을 눌러 넣는 캐스트가 되살아나면 같은 장애가 다시 난다. */
+  assert.ok(
+    !/confirmationRequired: option\.confirmationRequired as false/.test(
+      repository,
+    ),
+    "확인 필요 값을 false로 눌러 담고 있다",
   );
 });
 
@@ -124,6 +185,6 @@ test("계약 버전은 규칙이 바뀌면 함께 올라간다", async () => {
   );
   assert.match(
     source,
-    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v3"/,
+    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v4"/,
   );
 });

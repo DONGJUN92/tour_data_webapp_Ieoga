@@ -10,7 +10,7 @@ import {
    운영시간을 대조하지 못한 안이 목록에 오르자 그 안의 스냅숏이 만들어지지 않아
    **응답 전체가 저장 실패로 버려졌다.** 버전을 올려 예전에 저장된 스냅숏이 새
    규칙으로 읽히지 않게 한다 — 옛 계약은 다시 실행해야 한다. */
-export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v3";
+export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v4";
 
 /* 확인을 받으면 적용할 수 있는 유일한 근거 공백. 이 목록에 없는 공백이 있으면
    그 안은 어느 쪽 계약에도 들지 못한다. */
@@ -50,21 +50,31 @@ export type ItineraryImpactSnapshot = {
 export function applicationSnapshotClass(
   snapshot: Pick<
     RecoveryApplicationSnapshot,
-    "availability" | "evidenceGapCodes"
+    "availability" | "evidenceGapCodes" | "confirmationRequired"
   >,
 ): "verified" | "hours_unconfirmed" | undefined {
   const gaps = Array.isArray(snapshot.evidenceGapCodes)
     ? snapshot.evidenceGapCodes
     : undefined;
   if (!gaps) return undefined;
-  if (snapshot.availability.status === "confirmed_open" && gaps.length === 0) {
+  /* `confirmationRequired`도 함께 본다. 엔진은 근거 공백이 하나라도 있으면 이
+     값을 참으로 세운다 — 즉 두 값은 원래 같은 사실의 두 표현이다. 예전에는
+     여기서 공백만 보고 `confirmationRequired`는 바깥에서 따로 `=== false`로
+     못박아, 운영시간 미확인 안이 계약을 만들지 못했다. 한 사실을 두 곳에서
+     따로 판정하면 그 둘은 언젠가 어긋난다. 한 자리에서 함께 본다. */
+  if (
+    snapshot.availability.status === "confirmed_open" &&
+    gaps.length === 0 &&
+    snapshot.confirmationRequired === false
+  ) {
     return "verified";
   }
   if (
     (snapshot.availability.status === "official_hours_unstructured" ||
       snapshot.availability.status === "unknown") &&
     gaps.length === 1 &&
-    gaps[0] === ACKNOWLEDGEABLE_GAP_CODE
+    gaps[0] === ACKNOWLEDGEABLE_GAP_CODE &&
+    snapshot.confirmationRequired === true
   ) {
     return "hours_unconfirmed";
   }
@@ -87,7 +97,9 @@ export type RecoveryApplicationSnapshot = {
     status: "confirmed_open" | "official_hours_unstructured" | "unknown";
     checkedAt: string;
   };
-  confirmationRequired: false;
+  /* 확인이 필요한 안인가. `hours_unconfirmed` 계약에서는 참이다 — 리터럴
+     `false`로 묶어 두면 그 계약을 아예 표현할 수 없다. */
+  confirmationRequired: boolean;
   evidenceGapCodes: string[];
   visitStartAt: string;
   visitEndAt: string;
@@ -325,7 +337,6 @@ async function snapshotIsValid(
          공백이 섞여 있어도 마찬가지다. */
       applicationSnapshotClass(snapshot) !== undefined &&
       validTimestamp(snapshot.availability.checkedAt) &&
-      snapshot.confirmationRequired === false &&
       validTimestamp(snapshot.visitStartAt) &&
       validTimestamp(snapshot.visitEndAt) &&
       Date.parse(snapshot.visitEndAt) > Date.parse(snapshot.visitStartAt) &&

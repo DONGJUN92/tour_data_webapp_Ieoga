@@ -268,7 +268,7 @@ export async function persistRecovery(params: {
                   status: snapshotStatus,
                   checkedAt: option.availability.checkedAt,
                 },
-                confirmationRequired: option.confirmationRequired as false,
+                confirmationRequired: option.confirmationRequired,
                 evidenceGapCodes: option.evidenceGaps.map((gap) => gap.code),
                 visitStartAt: option.scheduleDiff.replacementNode.startAt,
                 visitEndAt: option.scheduleDiff.replacementNode.endAt,
@@ -307,14 +307,33 @@ export async function persistRecovery(params: {
         }),
       ),
     );
-    if (
-      params.result.options.some(
-        (option) => !applicationSnapshots.get(option.id),
-      )
-    ) {
-      /* An applicable option must carry an integrity-protected copy of the
-         exact verified place. Persisting a plaintext/null substitute would
-         make the later Apply action depend on mutable upstream data. */
+    /* 적용 가능한 안은 검증된 장소의 무결성 보호 사본을 반드시 지녀야 한다.
+       평문이나 빈 값으로 대체해 저장하면 나중의 적용이 바뀔 수 있는 상위
+       데이터에 의존하게 된다. 그 규칙은 그대로다.
+
+       바뀐 것은 **못 지녔을 때 무엇을 버리느냐**이다. 예전에는 한 안이라도
+       봉인되지 않으면 요청 전체를 실패시켰다. 그래서 계약이 담지 못하는 안이
+       목록에 하나 섞이는 순간, 나머지 여덟 곳이 멀쩡한데도 여행자는 "저장하지
+       못해 결과를 제공하지 않습니다"만 보았다. 실제로 그렇게 터졌다.
+
+       봉인하지 못한 안은 애초에 적용할 수 없다 — 적용 경로가 스냅숏이 없으면
+       거절한다. 그러니 목록에 남겨 둘 이유가 없고, 그 하나 때문에 조회 전체를
+       버릴 이유는 더더욱 없다. 그 안만 빼고, 뺐다는 사실을 밝힌다. */
+    const sealedOptions = params.result.options.filter((option) =>
+      applicationSnapshots.get(option.id),
+    );
+    const unsealedCount =
+      params.result.options.length - sealedOptions.length;
+    if (unsealedCount > 0) {
+      params.result.options = sealedOptions;
+      params.result.warnings = [
+        ...(params.result.warnings ?? []),
+        `${unsealedCount}곳은 적용 계약을 만들지 못해 목록에서 제외했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않습니다.`,
+      ];
+    }
+    if (unsealedCount > 0 && sealedOptions.length === 0) {
+      /* 전부 봉인에 실패했다면 그것은 후보 하나의 문제가 아니라 열쇠나 계약
+         자체의 문제다. 그때는 조용히 0건을 내놓지 않고 실패로 말한다. */
       return {
         persisted: false,
         reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
@@ -1269,14 +1288,14 @@ export async function activateRecoveryExecution(params: {
         applicationSnapshot.availability.checkedAt ||
       option.visitStartAt !== applicationSnapshot.visitStartAt ||
       option.visitEndAt !== applicationSnapshot.visitEndAt ||
-      option.confirmationRequired !== false ||
+      option.confirmationRequired !==
+        applicationSnapshot.confirmationRequired ||
       option.evidenceGapCount !==
         applicationSnapshot.evidenceGapCodes.length ||
       applicationSnapshot.contractVersion !==
         APPLICATION_SAFETY_CONTRACT_VERSION ||
       applicationSnapshot.ruleVersion !== RECOVERY_RULE_VERSION ||
       applicationSnapshot.recoveryMode !== run.recoveryMode ||
-      applicationSnapshot.confirmationRequired !== false ||
       applicationSnapshotClass(applicationSnapshot) === undefined ||
       !Number.isFinite(checkedAtMs) ||
       checkedAtMs > nowMs + 60_000 ||

@@ -40,6 +40,10 @@ export const PLAYWRIGHT_D1_FIXTURE = Object.freeze({
   optionA: "e2e-open-window-option-a",
   optionB: "e2e-open-window-option-b",
   staleOption: "e2e-open-window-option-stale",
+  /* 운영시간을 대조하지 못한 계약. 적용에 동의가 필요한 갈래를 외부 API 없이
+     확인하려고 따로 심는다. */
+  hoursUnconfirmedRun: "10000000-0000-4000-8000-000000000004",
+  hoursUnconfirmedOption: "e2e-open-window-option-hours-unconfirmed",
   lateExecutionId: "e2e-late-contract-execution",
   lateCurrentStepId: "e2e-late-next-fixed-step",
   lateRemainingStepId: "e2e-late-remaining-step",
@@ -133,6 +137,10 @@ function openWindowOption({
   windowStartAt,
   windowEndAt,
   signingKey,
+  /* 운영시간을 대조하지 못한 계약도 씨앗으로 만들 수 있어야 한다. 이 갈래가
+     실제로 적용되는지를 외부 API 없이 확인하려면 픽스처가 그 모양을 알아야
+     한다. */
+  hoursUnconfirmed = false,
 }) {
   const openWindow = {
     windowStartAt,
@@ -168,9 +176,12 @@ function openWindowOption({
     contractVersion: APPLICATION_SAFETY_CONTRACT_VERSION,
     ruleVersion: RECOVERY_RULE_VERSION,
     recoveryMode: "open_window",
-    availability: { status: "confirmed_open", checkedAt },
-    confirmationRequired: false,
-    evidenceGapCodes: [],
+    availability: {
+      status: hoursUnconfirmed ? "official_hours_unstructured" : "confirmed_open",
+      checkedAt,
+    },
+    confirmationRequired: hoursUnconfirmed,
+    evidenceGapCodes: hoursUnconfirmed ? ["OPERATING_HOURS_UNVERIFIED"] : [],
     visitStartAt,
     visitEndAt,
     openWindow,
@@ -195,7 +206,9 @@ function openWindowOption({
     schedule_diff_json: JSON.stringify(scheduleDiff),
     continuity_proof_json: JSON.stringify({
       availabilityEvidence: {
-        status: "confirmed_open",
+        status: hoursUnconfirmed
+          ? "official_hours_unstructured"
+          : "confirmed_open",
         checkedAt,
       },
       openWindow,
@@ -207,12 +220,16 @@ function openWindowOption({
       signingKey,
     ),
     safety_contract_version: APPLICATION_SAFETY_CONTRACT_VERSION,
-    availability_status: "confirmed_open",
+    /* 저장된 행과 봉인된 스냅숏은 서로 일치해야 한다. 적용 자리가 그 둘을
+       대조하므로, 픽스처도 한쪽만 바꾸면 안 된다. */
+    availability_status: hoursUnconfirmed
+      ? "official_hours_unstructured"
+      : "confirmed_open",
     availability_checked_at: checkedAt,
     visit_start_at: visitStartAt,
     visit_end_at: visitEndAt,
-    confirmation_required: false,
-    evidence_gap_count: 0,
+    confirmation_required: hoursUnconfirmed,
+    evidence_gap_count: hoursUnconfirmed ? 1 : 0,
   });
 }
 
@@ -371,6 +388,11 @@ export function buildPlaywrightD1FixtureSql({ signingKey, now = new Date() }) {
   for (const [runId, optionId, suffix] of [
     [PLAYWRIGHT_D1_FIXTURE.runA, PLAYWRIGHT_D1_FIXTURE.optionA, "A"],
     [PLAYWRIGHT_D1_FIXTURE.runB, PLAYWRIGHT_D1_FIXTURE.optionB, "B"],
+    [
+      PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedRun,
+      PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedOption,
+      "H",
+    ],
   ]) {
     statements.push(
       recoveryRun({
@@ -382,6 +404,7 @@ export function buildPlaywrightD1FixtureSql({ signingKey, now = new Date() }) {
       openWindowOption({
         runId,
         optionId,
+        hoursUnconfirmed: suffix === "H",
         contentId: `e2e-place-${suffix.toLowerCase()}`,
         title: `E2E safe stop ${suffix}`,
         address: "Seoul, Jongno-gu",

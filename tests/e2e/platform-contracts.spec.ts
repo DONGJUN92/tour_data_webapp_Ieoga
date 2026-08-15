@@ -573,3 +573,56 @@ test("real D1 preserves contract_missed while separately recording abandonment a
   });
   expect(expiredArrival.status()).toBe(404);
 });
+
+/* 운영시간을 대조하지 못한 계약이 **실제로 적용되는지**를 외부 API 없이 확인한다.
+   이 갈래는 두 번 막혔다. 한 번은 계약이 그 모양을 담지 못해 조회 전체가 503이
+   됐고, 한 번은 적용 자리가 `confirmationRequired !== false`를 따로 못박고 있어
+   동의를 받고도 INVALID_STATE로 거절됐다. 두 번 다 소스만 읽는 검사로는 잡히지
+   않았다. D1에 실제 행을 심고 실제 요청을 보내 고정한다. */
+test("real D1 applies an hours-unconfirmed option only with acknowledgement", async ({
+  request,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "mobile-360",
+    "The startup fixture is intentionally single-use across the shared D1 process.",
+  );
+  const headers = fixtureMutationHeaders(
+    PLAYWRIGHT_D1_FIXTURE.primarySessionId,
+  );
+  const applyPath = `/api/v1/recover/${PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedRun}/apply`;
+
+  /* 동의 없이 보내면 서버가 되묻는다. 화면의 체크박스만으로는 계약이 되지 않는다. */
+  const withoutAck = await request.post(applyPath, {
+    headers,
+    data: { optionId: PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedOption },
+  });
+  const withoutAckText = await withoutAck.text();
+  expect(withoutAck.status(), withoutAckText).toBe(409);
+  expect(JSON.parse(withoutAckText).error.code).toBe("ACKNOWLEDGEMENT_REQUIRED");
+
+  /* 동의하면 적용된다. 여기서 막히면 여행자는 카드에서 동의하고도 아무 일도
+     일어나지 않는 화면을 본다. */
+  const withAck = await request.post(applyPath, {
+    headers,
+    data: {
+      optionId: PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedOption,
+      acknowledgeUnverifiedHours: true,
+    },
+  });
+  const withAckText = await withAck.text();
+  expect(withAck.status(), withAckText).toBe(201);
+  const applied = JSON.parse(withAckText);
+  expect(applied.status).toBe("activated");
+  expect(applied.execution.status).toBe("active");
+
+  /* 동의는 공유까지 열지 않는다. 적용은 내가 감수하는 선택이고, 공유는 남에게
+     건네는 검증 증명서다. */
+  const shared = await request.post("/api/v1/share", {
+    headers,
+    data: {
+      runId: PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedRun,
+      optionId: PLAYWRIGHT_D1_FIXTURE.hoursUnconfirmedOption,
+    },
+  });
+  expect([400, 403, 409]).toContain(shared.status());
+});

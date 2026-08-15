@@ -12,6 +12,12 @@ export type OptionApplicationSafety = {
   canApply: boolean;
   availabilityStatus: string;
   reasons: string[];
+  /* 막는 이유가 **운영시간을 대조하지 못했다는 것 하나뿐**인가.
+     "닫혀 있다고 확인된 곳"과 "열려 있는지 모르는 곳"은 여행자에게 전혀 다른
+     상황인데, 예전에는 둘 다 똑같이 선택 불가였다. 앞의 것은 헛걸음이 확실하고,
+     뒤의 것은 원문 운영시간을 읽거나 전화 한 통으로 풀리는 일이다.
+     화면이 그 둘을 갈라 다루려면 먼저 구별할 수 있어야 한다. */
+  hoursUnconfirmedOnly: boolean;
 };
 
 export type VerifiedTravelerOrigin = {
@@ -116,6 +122,8 @@ export function optionApplicationSafety(
 ): OptionApplicationSafety {
   const availabilityStatus = String(record(option.availability)?.status ?? "unknown");
   const reasons: string[] = [];
+  /* 운영시간 말고 다른 이유가 하나라도 있으면 그 카드는 여전히 막힌다. */
+  let nonHoursReason = false;
 
   if (availabilityStatus === "confirmed_closed") {
     reasons.push(
@@ -138,10 +146,12 @@ export function optionApplicationSafety(
       (language === "en"
         ? "A required travel condition has not been verified."
         : "필수 여행 조건의 공식 근거를 확인하지 못했습니다.");
+    if (gap.code !== "OPERATING_HOURS_UNVERIFIED") nonHoursReason = true;
     if (!reasons.includes(message)) reasons.push(message);
   }
 
   if (option.confirmationRequired && reasons.length === 0) {
+    nonHoursReason = true;
     reasons.push(
       language === "en"
         ? "A required travel condition still needs official confirmation."
@@ -153,6 +163,12 @@ export function optionApplicationSafety(
     canApply: reasons.length === 0,
     availabilityStatus,
     reasons,
+    /* 닫혀 있다고 확인된 곳은 여기에 들지 않는다. 그것은 확인하지 못한 것이
+       아니라 확인된 사실이고, 확인을 한 번 더 받는다고 문이 열리지는 않는다. */
+    hoursUnconfirmedOnly:
+      reasons.length > 0 &&
+      !nonHoursReason &&
+      availabilityStatus !== "confirmed_closed",
   };
 }
 

@@ -573,25 +573,39 @@ test("역방향 복귀 경로가 없으면 왕복 빈시간 후보를 실패 폐
   );
 });
 
-test("운영정보의 휴무·데이터 공백·제공자 장애를 구분하고 모두 안전 추천에서 제외한다", async () => {
+/* 세 가지는 이름이 비슷하지만 여행자에게는 전혀 다른 상황이고, 빈 시간 추천은
+   그 셋을 다르게 다룬다.
+
+   - 휴무로 **확인된** 곳: 제외한다. 확인하지 못한 것이 아니라 확인된 사실이고,
+     한 번 더 물어본다고 문이 열리지 않는다.
+   - 제공자에 **연결하지 못한** 곳: 제외한다. 우리가 아무것도 받지 못했으므로
+     보여 줄 근거 자체가 없다. 다시 시도하면 달라질 수 있다.
+   - 응답은 받았지만 운영시간을 **대조하지 못한** 곳: 보여 준다. 원문은 우리가
+     들고 있고 사람은 그것을 읽을 수 있다. 목록에서 지우면 여행자는 그런 곳이
+     있었다는 사실조차 모른 채 "갈 곳이 없다"를 본다. 대신 일정에 넣기 전에
+     확인을 받는다. */
+test("휴무·제공자 장애는 제외하고, 운영시간 미대조는 확인을 받고 제안한다", async () => {
   const scenarios = [
     {
       mode: "confirmed_closed",
       latitude: 37.5668,
       reasonCode: "OFFICIALLY_CLOSED",
       status: "no_valid_candidate",
+      offered: false,
     },
     {
       mode: "unconfirmed",
       latitude: 37.5669,
-      reasonCode: "OPERATING_STATUS_UNCONFIRMED",
-      status: "no_valid_candidate",
+      /* 조건이 붙은 결과이므로 전체 응답도 완전 검증이라고 말하지 않는다. */
+      status: "degraded",
+      offered: true,
     },
     {
       mode: "upstream_error",
       latitude: 37.5671,
       reasonCode: "OPERATING_STATUS_UPSTREAM_UNAVAILABLE",
       status: "upstream_unavailable",
+      offered: false,
     },
   ];
 
@@ -620,14 +634,39 @@ test("운영정보의 휴무·데이터 공백·제공자 장애를 구분하고
           `availability-${scenario.mode}`,
         );
 
-        assert.equal(result.options.length, 0, scenario.mode);
+        if (scenario.offered) {
+          const { optionApplicationSafety } = await import(
+            "../app/traveler-safety.ts"
+          );
+          assert.ok(
+            result.options.length > 0,
+            "운영시간을 대조하지 못했다는 이유로 목록에서 지우지 않는다",
+          );
+          for (const option of result.options) {
+            /* 카드가 그 사실을 말할 수 있어야 한다. */
+            assert.ok(
+              option.evidenceGaps.some(
+                (gap) => gap.code === "OPERATING_HOURS_UNVERIFIED",
+              ),
+              "확인하지 못한 사실을 근거 공백으로 남겨야 한다",
+            );
+            const safety = optionApplicationSafety(option, "ko");
+            assert.equal(
+              safety.hoursUnconfirmedOnly,
+              true,
+              "넣기 전에 확인을 받아야 하는 상태로 표시되어야 한다",
+            );
+          }
+        } else {
+          assert.equal(result.options.length, 0, scenario.mode);
+          assert.ok(
+            result.rejectionSummary.some(
+              (entry) => entry.reasonCode === scenario.reasonCode,
+            ),
+            scenario.mode,
+          );
+        }
         assert.equal(result.status, scenario.status, scenario.mode);
-        assert.ok(
-          result.rejectionSummary.some(
-            (entry) => entry.reasonCode === scenario.reasonCode,
-          ),
-          scenario.mode,
-        );
         if (scenario.mode === "upstream_error") {
           const detailAudits = result.sourceLedger.filter(
             (audit) => audit.operation === "detailIntro2",
@@ -684,7 +723,10 @@ test("상세 운영정보 한 건 실패를 공급자 전체 장애 503으로 �
   );
 });
 
-test("상세 운영정보가 일부 성공했다면 결과가 0개여도 제공자 전체 장애가 아니다", async () => {
+/* 조회에 실패한 후보와, 응답은 받았지만 대조하지 못한 후보가 섞여 있는 경우.
+   전자는 제외되고 후자는 확인을 받고 제안되므로 결과가 0개는 아니지만, 한 건의
+   실패를 제공자 전체 장애 503으로 승격하지 않는다는 계약은 그대로다. */
+test("상세 운영정보 일부 실패는 제공자 전체 장애가 아니다", async () => {
   await withMockedEnvironment(
     {
       near: [300],
@@ -705,18 +747,10 @@ test("상세 운영정보가 일부 성공했다면 결과가 0개여도 제공�
         "availability-partial-error-empty-result",
       );
 
-      assert.equal(result.options.length, 0);
-      assert.equal(
+      assert.notEqual(
         result.status,
-        "no_valid_candidate",
+        "upstream_unavailable",
         "일부 조회 실패는 검증되지 않은 해당 후보만 제외하며 전체 503이 아니다",
-      );
-      assert.ok(
-        result.rejectionSummary.some(
-          (entry) =>
-            entry.reasonCode === "OPERATING_STATUS_UNCONFIRMED" &&
-            entry.count >= 1,
-        ),
       );
       assert.ok(
         result.rejectionSummary.some(

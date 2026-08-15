@@ -782,6 +782,86 @@
   line-height: 1.6;
 }
 
+/* 운영시간만 확인되지 않은 곳. 선택할 수 없는 카드(.gaps)와 같은 빨강을 쓰지
+   않는다 — 그 색은 "여기는 안 된다"는 뜻이고, 이 곳은 갈 수 있다. 주의해서
+   읽을 값이라는 것만 표시한다. */
+.hoursUnverified {
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid #b26a00;
+  border-radius: 0 10px 10px 0;
+  background: #fff6e8;
+  color: #6b4300;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+/* 넣기 직전의 확인. 카드 안에 펼쳐지므로 어느 장소에 대한 물음인지 헷갈리지
+   않는다. */
+.hoursConfirm {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid #e0b070;
+  border-radius: 12px;
+  background: #fffaf2;
+}
+
+.hoursConfirm strong {
+  color: #6b4300;
+  font-size: 15px;
+}
+
+.hoursConfirm p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.hoursConfirmSource {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.hoursConfirmSource b {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hoursConfirmActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.hoursConfirmActions button {
+  flex: 1 1 150px;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 14.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.hoursConfirmProceed {
+  border-color: #b26a00 !important;
+  background: #b26a00 !important;
+  color: #ffffff !important;
+}
+
+.hoursConfirmActions button:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
 /* 찾은 곳을 일정으로 가져가는 버튼. 이 카드의 주 동작은 아니므로 테두리만
    두되, 손가락으로 누를 크기는 지킨다. */
 .planFromPlace {

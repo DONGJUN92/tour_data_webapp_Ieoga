@@ -979,8 +979,8 @@ export default function DiscoverWindowPanel({
         <p className={styles.footnote}>
           {tr(
             language,
-            "실제 이동·복귀 경로와 체류 시간 전체의 운영 여부가 확인된 곳만 선택할 수 있습니다. 미확인 후보는 사유와 함께 차단합니다.",
-            "Only places with verified outbound and return routes and confirmed opening for the full stay can be selected. Unverified options are blocked with a reason.",
+            "실제 이동·복귀 경로가 확인된 곳만 제안합니다. 문을 닫는다고 확인된 곳은 제외하고, 운영시간을 대조하지 못한 곳은 그 사실을 밝힌 뒤 확인을 받고 넣습니다.",
+            "We only suggest places with verified outbound and return routes. Places confirmed closed are excluded; where opening hours could not be matched, we say so and ask you to confirm before adding.",
           )}
         </p>
       </form>
@@ -1324,6 +1324,11 @@ function DiscoverOptionCard({
   onPlanFromPlace?: Props["onPlanFromPlace"];
 }) {
   const [expanded, setExpanded] = useState(false);
+  /* 운영시간을 대조하지 못한 곳을 일정에 넣기 직전에 한 번 묻는다. 카드에는
+     이미 그 사실이 적혀 있지만, 읽고 넘어간 사람과 읽지 않은 사람을 화면이
+     구별할 수는 없다. 넣는 순간은 되돌리기 어려운 행동이므로 그때 한 번 더
+     보여 준다. */
+  const [confirmingHours, setConfirmingHours] = useState(false);
   const window = option.scheduleDiff?.openWindow;
   /* 카드 문구의 수단은 서버가 실제로 쓴 경로 제공자를 따라야 한다. 화면 상태
      (선택한 수단)로 쓰면 조회가 실패해 다른 수단으로 내려간 경우에도 잘못된
@@ -1341,7 +1346,17 @@ function DiscoverOptionCard({
           ? { ko: "자전거로", noun: "자전거", en: "cycle" }
           : { ko: "걸어서", noun: "보행", en: "walk" };
   const safety = optionApplicationSafety(option, language);
-  const isBlocked = !safety.canApply;
+  /* 운영시간만 확인되지 않은 곳은 막지 않는다. 목록에서 지우면 여행자는 그런
+     곳이 있었다는 사실조차 모르고, 카드만 흐리게 두면 왜 못 고르는지 모른 채
+     남는다. 다른 곳과 똑같이 보여 주고, 넣을 때 확인을 받는다. */
+  const needsHoursConfirmation = safety.hoursUnconfirmedOnly;
+  const isBlocked = !safety.canApply && !needsHoursConfirmation;
+  const addPlace = () =>
+    onPlanFromPlace?.({
+      title: option.title,
+      address: option.address ?? "",
+      contentTypeId: option.contentTypeId,
+    });
   const resultGeneratedAtMs = Date.parse(generatedAt ?? "");
   const windowStartAtMs = Date.parse(window?.windowStartAt ?? "");
   const leavesLater =
@@ -1361,6 +1376,8 @@ function DiscoverOptionCard({
     (language === "en" && fact.valueEn) || fact.value;
   const factLabel = (fact: TravelerFact) =>
     language === "en" ? fact.labelEn : fact.label;
+  const hoursFact = facts.find((fact) => fact.code === "hours");
+  const contactFact = facts.find((fact) => fact.code === "contact");
 
   return (
     <li
@@ -1506,6 +1523,18 @@ function DiscoverOptionCard({
         </dl>
       )}
 
+      {/* 운영시간만 확인되지 않은 곳은 카드에 한 줄로 밝힌다. 넣을 때 묻기는
+          하지만, 고르기 전에 알고 있어야 그 물음이 갑작스럽지 않다. */}
+      {needsHoursConfirmation && (
+        <p className={styles.hoursUnverified}>
+          {tr(
+            language,
+            "운영시간을 공식 정보로 확인하지 못했습니다. 방문 전 확인이 필요합니다.",
+            "Opening hours are not confirmed by official data — please check before visiting.",
+          )}
+        </p>
+      )}
+
       {/* 접지 않는다. 이 후보를 일정에 넣으면 헛걸음하거나 다음 일정에 늦을 수
           있다는 경고이며, 한 번 더 눌러야 보이면 경고가 아니다. */}
       {isBlocked && (
@@ -1549,14 +1578,14 @@ function DiscoverOptionCard({
             type="button"
             className={styles.planFromPlace}
             disabled={isBlocked}
-            onClick={() =>
-              safety.canApply &&
-              onPlanFromPlace({
-                title: option.title,
-                address: option.address ?? "",
-                contentTypeId: option.contentTypeId,
-              })
-            }
+            onClick={() => {
+              if (isBlocked) return;
+              if (needsHoursConfirmation) {
+                setConfirmingHours(true);
+                return;
+              }
+              addPlace();
+            }}
           >
             {isBlocked
               ? tr(language, "안전 확인 전 추가 불가", "Cannot add until verified")
@@ -1564,6 +1593,72 @@ function DiscoverOptionCard({
           </button>
         )}
       </div>
+
+      {confirmingHours && (
+        <section
+          className={styles.hoursConfirm}
+          role="group"
+          aria-label={tr(
+            language,
+            "운영시간 확인 안내",
+            "Opening hours not confirmed",
+          )}
+        >
+          <strong>
+            {tr(
+              language,
+              "운영시간을 확인하지 못했습니다",
+              "We could not confirm the opening hours",
+            )}
+          </strong>
+          <p>
+            {tr(
+              language,
+              "한국관광공사 공식 정보에 이 곳의 운영시간이 없거나, 도착 시각과 대조할 수 없는 형식으로 적혀 있습니다. 도착했을 때 문이 닫혀 있을 수 있습니다.",
+              "The official tourism data either has no opening hours for this place, or states them in a form we cannot match against your arrival time. It may be closed when you get there.",
+            )}
+          </p>
+          {/* 우리가 들고 있는 원문은 그대로 보여 준다. 기계가 못 읽는 것과
+              사람이 못 읽는 것은 다르다. */}
+          {hoursFact && (
+            <p className={styles.hoursConfirmSource}>
+              <b>{tr(language, "공식 표기", "Official text")}</b>{" "}
+              {factValue(hoursFact)}
+            </p>
+          )}
+          {contactFact && (
+            <p className={styles.hoursConfirmSource}>
+              <b>{tr(language, "문의", "Phone")}</b> {factValue(contactFact)}
+            </p>
+          )}
+          <p>
+            {tr(
+              language,
+              "출발 전에 전화나 검색으로 운영 여부를 확인해 주세요.",
+              "Please check by phone or search before you set out.",
+            )}
+          </p>
+          <div className={styles.hoursConfirmActions}>
+            <button
+              type="button"
+              className={styles.hoursConfirmProceed}
+              onClick={() => {
+                setConfirmingHours(false);
+                addPlace();
+              }}
+            >
+              {tr(
+                language,
+                "확인했습니다, 일정에 넣기",
+                "I understand — add it",
+              )}
+            </button>
+            <button type="button" onClick={() => setConfirmingHours(false)}>
+              {tr(language, "취소", "Cancel")}
+            </button>
+          </div>
+        </section>
+      )}
 
       {expanded && (
         <div className={styles.detail} id={detailId}>

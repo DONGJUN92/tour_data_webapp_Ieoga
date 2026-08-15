@@ -341,7 +341,10 @@ export type EvidenceGap = {
   code:
     | "INDOOR_UNVERIFIED"
     | "ACCESSIBILITY_UNVERIFIED"
-    | "CONCENTRATION_UNVERIFIED";
+    | "CONCENTRATION_UNVERIFIED"
+    /* 공식 응답은 받았지만 운영시간을 대조할 수 없는 곳. 빈 시간 추천에서는
+       숨기지 않고, 대신 일정에 넣기 전에 확인을 받는다. */
+    | "OPERATING_HOURS_UNVERIFIED";
   note: string;
   noteEn?: string;
 };

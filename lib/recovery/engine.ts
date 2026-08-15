@@ -562,8 +562,19 @@ function operatingStatusRejection(params: {
   availability: PublicAvailabilityEvidence;
   lookupFailed: boolean;
   changedNodeCount: number;
+  /* 빈 시간에 한 곳을 끼워 넣는 추천인가. 그때는 운영시간을 대조하지 못한 곳을
+     목록에서 지우지 않고, 넣기 직전에 확인을 받는다. 문이 닫혀 있다고 **확인된**
+     곳은 어느 쪽이든 계속 제외한다 — 그것은 미확인이 아니라 확인된 사실이다. */
+  allowUnconfirmedHours?: boolean;
 }): RejectedCandidate | undefined {
   if (params.availability.status === "confirmed_open") return undefined;
+  if (
+    params.allowUnconfirmedHours &&
+    !params.lookupFailed &&
+    params.availability.status !== "confirmed_closed"
+  ) {
+    return undefined;
+  }
   const reasonCode: RejectionReasonCode =
     params.availability.status === "confirmed_closed"
       ? "OFFICIALLY_CLOSED"
@@ -2024,7 +2035,17 @@ async function enrichForContinuity(params: {
           return null;
         }
         /* 표기를 대조할 수 없다는 판정은 도착 시각을 바꿔도 달라지지 않는다.
-           그러면 경로를 조회할 이유가 없다. */
+           그러면 이 판정은 여기서 끝난다.
+
+           빈 시간 추천에서는 그런 곳을 숨기지 않는다. 목록에서 지워 버리면
+           여행자는 그런 곳이 있었다는 사실조차 모른 채 "갈 곳이 없다"는 화면을
+           본다. 운영시간 원문은 우리가 이미 들고 있고, 사람은 그것을 읽을 수
+           있다. 그래서 카드로 보여 주되 일정에 넣기 전에 확인을 받는다 —
+           숨기는 것과 아무 말 없이 넣게 두는 것 사이에 답이 있다.
+
+           원래 일정을 고치는 복구에서는 계속 제외한다. 그쪽은 "다음 예약을
+           지킨다"가 약속이라, 문이 열려 있는지 모르는 곳을 끼워 넣으면 그
+           약속의 근거가 사라진다. */
         const probe = evaluateAvailabilityItem(
           availabilitySource.item,
           availabilitySource.audit,
@@ -2032,8 +2053,9 @@ async function enrichForContinuity(params: {
           new Date(context.occurredAt.getTime() + minimumStay * 60_000),
         );
         if (
-          probe.status === "unknown" ||
-          probe.status === "official_hours_unstructured"
+          (probe.status === "unknown" ||
+            probe.status === "official_hours_unstructured") &&
+          context.changeKind !== "insert"
         ) {
           rejected.push({
             contentId: candidate.contentId,
@@ -2042,7 +2064,7 @@ async function enrichForContinuity(params: {
             reason:
               "공식 응답은 받았지만 제안된 체류 구간 전체가 운영 중임을 확인할 수 없어 제외했습니다.",
             distanceMeters: candidate.distanceMeters,
-            changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+            changedNodeCount: 1,
             verificationDepth: "pre_filter",
           });
           return null;
@@ -2234,8 +2256,29 @@ async function enrichForContinuity(params: {
       availability,
       lookupFailed: availabilityLookupFailed,
       changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+      allowUnconfirmedHours: context.changeKind === "insert",
     });
     if (operatingViolation) violations.push(operatingViolation);
+    /* 제외하지 않고 보여 주기로 한 곳에는 그 사실을 근거 공백으로 붙인다.
+       카드가 "무엇을 확인하지 못했는지"를 말할 수 있어야, 넣기 직전의 확인이
+       느닷없는 경고가 아니라 이미 읽은 사실의 확인이 된다. */
+    if (
+      context.changeKind === "insert" &&
+      !operatingViolation &&
+      availability.status !== "confirmed_open"
+    ) {
+      candidate.evidenceGaps = [
+        ...candidate.evidenceGaps.filter(
+          (gap) => gap.code !== "OPERATING_HOURS_UNVERIFIED",
+        ),
+        {
+          code: "OPERATING_HOURS_UNVERIFIED",
+          note: "체류 시간 전체의 운영 여부를 공식 정보로 확인하지 못했습니다.",
+          noteEn:
+            "Official data does not confirm opening for the whole stay.",
+        },
+      ];
+    }
     /* 거리 자체는 탈락 조건이 아니다. 등록 일정/빈 시간에서는 아래 연속성·창
        증명이 이동+체류+복귀(또는 다음 일정)를 실제 시각으로 fail-closed 한다.
        컨텍스트 없는 구형 호출만 호환 시간 한도를 사용한다. */

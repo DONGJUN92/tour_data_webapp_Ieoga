@@ -172,6 +172,23 @@ export function optionApplicationSafety(
   };
 }
 
+/**
+ * 확인을 받으면 고를 수 있는 안인가.
+ *
+ * 세 화면이 같은 판단을 각자 적어 두면 갈라진다. 실제로 갈라져서, 한 화면은
+ * 카드를 흐리게 칠하고 다른 화면은 목록에서 아예 세지 않았다. 판단은 한 곳에
+ * 둔다.
+ *
+ * 공유는 이 문을 열지 않는다. 적용은 내가 감수하는 선택이고, 공유는 "이 경로는
+ * 공식 근거로 검증됐다"는 증명서를 다른 사람에게 건네는 일이다. 확인하지 못한
+ * 것이 있는 결과에 그 증명서를 붙이면 받는 사람이 속는다.
+ */
+export function optionSelectableWithAcknowledgement(
+  safety: OptionApplicationSafety,
+): boolean {
+  return safety.canApply || safety.hoursUnconfirmedOnly;
+}
+
 export type LockedAppointmentSnapshot = {
   id: string;
   startAt: string;

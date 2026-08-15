@@ -106,6 +106,7 @@ import {
   executionMatchesAppliedRecovery,
   executionPreservesLockedAppointment,
   optionApplicationSafety,
+  optionSelectableWithAcknowledgement,
 } from "./traveler-safety";
 
 const ABLATION_SOURCE_EN: Record<string, { label: string; lost: string }> = {
@@ -479,6 +480,10 @@ export function ProductApp() {
   );
   const [shareMessages, setShareMessages] = useState<Record<string, string>>({});
   const [appliedOptionId, setAppliedOptionId] = useState("");
+  /* 운영시간을 대조하지 못했다는 안내를 읽고 동의한 복구안. 동의는 확인을
+     대신하지 않는다 — 카드는 계속 미확인으로 남고, 공유도 열리지 않는다.
+     한 번에 하나만 담는다: 다른 안을 고르면 그 안에 대해 다시 읽어야 한다. */
+  const [acknowledgedOptionId, setAcknowledgedOptionId] = useState("");
   const [applyingOptionId, setApplyingOptionId] = useState("");
   const [outcomeMessage, setOutcomeMessage] = useState("");
   const [outcomePriority, setOutcomePriority] =
@@ -1776,9 +1781,20 @@ export function ProductApp() {
 
   async function applyRecoveryOption(option: RecoveryOption) {
     const safety = optionApplicationSafety(option, language);
-    if (!safety.canApply) {
+    /* 운영시간만 확인되지 않은 안은 여행자가 그 사실을 읽고 동의했을 때 열린다.
+       동의는 확인을 대신하지 않는다 — 근거 공백은 그대로 남고 공유도 막힌다. */
+    const acknowledged =
+      safety.hoursUnconfirmedOnly && acknowledgedOptionId === option.id;
+    if (!safety.canApply && !acknowledged) {
       setOutcomePriority("assertive");
-      setOutcomeMessage(safety.reasons.join(" "));
+      setOutcomeMessage(
+        safety.hoursUnconfirmedOnly
+          ? tr(
+              "운영시간을 확인하지 못했다는 안내를 읽고 동의해 주세요.",
+              "Please read and accept the note about the unconfirmed opening hours.",
+            )
+          : safety.reasons.join(" "),
+      );
       return;
     }
     if (!recovery?.requestId || !option.id || !recoveryPersisted) {
@@ -4035,7 +4051,9 @@ export function ProductApp() {
                           className={[
                             "option-card",
                             appliedOptionId === option.id ? "is-applied" : "",
-                            !optionApplicationSafety(option, language).canApply
+                            !optionSelectableWithAcknowledgement(
+                              optionApplicationSafety(option, language),
+                            )
                               ? "is-unverified"
                               : "",
                           ]
@@ -4093,10 +4111,14 @@ export function ProductApp() {
                                 </span>
                               )}
                             </div>
-                            {!optionApplicationSafety(option, language).canApply && (
+                            {/* 운영시간만 대조하지 못한 안은 막지 않는다. 무엇을
+                                확인하지 못했는지 밝히고, 원문과 문의처를 함께
+                                주고, 읽었다는 동의를 받은 뒤에 연다. 동의해도
+                                카드가 "검증됨"으로 바뀌지는 않는다. */}
+                            {optionApplicationSafety(option, language)
+                              .hoursUnconfirmedOnly ? (
                               <section
-                                className="evidence-gap-alert"
-                                role="alert"
+                                className="evidence-gap-alert is-acknowledgeable"
                                 aria-label={tr(
                                   "출발 전 직접 확인할 항목",
                                   "Conditions to verify before leaving",
@@ -4104,24 +4126,85 @@ export function ProductApp() {
                               >
                                 <strong>
                                   {language === "en"
-                                    ? "Unavailable until every safety condition is verified"
-                                    : "모든 안전 조건을 확인하기 전에는 적용할 수 없어요"}
+                                    ? "We could not confirm the opening hours"
+                                    : "운영시간을 확인하지 못했습니다"}
                                 </strong>
                                 <p>
                                   {language === "en"
-                                    ? "IEOGA blocks closed and unverified options to prevent a wasted trip or a missed appointment."
-                                    : "헛걸음이나 다음 약속 지연을 막기 위해 휴무·미확인 후보는 일정에 적용하지 않습니다."}
+                                    ? "The official tourism data either has no opening hours for this place, or states them in a form we cannot match against your arrival time. It may be closed when you get there."
+                                    : "한국관광공사 공식 정보에 이 곳의 운영시간이 없거나, 도착 시각과 대조할 수 없는 형식으로 적혀 있습니다. 도착했을 때 문이 닫혀 있을 수 있습니다."}
                                 </p>
-                                <ul>
-                                  {optionApplicationSafety(option, language).reasons.map(
-                                    (reason, reasonIndex) => (
-                                      <li key={`${option.id}-safety-${reasonIndex}`}>
-                                        {reason}
-                                      </li>
-                                    ),
-                                  )}
-                                </ul>
+                                {(() => {
+                                  const evidence = asRecord(option.availability);
+                                  const hours = readText(evidence, [
+                                    "operatingHours",
+                                  ]);
+                                  const contact = readText(evidence, ["contact"]);
+                                  if (!hours && !contact) return null;
+                                  return (
+                                    <ul>
+                                      {hours && (
+                                        <li>
+                                          {tr("공식 표기", "Official text")} · {hours}
+                                        </li>
+                                      )}
+                                      {contact && (
+                                        <li>
+                                          {tr("문의", "Phone")} · {contact}
+                                        </li>
+                                      )}
+                                    </ul>
+                                  );
+                                })()}
+                                <label className="evidence-gap-ack">
+                                  <input
+                                    type="checkbox"
+                                    checked={acknowledgedOptionId === option.id}
+                                    onChange={(event) =>
+                                      setAcknowledgedOptionId(
+                                        event.target.checked ? option.id : "",
+                                      )
+                                    }
+                                  />
+                                  <span>
+                                    {language === "en"
+                                      ? "I understand and will check before I go"
+                                      : "확인했습니다. 출발 전에 직접 확인하겠습니다"}
+                                  </span>
+                                </label>
                               </section>
+                            ) : (
+                              !optionApplicationSafety(option, language)
+                                .canApply && (
+                                <section
+                                  className="evidence-gap-alert"
+                                  role="alert"
+                                  aria-label={tr(
+                                    "출발 전 직접 확인할 항목",
+                                    "Conditions to verify before leaving",
+                                  )}
+                                >
+                                  <strong>
+                                    {language === "en"
+                                      ? "Unavailable until every safety condition is verified"
+                                      : "모든 안전 조건을 확인하기 전에는 적용할 수 없어요"}
+                                  </strong>
+                                  <p>
+                                    {language === "en"
+                                      ? "IEOGA blocks closed and unverified options to prevent a wasted trip or a missed appointment."
+                                      : "헛걸음이나 다음 약속 지연을 막기 위해 휴무·미확인 후보는 일정에 적용하지 않습니다."}
+                                  </p>
+                                  <ul>
+                                    {optionApplicationSafety(option, language).reasons.map(
+                                      (reason, reasonIndex) => (
+                                        <li key={`${option.id}-safety-${reasonIndex}`}>
+                                          {reason}
+                                        </li>
+                                      ),
+                                    )}
+                                  </ul>
+                                </section>
+                              )
                             )}
                             {(() => {
                               const geometry = (option.routeGeometry ??
@@ -4443,7 +4526,13 @@ export function ProductApp() {
                                     !recoveryPersisted ||
                                     !recovery.requestId ||
                                     !option.id ||
-                                    !optionApplicationSafety(option, language).canApply
+                                    (!optionApplicationSafety(option, language)
+                                      .canApply &&
+                                      !(
+                                        optionApplicationSafety(option, language)
+                                          .hoursUnconfirmedOnly &&
+                                        acknowledgedOptionId === option.id
+                                      ))
                                   }
                                   aria-busy={applyingOptionId === option.id}
                                 >
@@ -4459,6 +4548,15 @@ export function ProductApp() {
                                     ? language === "en"
                                       ? "Currently applied"
                                       : "현재 적용 중"
+                                    : optionApplicationSafety(option, language)
+                                          .hoursUnconfirmedOnly
+                                      ? acknowledgedOptionId === option.id
+                                        ? language === "en"
+                                          ? "Continue, hours unconfirmed"
+                                          : "확인하고 이 일정으로 이어가기"
+                                        : language === "en"
+                                          ? "Read the note above first"
+                                          : "위 안내를 확인해 주세요"
                                     : !optionApplicationSafety(option, language).canApply
                                       ? language === "en"
                                         ? "Cannot apply until verified"

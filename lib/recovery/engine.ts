@@ -562,9 +562,10 @@ function operatingStatusRejection(params: {
   availability: PublicAvailabilityEvidence;
   lookupFailed: boolean;
   changedNodeCount: number;
-  /* 빈 시간에 한 곳을 끼워 넣는 추천인가. 그때는 운영시간을 대조하지 못한 곳을
-     목록에서 지우지 않고, 넣기 직전에 확인을 받는다. 문이 닫혀 있다고 **확인된**
-     곳은 어느 쪽이든 계속 제외한다 — 그것은 미확인이 아니라 확인된 사실이다. */
+  /* 운영시간을 대조하지 못한 곳을 목록에서 지우지 않고, 적용 직전에 확인을
+     받을 것인가. 문이 닫혀 있다고 **확인된** 곳과 제공자에 **연결하지 못한**
+     곳은 이 값과 무관하게 계속 제외한다 — 앞의 것은 미확인이 아니라 확인된
+     사실이고, 뒤의 것은 보여 줄 근거 자체가 없다. */
   allowUnconfirmedHours?: boolean;
 }): RejectedCandidate | undefined {
   if (params.availability.status === "confirmed_open") return undefined;
@@ -2037,38 +2038,17 @@ async function enrichForContinuity(params: {
         /* 표기를 대조할 수 없다는 판정은 도착 시각을 바꿔도 달라지지 않는다.
            그러면 이 판정은 여기서 끝난다.
 
-           빈 시간 추천에서는 그런 곳을 숨기지 않는다. 목록에서 지워 버리면
-           여행자는 그런 곳이 있었다는 사실조차 모른 채 "갈 곳이 없다"는 화면을
-           본다. 운영시간 원문은 우리가 이미 들고 있고, 사람은 그것을 읽을 수
-           있다. 그래서 카드로 보여 주되 일정에 넣기 전에 확인을 받는다 —
-           숨기는 것과 아무 말 없이 넣게 두는 것 사이에 답이 있다.
+           그런 곳을 숨기지 않는다. 목록에서 지워 버리면 여행자는 그런 곳이
+           있었다는 사실조차 모른 채 "갈 곳이 없다"는 화면을 본다. 운영시간
+           원문은 우리가 이미 들고 있고, 사람은 그것을 읽을 수 있다. 그래서
+           카드로 보여 주되 적용하기 전에 확인을 받는다 — 숨기는 것과 아무 말
+           없이 넣게 두는 것 사이에 답이 있다.
 
-           원래 일정을 고치는 복구에서는 계속 제외한다. 그쪽은 "다음 예약을
-           지킨다"가 약속이라, 문이 열려 있는지 모르는 곳을 끼워 넣으면 그
-           약속의 근거가 사라진다. */
-        const probe = evaluateAvailabilityItem(
-          availabilitySource.item,
-          availabilitySource.audit,
-          context.occurredAt,
-          new Date(context.occurredAt.getTime() + minimumStay * 60_000),
-        );
-        if (
-          (probe.status === "unknown" ||
-            probe.status === "official_hours_unstructured") &&
-          context.changeKind !== "insert"
-        ) {
-          rejected.push({
-            contentId: candidate.contentId,
-            title: candidate.title,
-            reasonCode: "OPERATING_STATUS_UNCONFIRMED",
-            reason:
-              "공식 응답은 받았지만 제안된 체류 구간 전체가 운영 중임을 확인할 수 없어 제외했습니다.",
-            distanceMeters: candidate.distanceMeters,
-            changedNodeCount: 1,
-            verificationDepth: "pre_filter",
-          });
-          return null;
-        }
+           빈 시간 추천과 일정 복구에 같은 규칙을 쓴다. 한동안 복구에서는
+           계속 제외했는데, 그러면 같은 장소가 어느 화면에서 왔느냐에 따라
+           보이기도 하고 사라지기도 한다. 확인하지 못했다는 사실은 화면과
+           무관하게 같은 사실이고, 그 사실을 안고 갈지는 여행자가 정한다.
+           적용 화면이 무엇을 확인하지 못했는지 밝히고 동의를 받는다. */
       } else {
         sourceLedger.push(availabilitySource.evidence.audit);
       }
@@ -2256,14 +2236,13 @@ async function enrichForContinuity(params: {
       availability,
       lookupFailed: availabilityLookupFailed,
       changedNodeCount: context.changeKind === "insert" ? 0 : 1,
-      allowUnconfirmedHours: context.changeKind === "insert",
+      allowUnconfirmedHours: true,
     });
     if (operatingViolation) violations.push(operatingViolation);
     /* 제외하지 않고 보여 주기로 한 곳에는 그 사실을 근거 공백으로 붙인다.
        카드가 "무엇을 확인하지 못했는지"를 말할 수 있어야, 넣기 직전의 확인이
        느닷없는 경고가 아니라 이미 읽은 사실의 확인이 된다. */
     if (
-      context.changeKind === "insert" &&
       !operatingViolation &&
       availability.status !== "confirmed_open"
     ) {

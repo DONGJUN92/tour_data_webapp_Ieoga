@@ -32,6 +32,7 @@ import {
   authoritativeExecutionMatchesApply,
   executionPreservesLockedAppointment,
   optionApplicationSafety,
+  optionSelectableWithAcknowledgement,
   type LockedAppointmentSnapshot,
 } from "../traveler-safety";
 import styles from "./flow.module.css";
@@ -779,8 +780,12 @@ export default function FlowApp() {
   const appointmentSelectionCurrent = Boolean(
     apptPlace && apptQuery.trim() === apptPlace.title.trim(),
   );
-  const verifiedOptionCount = options.filter(
-    (option) => optionApplicationSafety(option, language).canApply,
+  /* 확인을 받고 고를 수 있는 안까지 센다. 카드로는 보여 주면서 머릿수에서
+     빼면, 화면이 "3곳을 찾았어요"라고 말하고 그 아래에 다섯 장을 늘어놓는다. */
+  const verifiedOptionCount = options.filter((option) =>
+    optionSelectableWithAcknowledgement(
+      optionApplicationSafety(option, language),
+    ),
   ).length;
   const categoryCounts = tourismCategoryCounts(options);
   /* 장소 종류를 먼저 좁힌 다음 그 안에서 정렬한다. 반대로 하면 화면별로
@@ -983,9 +988,12 @@ export default function FlowApp() {
     };
   }, [rejectionSummary, availableMinutes, tr]);
 
+  /* 확인만 받으면 열리는 경우인가. 휴무로 확인된 곳이나 다른 조건이 미확인인
+     곳은 확인을 받는다고 열리지 않으므로 여기 들지 않는다 — 열리지 않는 문에
+     체크박스를 붙이면 그 체크박스가 거짓말을 한다. */
   const selectedNeedsAcknowledgement = Boolean(
     selectedOption &&
-      !optionApplicationSafety(selectedOption, language).canApply,
+      optionApplicationSafety(selectedOption, language).hoursUnconfirmedOnly,
   );
 
   const detectOrigin = useCallback(() => {
@@ -1487,10 +1495,20 @@ export default function FlowApp() {
       return;
     }
     const safety = optionApplicationSafety(selectedOption, language);
-    if (!safety.canApply) {
+    /* 운영시간만 확인되지 않은 안은 여행자가 그 사실을 읽고 동의했을 때만
+       열린다. 동의는 확인을 대신하지 않는다 — 카드는 계속 미확인으로 남는다. */
+    const acknowledged =
+      safety.hoursUnconfirmedOnly &&
+      acknowledgedOptionId === selectedOption.id;
+    if (!safety.canApply && !acknowledged) {
       setActionPriority("assertive");
       setActionMessage(
-        safety.reasons.join(" "),
+        safety.hoursUnconfirmedOnly
+          ? tr(
+              "운영시간을 확인하지 못했다는 안내를 읽고 동의해 주세요.",
+              "Please read and accept the note about the unconfirmed opening hours.",
+            )
+          : safety.reasons.join(" "),
       );
       return;
     }
@@ -2658,7 +2676,9 @@ export default function FlowApp() {
             <div className={styles.body}>
               {visibleOptions.map((option, optionIndex) => {
                 const safety = optionApplicationSafety(option, language);
-                const isBlocked = !safety.canApply;
+                /* 확인을 받으면 고를 수 있는 안은 흐리게 칠하지 않는다. */
+                const isBlocked =
+                  !optionSelectableWithAcknowledgement(safety);
                 const selected = selectedOptionId === option.id;
                 return (
                 <article
@@ -3484,10 +3504,28 @@ export default function FlowApp() {
                 <span>
                   <strong>
                     {tr(
-                      "확인되지 않은 조건을 알고 이어갑니다",
-                      "I understand what was not verified",
+                      "운영시간을 확인하지 못했습니다. 알고 이어갑니다",
+                      "Opening hours are unconfirmed — I understand",
                     )}
                   </strong>
+                  {/* 우리가 들고 있는 원문과 문의처는 넘긴다. "확인해 주세요"
+                      보다 전화번호 한 줄이 실행 가능한 안내다. */}
+                  {(() => {
+                    const evidence = asRecord(selectedOption.availability);
+                    const hours = readText(evidence, ["operatingHours"]);
+                    const contact = readText(evidence, ["contact"]);
+                    if (!hours && !contact) return null;
+                    return (
+                      <small>
+                        {[
+                          hours ? `${tr("공식 표기", "Official text")} ${hours}` : "",
+                          contact ? `${tr("문의", "Phone")} ${contact}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </small>
+                    );
+                  })()}
                   <small>
                     {(selectedOption.evidenceGaps ?? [])
                       .map(

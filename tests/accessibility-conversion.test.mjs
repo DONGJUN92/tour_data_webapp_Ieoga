@@ -210,18 +210,49 @@ test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·�
     new URL("../app/flow/FlowApp.tsx", import.meta.url),
     "utf8",
   );
-  /* 운영·접근성 등 필수 근거가 빠진 후보를 사용자의 동의만으로 검증된 것처럼
-     승격하지 않는다. 같은 공용 안전 판정을 선택·적용·공유가 모두 사용한다. */
+  /* 접근성처럼 **필수 조건**의 근거가 빠진 후보는 동의만으로 열리지 않는다.
+     동의가 여는 문은 운영시간 하나뿐이고, 그때도 검증된 것으로 승격하지
+     않는다 — 근거 공백은 그대로 남고 공유는 계속 막힌다.
+
+     운영시간을 따로 다루는 이유는 그것이 덜 중요해서가 아니라, "확인하지 못했다"와
+     "닫혀 있다고 확인했다"가 다른 사실이기 때문이다. 앞의 것은 원문을 읽거나
+     전화 한 통으로 풀리고, 그 판단은 여행자가 할 수 있다. */
   assert.match(flow, /optionApplicationSafety\(option, language\)/);
   assert.match(flow, /disabled=\{isBlocked\}/);
+
   const apply = flow.slice(flow.indexOf("const applySelectedOption"));
-  assert.match(apply.slice(0, 1_200), /if \(!safety\.canApply\)/);
+  const applyHead = apply.slice(0, 1_600);
+  /* 동의는 운영시간만 미확인인 경우에만 성립한다. */
+  assert.match(applyHead, /safety\.hoursUnconfirmedOnly/);
+  assert.match(applyHead, /acknowledgedOptionId === selectedOption\.id/);
+  assert.match(applyHead, /if \(!safety\.canApply && !acknowledged\)/);
+
+  /* 공유는 열리지 않는다. 적용은 내가 감수하는 선택이고, 공유는 남에게 건네는
+     검증 증명서다. */
   const share = flow.slice(flow.indexOf("const shareSelectedOption"));
   assert.match(
     share.slice(0, 1_200),
     /!optionApplicationSafety\(selectedOption, language\)\.canApply/,
   );
-  assert.match(flow, /공식 확인 전에는 선택할 수 없습니다/);
+  assert.ok(
+    !/hoursUnconfirmedOnly|acknowledged/.test(share.slice(0, 1_200)),
+    "공유에까지 동의로 예외를 열어서는 안 된다",
+  );
+
+  /* 동의해도 근거 공백 자체는 사라지지 않는다. */
+  const safety = await readFile(
+    new URL("../app/traveler-safety.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(safety, /hoursUnconfirmedOnly:\s*\n?\s*reasons\.length > 0/);
+  assert.match(safety, /availabilityStatus !== "confirmed_closed"/);
+  assert.match(safety, /gap\.code !== "OPERATING_HOURS_UNVERIFIED"/);
+
+  const product = await readFile(
+    new URL("../app/ProductApp.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(product, /공식 확인 전에는 선택할 수 없습니다|모든 안전 조건을 확인하기 전에는 적용할 수 없어요/);
 });
 
 test("대여 정보만 있는 값은 내부 동선 확인으로 승격되지 않는다", async () => {

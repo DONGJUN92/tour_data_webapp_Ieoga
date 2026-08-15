@@ -11,6 +11,19 @@
   "version_metadata": {
     "binding": "CF_VERSION_METADATA"
   },
+  /* 공개 공유 폴백을 쓰지 않는다는 선언. 비밀값이 아니라 구성이므로 secret이
+     아닌 var로 둔다 — 이렇게 두어야 배포와 함께 반영되고, 사람이 대시보드에서
+     따로 넣어 주기를 기다리지 않아도 된다.
+
+     경로·기상은 이미 같은 선언을 쓰고 있었고 지오코딩만 빠져 있었다. 그래서
+     카카오 로컬이 실제로 역지오코딩과 장소검색을 수행하는데도 준비 상태는
+     공개 Nominatim 폴백을 기준으로 분류되어 "일부 제한"으로 표시됐다. */
+  "vars": {
+    "ROUTING_BASE_URL": "none",
+    "WEATHER_API_URL": "none",
+    "REVERSE_GEOCODE_URL": "none",
+    "FORWARD_GEOCODE_URL": "none"
+  },
   "d1_databases": [
     {
       "binding": "DB",

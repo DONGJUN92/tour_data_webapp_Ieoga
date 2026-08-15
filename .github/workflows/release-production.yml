@@ -103,6 +103,10 @@ jobs:
             --tag "$GITHUB_SHA" \
             --message "GitHub Actions release $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" \
             --var "DEPLOYMENT_COMMIT_SHA:$GITHUB_SHA" \
+            --var "ROUTING_BASE_URL:none" \
+            --var "WEATHER_API_URL:none" \
+            --var "REVERSE_GEOCODE_URL:none" \
+            --var "FORWARD_GEOCODE_URL:none" \
             --keep-vars \
             --strict
 

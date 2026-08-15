@@ -49,7 +49,9 @@ test("후보가 실제로 속한 시군구들로 조회한다", async () => {
   /* 출발지 한 곳만 보면 경계 밖 후보는 영구히 근거 없이 중립값을 받는다. */
   assert.match(engine, /const candidateDistricts = \(\(\) => \{/);
   assert.match(engine, /for \(const item of nearby\.items\) \{/);
-  assert.match(engine, /const CROWD_DISTRICT_LIMIT = 3;/);
+  /* 상한이 몇이냐는 계약이 아니다 — 요청당 외부 호출 예산에 맞춰 조정된다.
+     지켜야 할 것은 상한이 존재하고, 그 때문에 자른 시군구를 밝힌다는 것이다. */
+  assert.match(engine, /const CROWD_DISTRICT_LIMIT = \d+;/);
   /* 상한 때문에 자른 시군구가 있으면 밝힌다. */
   assert.match(engine, /crowdDistrictsSkipped/);
   assert.match(engine, /곳만 집중률을 조회했습니다/);

@@ -10,7 +10,11 @@ import {
   normalizeAnalysisCodes,
 } from "@/lib/kto/adapters";
 import { ktoTourismCategory } from "@/lib/kto/category";
+import { getRuntimeSecret } from "@/lib/runtime-env";
 import {
+  closedForWholeDate,
+  evaluateAvailabilityItem,
+  fetchAvailabilitySource,
   getAvailabilityEvidence,
   type AvailabilityEvidence,
 } from "@/lib/kto/availability";
@@ -69,7 +73,7 @@ export const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
    `locationBasedList2` itself caps radius at 20 km. We scan more pages while
    enough of the request's 20-second budget remains, then verify in small
    batches so failed candidates can be replaced without an unbounded burst. */
-const CANDIDATE_DISCOVERY_MAX_PAGES = 4;
+const CANDIDATE_DISCOVERY_MAX_PAGES = 2;
 const CANDIDATE_EXPANSION_TIMEOUT_MS = 2_500;
 const CANDIDATE_DISCOVERY_RESERVE_MS = 10_000;
 /* 후보 탐색은 20km 안에서 수백 곳을 가져오는데, 검증 풀이 18곳이라 그 뒤는 한 번도
@@ -83,6 +87,53 @@ const CANDIDATE_DISCOVERY_RESERVE_MS = 10_000;
 const CONTINUITY_RESULT_LIMIT = 24;
 const CONTINUITY_VERIFICATION_HARD_LIMIT = 36;
 const CONTINUITY_VERIFICATION_BATCH_SIZE = 6;
+
+/* 요청 하나가 쓸 수 있는 외부 호출 수. 시간 예산과 나란히 있는 두 번째 한도이고,
+   운영 환경에서는 이쪽이 먼저 바닥났다.
+
+   Cloudflare Workers 무료 플랜은 요청당 서브리퀘스트를 50건으로 막는다. 예전
+   구현은 이 한도를 모른 채 후보 서른여섯 곳을 검증하려 했고, 한 요청에 백열여섯
+   건을 부르다 스무 건쯤에서 벽에 부딪혔다. 그 뒤의 경로 호출은 전부 실패했는데,
+   실패 사유가 "경로를 확인하지 못함"이라 화면에는 마치 그 장소들에 길이 없는 것
+   처럼 보였다. 실제로는 우리가 예산을 다 쓴 것이었다.
+
+   그래서 한도를 넘기고 실패하는 대신, 남은 예산을 보고 멈춘다. 멈춘 사실은
+   경고로 밝힌다 — 확인하지 못한 후보를 확인한 척하지 않는 것과 같은 규칙이다.
+   45는 50에서 저장·세션 등 엔진 밖 호출 몫을 남긴 값이다. 유료 플랜(1000건)으로
+   옮기면 `RECOVERY_SUBREQUEST_BUDGET`으로 올려 잡을 수 있다. */
+const DEFAULT_SUBREQUEST_BUDGET = 45;
+
+/* 남은 외부 호출 예산. 시간 마감과 같은 자리에서, 같은 방식으로 쓰인다. */
+type SubrequestMeter = {
+  spent: number;
+  budget: number;
+  /* 예산이 바닥나 검증을 멈췄는가. 시간 때문에 멈춘 것과 다르게 안내한다. */
+  exhausted: boolean;
+  /* 후보 한 곳의 경로 조회 비용. 보행은 복귀를 되짚어 쓰므로 1이다. */
+  routeCost: number;
+};
+
+/* 호출 직전에 예산을 확보한다. 확보하지 못하면 부르지 않는다 — 한도를 넘겨
+   실패하면 그 실패가 "경로가 없다"로 둔갑하기 때문이다. */
+function reserveSubrequests(
+  meter: SubrequestMeter | undefined,
+  count: number,
+): boolean {
+  if (!meter) return true;
+  if (meter.spent + count > meter.budget) {
+    meter.exhausted = true;
+    return false;
+  }
+  meter.spent += count;
+  return true;
+}
+
+function subrequestBudget(): number {
+  const configured = Number(getRuntimeSecret("RECOVERY_SUBREQUEST_BUDGET"));
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_SUBREQUEST_BUDGET;
+}
 const CONTINUITY_VERIFICATION_RESERVE_MS = 2_500;
 const ACCESSIBILITY_DETAIL_RESERVE_MS = 8_000;
 
@@ -1910,6 +1961,7 @@ async function enrichForContinuity(params: {
   rejected: RejectedCandidate[];
   weatherEvidence?: Awaited<ReturnType<typeof getWeatherEvidence>>;
   signal?: AbortSignal;
+  meter?: SubrequestMeter;
 }): Promise<WorkingCandidate | null> {
   const {
     candidate,
@@ -1919,6 +1971,7 @@ async function enrichForContinuity(params: {
     rejected,
     weatherEvidence,
     signal,
+    meter,
   } = params;
   const minimumStay = input.minimumStayMinutes ?? 30;
   const safetyBuffer = input.safetyBufferMinutes ?? 15;
@@ -1927,6 +1980,86 @@ async function enrichForContinuity(params: {
   let scheduleDiff = candidate.scheduleDiff;
   let availability = candidate.availability;
   let availabilityLookupFailed = false;
+
+  /* 운영정보를 경로보다 **먼저** 받는다.
+     후보 한 곳을 검증하는 데 드는 외부 호출은 경로·복귀경로·운영정보 세 건인데,
+     운영시간 때문에 떨어지는 후보가 실측에서 3분의 1이 넘는다. 경로를 먼저 조회
+     하면 그 후보들이 이미 두 건을 쓴 뒤에 탈락한다. 순서를 바꾸면 같은 탈락이
+     한 건으로 끝나고, 아낀 예산이 그대로 더 많은 후보를 보는 데 쓰인다.
+
+     여기서 내리는 판정은 **도착 시각과 무관한 것**뿐이다 — 그날이 정기휴무이거나
+     행사 기간 밖이거나, 운영시간 표기 자체를 대조할 수 없는 경우. 시간 구간
+     대조는 실제 도착 시각을 알아야 하므로 경로를 얻은 뒤에 같은 원문으로 다시
+     판정한다. 원문은 한 번만 받아 두 판정이 나눠 쓴다. */
+  let availabilitySource:
+    | Awaited<ReturnType<typeof fetchAvailabilitySource>>
+    | undefined;
+  if (context && candidate.contentTypeId) {
+    /* 예산을 확보하지 못하면 아무것도 부르지 않고 물러난다. 탈락으로 세지도
+       않는다 — 이 후보는 조건을 못 맞춘 것이 아니라 아직 보지 못한 것이다. */
+    if (!reserveSubrequests(meter, 1)) return null;
+    try {
+      availabilitySource = await fetchAvailabilitySource(
+        {
+          contentId: candidate.contentId,
+          contentTypeId: candidate.contentTypeId,
+        },
+        { signal },
+      );
+      if (availabilitySource.ok) {
+        sourceLedger.push(availabilitySource.audit);
+        if (
+          closedForWholeDate(availabilitySource.item, context.occurredAt)
+        ) {
+          rejected.push({
+            contentId: candidate.contentId,
+            title: candidate.title,
+            reasonCode: "OFFICIALLY_CLOSED",
+            reason:
+              "공식 운영정보상 그날은 휴무이거나 행사 기간이 아니어서 제외했습니다.",
+            distanceMeters: candidate.distanceMeters,
+            changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+            verificationDepth: "pre_filter",
+          });
+          return null;
+        }
+        /* 표기를 대조할 수 없다는 판정은 도착 시각을 바꿔도 달라지지 않는다.
+           그러면 경로를 조회할 이유가 없다. */
+        const probe = evaluateAvailabilityItem(
+          availabilitySource.item,
+          availabilitySource.audit,
+          context.occurredAt,
+          new Date(context.occurredAt.getTime() + minimumStay * 60_000),
+        );
+        if (
+          probe.status === "unknown" ||
+          probe.status === "official_hours_unstructured"
+        ) {
+          rejected.push({
+            contentId: candidate.contentId,
+            title: candidate.title,
+            reasonCode: "OPERATING_STATUS_UNCONFIRMED",
+            reason:
+              "공식 응답은 받았지만 제안된 체류 구간 전체가 운영 중임을 확인할 수 없어 제외했습니다.",
+            distanceMeters: candidate.distanceMeters,
+            changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+            verificationDepth: "pre_filter",
+          });
+          return null;
+        }
+      } else {
+        sourceLedger.push(availabilitySource.evidence.audit);
+      }
+    } catch (error) {
+      availabilityLookupFailed = true;
+      sourceLedger.push(
+        auditFromFailure("KorService2", "detailIntro2", error),
+      );
+      availability = unknownAvailability(
+        "한국관광공사 상세 운영정보 호출에 실패해 운영 여부를 확정하지 못했습니다.",
+      );
+    }
+  }
 
   if (context) {
     const routePoints = [
@@ -1940,6 +2073,10 @@ async function enrichForContinuity(params: {
     const requiresOriginReturn = Boolean(
       context.openWindow && !context.nextFixed,
     );
+    /* 가는 경로와, 되짚어 쓸 수 없는 수단이면 복귀 경로까지 한 번에 확보한다.
+       가는 경로만 부르고 복귀에서 예산이 떨어지면 그 후보는 반쪽만 검증된 채
+       버려지고, 이미 쓴 호출도 되돌릴 수 없다. */
+    if (!reserveSubrequests(meter, meter?.routeCost ?? 1)) return null;
     const route = await getRoute(routePoints, {
       signal,
       mode: input.travelMode,
@@ -1961,10 +2098,29 @@ async function enrichForContinuity(params: {
       });
       return null;
     }
-    /* Return traffic/timetables depend on when the visit really ends. Query
-       only after the verified outbound duration is known; a preliminary
-       straight-line estimate must never become a provider departure time. */
-    const rawReturnRoute = requiresOriginReturn
+    /* 보행 복귀는 가는 경로를 되짚어 쓴다. 추정이 아니라 실측이다 — 서울·대전·
+       부산의 6개 구간을 양방향으로 조회했을 때 TMAP 보행 경로는 12분짜리부터
+       80분짜리까지 **소요시간이 초 단위까지 같았다**(편차 0.0%). 보행자에게는
+       일방통행이 없으므로 당연한 결과이고, 같은 답을 얻으려고 호출을 한 번 더
+       쓰는 것은 요청당 외부 호출 예산만 축낸다.
+
+       다른 수단은 되짚어 쓰지 않는다. 같은 실측에서 자동차는 평균 33.6%·최대
+       53.2%, 자전거는 평균 21.4%·최대 69.8% 어긋났다 — 33분 걸려 간 길이 복귀
+       16분으로 나오는 구간이 있다. 그것을 갈음하면 복귀 시간을 절반으로 줄여
+       잡게 되고, "남은 시간 안에 돌아올 수 있다"는 이 화면의 판정이 바로
+       그 지점에서 무너진다. 호출을 아끼자고 판정을 틀리게 할 수는 없다. */
+    const reversibleOutbound =
+      requiresOriginReturn &&
+      input.travelMode === "walk" &&
+      route.provider === "tmap_pedestrian" &&
+      routePoints.length === 2;
+    const rawReturnRoute = reversibleOutbound
+      ? ({
+          ...route,
+          geometry: [...route.geometry].reverse(),
+          calculatedAt: route.calculatedAt,
+        } satisfies WalkingRouteEvidence)
+      : requiresOriginReturn
       ? await getRoute(
           [
             {
@@ -2057,27 +2213,19 @@ async function enrichForContinuity(params: {
     candidate.distanceMeters = routedDistance;
     candidate.estimatedTravelMinutes = routedMinutes;
 
-    if (candidate.contentTypeId) {
-      try {
-        const arrivalAt = new Date(scheduleDiff.replacementNode.startAt);
-        const departureAt = new Date(scheduleDiff.replacementNode.endAt);
-        const evidence = await getAvailabilityEvidence({
-          contentId: candidate.contentId,
-          contentTypeId: candidate.contentTypeId,
-          startAt: arrivalAt,
-          endAt: departureAt,
-        }, { signal });
-        sourceLedger.push(evidence.audit);
-        availability = publicAvailability(evidence);
-      } catch (error) {
-        availabilityLookupFailed = true;
-        sourceLedger.push(
-          auditFromFailure("KorService2", "detailIntro2", error),
-        );
-        availability = unknownAvailability(
-          "한국관광공사 상세 운영정보 호출에 실패해 운영 여부를 확정하지 못했습니다.",
-        );
-      }
+    /* 이제 실제 도착·출발 시각이 확정됐으므로 같은 원문을 시간 구간까지 대조해
+       다시 판정한다. 원문은 위에서 이미 받았으므로 호출은 추가되지 않는다. */
+    if (availabilitySource?.ok) {
+      availability = publicAvailability(
+        evaluateAvailabilityItem(
+          availabilitySource.item,
+          availabilitySource.audit,
+          new Date(scheduleDiff.replacementNode.startAt),
+          new Date(scheduleDiff.replacementNode.endAt),
+        ),
+      );
+    } else if (availabilitySource && !availabilitySource.ok) {
+      availability = publicAvailability(availabilitySource.evidence);
     }
 
     const violations: RejectedCandidate[] = [];
@@ -3477,7 +3625,7 @@ export async function recoverTrip(
     }
     return [...counts.values()].sort((a, b) => b.count - a.count);
   })();
-  const CROWD_DISTRICT_LIMIT = 3;
+  const CROWD_DISTRICT_LIMIT = 2;
   const crowdDistricts = disabled.has("TatsCnctrRateService")
     ? []
     : candidateDistricts.slice(0, CROWD_DISTRICT_LIMIT);
@@ -4039,6 +4187,9 @@ export async function recoverTrip(
        재사용하면 시간상 도달 가능한 먼 후보의 실제 날씨가 달라도 놓친다.
        격자가 같은 후보는 한 번만 조회하며, 실패하면 출발지 예보로 물러서고
        그 사실을 밝힌다 — 다른 지점의 예보를 이 곳의 예보인 것처럼 쓰면 안 된다. */
+    /* 여기까지 엔진이 부른 외부 호출. 원장에 남은 건수에 출발지 예보 두 건을
+       더한 값이다. */
+    const budgetMeterSpent = sourceLedger.length + 2;
     const gridWeather = new Map<
       string,
       Awaited<ReturnType<typeof getWeatherEvidence>>
@@ -4054,6 +4205,19 @@ export async function recoverTrip(
       const key = gridKey(candidate);
       if (key === `${originGrid.nx},${originGrid.ny}`) continue;
       if (!distinctGrids.has(key)) distinctGrids.set(key, candidate);
+    }
+    /* 후보 지점 예보는 정확도를 높이는 값이지, 갈 수 있는지를 가르는 값이
+       아니다. 예산이 빠듯하면 여기에 격자마다 두 건씩 쓰는 대신 그 몫으로 후보를
+       더 검증한다 — 출발지 예보로 물러서는 길은 이미 있고, 물러섰다는 사실도
+       아래에서 밝힌다. 검증 몫을 먼저 떼어 두고 남는 것으로만 부른다. */
+    const forecastCost = distinctGrids.size * 2;
+    const verificationReserve = 30;
+    const affordCandidateForecast =
+      budgetMeterSpent + forecastCost + verificationReserve <=
+      subrequestBudget();
+    if (!affordCandidateForecast && distinctGrids.size) {
+      candidateForecastFallbacks += distinctGrids.size;
+      distinctGrids.clear();
     }
     if (distinctGrids.size) {
       const fetched = await Promise.allSettled(
@@ -4081,12 +4245,32 @@ export async function recoverTrip(
     }
 
     let attemptedCandidates = 0;
+    /* 실제로 부른 횟수를 센다. 후보마다 미리 최악을 잡아 두면, 운영시간에서
+       한 건만 쓰고 떨어지는 후보(실측 절반 이상)의 몫까지 예약해 버려 훨씬
+       일찍 멈춘다. 후보 검증이 호출 직전에 스스로 예산을 확인하고 세도록
+       계량기를 넘긴다. 배치가 동시에 돌아도 증가는 await 전에 동기적으로
+       일어나므로 초과되지 않는다. */
+    const meter: SubrequestMeter = {
+      /* 원장에 남은 공사 호출 + 출발지 예보 두 건 + 실제로 부른 후보 격자 예보.
+         예보는 원장에 남지 않으므로 따로 더한다. 빠뜨리면 계량기가 실제보다
+         적게 세어 한도를 넘긴다. */
+      spent: sourceLedger.length + 2 + gridWeather.size * 2,
+      budget: subrequestBudget(),
+      exhausted: false,
+      /* 보행 복귀는 가는 경로를 되짚어 쓰므로 추가 호출이 없다. */
+      routeCost: input.travelMode === "walk" ? 1 : 2,
+    };
     for (
       let offset = 0;
       offset < shortlist.length &&
       continuityCandidates.length < CONTINUITY_RESULT_LIMIT;
       offset += CONTINUITY_VERIFICATION_BATCH_SIZE
     ) {
+      /* 운영정보 한 건조차 부를 수 없으면 더 볼 수 없다. */
+      if (meter.spent + 1 > meter.budget) {
+        meter.exhausted = true;
+        break;
+      }
       if (
         execution.signal?.aborted ||
         continuityDeadlineAt - Date.now() <=
@@ -4114,6 +4298,7 @@ export async function recoverTrip(
             weatherEvidence:
               gridWeather.get(gridKey(candidate)) ?? weatherEvidence,
             signal: execution.signal,
+            meter,
           }),
         ),
       );
@@ -4128,8 +4313,12 @@ export async function recoverTrip(
       attemptedCandidates < shortlist.length &&
       continuityCandidates.length < CONTINUITY_RESULT_LIMIT
     ) {
+      /* 왜 멈췄는지를 갈라 적는다. 두 한도는 사용자가 할 수 있는 일이 다르다 —
+         시간이면 다시 시도하면 되고, 호출 한도면 다시 시도해도 같다. */
       warnings.push(
-        `응답 시간 예산 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 검증하지 못한 후보는 결과처럼 표시하지 않았습니다.`,
+        meter.exhausted
+          ? `한 요청에 허용된 외부 조회 횟수 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 나머지 후보는 확인하지 못했으므로 결과처럼 표시하지 않았습니다.`
+          : `응답 시간 예산 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 검증하지 못한 후보는 결과처럼 표시하지 않았습니다.`,
       );
     }
   }

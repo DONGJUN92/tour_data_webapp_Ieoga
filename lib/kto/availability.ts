@@ -531,6 +531,54 @@ export function evaluateAvailabilityItem(
   };
 }
 
+/* 운영정보를 **한 번만 받아** 두 번 판정할 수 있게 원문을 그대로 넘긴다.
+   호출부는 경로를 조회하기 전에 한 번(도착 시각과 무관한 탈락을 걸러내려고),
+   경로가 확정된 뒤에 한 번(실제 도착 구간으로) 판정한다. 예전에는 두 판정이
+   각각 자기 호출을 했기 때문에 그 순서를 바꿀 수 없었다. */
+export type AvailabilitySource =
+  | { ok: true; item: KtoItem; audit: KtoAudit }
+  | { ok: false; evidence: AvailabilityEvidence };
+
+export async function fetchAvailabilitySource(
+  params: { contentId: string; contentTypeId: string },
+  options: { signal?: AbortSignal } = {},
+): Promise<AvailabilitySource> {
+  const result = await getTourismIntro(
+    params.contentId,
+    params.contentTypeId,
+    { signal: options.signal },
+  );
+  const item = result.items[0];
+  if (!item) {
+    return {
+      ok: false,
+      evidence: {
+        status: "unknown",
+        checkedAt: new Date().toISOString(),
+        note: "한국관광공사 상세 운영정보 응답이 비어 있습니다.",
+        noteEn: "The official detail response for this place was empty.",
+        audit: result.audit,
+      },
+    };
+  }
+  return { ok: true, item, audit: result.audit };
+}
+
+/* 도착 시각과 **무관하게** 그날 하루가 닫혀 있는가. 정기휴무이거나 행사 기간
+   밖이면 몇 시에 도착하든 결과가 같으므로, 경로를 조회하기 전에 판정할 수 있다.
+   시간 구간 대조는 도착 시각에 달려 있으므로 여기서 하지 않는다. */
+export function closedForWholeDate(item: KtoItem, visitDate: Date): boolean {
+  const restDate = text(item, [...REST_DATE_FIELDS]);
+  if (isRestDay(restDate, visitDate)) return true;
+  const eventStart = compactDate(text(item, ["eventstartdate"]));
+  const eventEnd = compactDate(text(item, ["eventenddate"]));
+  const day = currentDateNumber(visitDate);
+  return (
+    (eventStart !== null && day < eventStart) ||
+    (eventEnd !== null && day > eventEnd)
+  );
+}
+
 export async function getAvailabilityEvidence(params: {
   contentId: string;
   contentTypeId: string;

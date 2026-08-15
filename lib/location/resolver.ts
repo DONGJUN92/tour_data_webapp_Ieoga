@@ -5,7 +5,7 @@ import {
   normalizeAnalysisCodes,
 } from "@/lib/kto/adapters";
 import {
-  reverseGeocodeProviderConfig,
+  nominatimReverseEndpoint,
   usesPublicNominatim,
 } from "@/lib/external-providers";
 import { getRuntimeSecret } from "@/lib/runtime-env";
@@ -201,7 +201,11 @@ async function reverseWithNominatim(
   latitude: number,
   longitude: number,
 ): Promise<ResolvedLocation | null> {
-  const { url: baseUrl } = reverseGeocodeProviderConfig();
+  /* 사슬에 Nominatim이 없으면 폴백 자체가 없는 구성이다. 그때는 호출하지
+     않는다 — 사슬의 첫 자리(카카오)에 Nominatim 파라미터를 붙이면 엉뚱한
+     요청이 된다. */
+  const baseUrl = nominatimReverseEndpoint();
+  if (!baseUrl) return null;
   const url = new URL(baseUrl);
   url.searchParams.set("lat", String(latitude));
   url.searchParams.set("lon", String(longitude));

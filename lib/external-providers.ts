@@ -65,42 +65,107 @@ function splitEndpointList(value: string | undefined): string[] {
   return endpoints.filter((entry) => /^https?:\/\//i.test(entry));
 }
 
-function providerConfig(
-  configured: string | undefined,
+/* 카카오 로컬. 행정구역 역지오코딩과 장소 검색을 실제로 수행하는 1순위
+   제공자이며 `KAKAO_REST_API_KEY` 하나로 동작한다. 경로·기상과 같은 키 기반
+   상용 제공자이므로 준비 상태 분류에서도 같은 등급으로 다룬다. */
+export const KAKAO_LOCAL_REVERSE_URL =
+  "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json";
+export const KAKAO_LOCAL_SEARCH_URL =
+  "https://dapi.kakao.com/v2/local/search/keyword.json";
+
+export function kakaoLocalConfigured(): boolean {
+  return Boolean(getRuntimeSecret("KAKAO_REST_API_KEY"));
+}
+
+/* 지오코딩이 실제로 닿을 수 있는 제공자 사슬을 호출 순서대로 만든다.
+   경로(`routingEndpoints`)와 같은 규칙이다.
+
+   예전에는 이 자리에 사슬이 없었다. 설정값이 비어 있으면 무조건 공개
+   Nominatim으로 떨어지도록 되어 있어서, **카카오가 그 일을 하고 있는데도**
+   준비 상태는 늘 `public_shared`였고 탐침은 `PUBLIC_SHARED_BLOCKED`를
+   돌려주었다. 그래서 제품은 정상인데 서비스 준비 현황이 스스로를 "일부 제한"
+   으로 신고했다. 배포본에서 실제로 그렇게 보였다.
+
+   경로·기상과 마찬가지로 공개 폴백은 운영자가 명시적으로 끌 수 있어야 하고,
+   끈 경우에는 남은 사슬이 키 기반 제공자뿐이므로 `managed`가 된다. 반대로
+   공개 폴백이 사슬에 남아 있으면 상용 1순위가 있더라도 그 사실을 감추지 않고
+   `public_shared`로 분류한다 — 기존 경로 정책과 같은 판단이다. */
+function geocodeChain(
+  configuredSecret: string,
+  kakaoUrl: string,
+  publicUrl: string,
+): string[] {
+  const chain: string[] = [];
+  if (kakaoLocalConfigured()) chain.push(kakaoUrl);
+  const raw = getRuntimeSecret(configuredSecret)?.trim();
+  if (fallbackDisabled(raw)) return chain;
+  const configured = splitEndpointList(raw);
+  if (configured.length) return [...chain, ...configured];
+  return [...chain, publicUrl];
+}
+
+export function reverseGeocodeChain(): string[] {
+  return geocodeChain(
+    "REVERSE_GEOCODE_URL",
+    KAKAO_LOCAL_REVERSE_URL,
+    PUBLIC_NOMINATIM_REVERSE_URL,
+  );
+}
+
+export function forwardGeocodeChain(): string[] {
+  return geocodeChain(
+    "FORWARD_GEOCODE_URL",
+    KAKAO_LOCAL_SEARCH_URL,
+    PUBLIC_NOMINATIM_SEARCH_URL,
+  );
+}
+
+/* 공개 Nominatim이 사슬에 남아 있는가. 남아 있으면 초당 1회 예의 제한을
+   지켜야 하고, 없으면 지킬 대상 자체가 없다. */
+export function usesPublicNominatim(): boolean {
+  return reverseGeocodeChain().some((url) =>
+    sameOrigin(url, PUBLIC_NOMINATIM_REVERSE_URL),
+  );
+}
+
+function chainProviderConfig(
+  chain: string[],
   publicUrl: string,
 ): { url: string; mode: ProviderMode } {
-  const url = configured?.trim() || publicUrl;
   return {
-    url,
-    mode:
-      sameOrigin(url, publicUrl)
-        ? "public_shared"
-        : "managed",
+    url: chain[0] ?? publicUrl,
+    mode: chain.some((url) => sameOrigin(url, publicUrl))
+      ? "public_shared"
+      : "managed",
   };
 }
 
-/* Whether the reachable reverse-geocoding fallback is the shared public
-   Nominatim endpoint. Kakao being configured does not change that endpoint's
-   usage policy or release classification. */
-export function usesPublicNominatim(): boolean {
-  return (
-    providerConfig(
-      getRuntimeSecret("REVERSE_GEOCODE_URL"),
-      PUBLIC_NOMINATIM_REVERSE_URL,
-    ).mode === "public_shared"
+/* Nominatim 계열 엔드포인트만 골라 준다.
+   사슬의 첫 자리는 이제 카카오일 수 있으므로, Nominatim 질의를 만드는 쪽이
+   `chain[0]`을 그대로 쓰면 카카오 주소에 Nominatim 파라미터를 붙이게 된다.
+   `undefined`면 그 경로는 아예 호출하지 않는다는 뜻이다. */
+export function nominatimReverseEndpoint(): string | undefined {
+  return reverseGeocodeChain().find(
+    (url) => !sameOrigin(url, KAKAO_LOCAL_REVERSE_URL),
+  );
+}
+
+export function nominatimSearchEndpoint(): string | undefined {
+  return forwardGeocodeChain().find(
+    (url) => !sameOrigin(url, KAKAO_LOCAL_SEARCH_URL),
   );
 }
 
 export function reverseGeocodeProviderConfig() {
-  return providerConfig(
-    getRuntimeSecret("REVERSE_GEOCODE_URL"),
+  return chainProviderConfig(
+    reverseGeocodeChain(),
     PUBLIC_NOMINATIM_REVERSE_URL,
   );
 }
 
 export function forwardGeocodeProviderConfig() {
-  return providerConfig(
-    getRuntimeSecret("FORWARD_GEOCODE_URL"),
+  return chainProviderConfig(
+    forwardGeocodeChain(),
     PUBLIC_NOMINATIM_SEARCH_URL,
   );
 }

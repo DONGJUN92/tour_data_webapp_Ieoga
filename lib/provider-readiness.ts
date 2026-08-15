@@ -2,6 +2,8 @@ import { getDb } from "@/db";
 import { providerProbeSnapshots } from "@/db/schema";
 import {
   forwardGeocodeProviderConfig,
+  KAKAO_LOCAL_REVERSE_URL,
+  KAKAO_LOCAL_SEARCH_URL,
   PUBLIC_NOMINATIM_REVERSE_URL,
   PUBLIC_NOMINATIM_SEARCH_URL,
   PUBLIC_OPEN_METEO_URL,
@@ -506,6 +508,57 @@ async function fetchJsonWithTimeout(
    GET probe. Claiming the provider is managed without ever calling it is what
    this whole probe exists to prevent, so the real endpoint is exercised with
    the same coordinates, timeout and error vocabulary as every other one. */
+/* 카카오 로컬은 인증 헤더가 있어야 응답한다. 공용 `fetchJsonWithTimeout`으로
+   그냥 부르면 401이 돌아와 준비 상태가 "설정은 됐는데 고장남"으로 잘못 기록된다.
+   TMAP·기상청과 같은 방식으로 제공자 전용 탐침을 둔다. */
+async function probeKakaoLocal(
+  endpoint: string,
+  fetchImpl: FetchLike,
+  timeoutMs: number,
+): Promise<unknown> {
+  const restKey = getRuntimeSecret("KAKAO_REST_API_KEY");
+  if (!restKey) throw new Error("MISSING_CREDENTIAL");
+  const url = new URL(endpoint);
+  if (endpoint === KAKAO_LOCAL_REVERSE_URL) {
+    url.searchParams.set("x", String(TEST_LONGITUDE));
+    url.searchParams.set("y", String(TEST_LATITUDE));
+  } else {
+    url.searchParams.set("query", "서울시청");
+    url.searchParams.set("size", "1");
+  }
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("PROVIDER_PROBE_TIMEOUT"));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetchImpl(url, {
+        headers: {
+          Authorization: `KakaoAK ${restKey}`,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      }),
+      timeoutPromise,
+    ]);
+    if (!response.ok) throw new Error(`PROVIDER_HTTP_${response.status}`);
+    return await response.json();
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+/* 카카오 로컬이 이 서비스가 기대하는 모양을 돌려주는지. 역지오코딩은 행정구역
+   문서를, 장소 검색은 결과 배열을 준다. 둘 다 `documents` 배열이 계약이다. */
+function validKakaoLocalContract(payload: unknown): boolean {
+  const root = payload as { documents?: unknown } | null;
+  return Boolean(root && Array.isArray(root.documents));
+}
+
 async function probeTmapPedestrian(
   fetchImpl: FetchLike,
   timeoutMs: number,
@@ -682,6 +735,16 @@ export async function probeProviderConfiguration(
         ) {
           return validTmapPedestrianContract(
             await probeTmapPedestrian(fetchImpl, timeoutMs),
+          );
+        }
+        if (
+          (configuration.provider === "reverseGeocoding" ||
+            configuration.provider === "forwardGeocoding") &&
+          (endpoint === KAKAO_LOCAL_REVERSE_URL ||
+            endpoint === KAKAO_LOCAL_SEARCH_URL)
+        ) {
+          return validKakaoLocalContract(
+            await probeKakaoLocal(endpoint, fetchImpl, timeoutMs),
           );
         }
         if (

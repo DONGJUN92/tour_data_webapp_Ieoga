@@ -1,5 +1,6 @@
 import {
   forwardGeocodeProviderConfig,
+  nominatimSearchEndpoint,
   type ProviderMode,
 } from "@/lib/external-providers";
 
@@ -69,8 +70,13 @@ export async function searchForwardGeocoder(
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
+  /* 이 함수는 Nominatim 질의만 만든다. 사슬의 첫 자리가 카카오일 수 있으므로
+     Nominatim 엔드포인트를 따로 받아 쓰고, 없으면 호출하지 않는다. 장소 검색
+     자체는 카카오 로컬이 별도 경로로 수행한다. */
   const provider = forwardGeocodeProviderConfig();
-  const url = new URL(provider.url);
+  const searchUrl = nominatimSearchEndpoint();
+  if (!searchUrl) return [];
+  const url = new URL(searchUrl);
   url.searchParams.set("q", keyword);
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("addressdetails", "1");

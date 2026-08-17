@@ -593,6 +593,7 @@ export async function getPolicyBundle(params: {
                     totalCount: 0,
                     fieldsUsed: [],
                     errorCode: "UNKNOWN",
+                    upstreamCalls: 1,
                   },
           });
         }

@@ -292,6 +292,50 @@ export type RecoveryResponse = {
   dataContributions?: DataContribution[];
   recoveryMode?: string;
   itinerarySummary?: Record<string, unknown>;
+  /* 요청 자체가 불가능할 때의 근거와 여행자가 바꿀 수 있는 조정.
+     `status === "input_infeasible"`에서만 온다. */
+  inputFeasibility?: {
+    reason: string;
+    minimumTravelMinutes?: number;
+    geodesicMeters?: number;
+    availableTravelMinutes?: number;
+    requiredTravelMinutes?: number;
+    shortfallMinutes?: number;
+    nextPlaceLabel?: string;
+    travelMode?: string;
+    remedies?: Array<{
+      kind: string;
+      label: string;
+      labelEn: string;
+      value?: string | number;
+    }>;
+  };
+  /* 조건을 바꾸면 갈 수 있는 곳과 지금은 문을 닫은 곳. `options`가 아니다 —
+     적용 대상이 아니며 검증된 추천과 절대 섞어 보여 주지 않는다. */
+  alternatives?: {
+    nearMisses?: Array<{
+      contentId: string;
+      title: string;
+      distanceMeters?: number;
+      reason: string;
+      reasonCode: string;
+      requiredRelaxation?: {
+        constraint: string;
+        amount: number;
+        unit: string;
+        currentLimit: number;
+        requiredLimit: number;
+        description: string;
+      };
+      verificationDepth?: string;
+    }>;
+    closedNow?: Array<{
+      contentId: string;
+      title: string;
+      distanceMeters?: number;
+      reason: string;
+    }>;
+  };
   ablation?: {
     disabledSources?: string[];
     lostCapabilities?: string[];

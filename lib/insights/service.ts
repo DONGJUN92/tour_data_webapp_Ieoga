@@ -126,6 +126,9 @@ export async function buildPolicyInsight(params: {
             totalCount: 0,
             fieldsUsed: [],
             errorCode: "UNKNOWN",
+            /* 클라이언트 밖에서 난 실패라 실제 호출 수를 알 수 없다. 적게
+               세는 쪽으로 틀리면 예산이 넘치므로 한 건으로 본다. */
+            upstreamCalls: 1,
           },
     );
     warnings.push("중심 관광지 정보를 확인하지 못했습니다.");
@@ -138,6 +141,8 @@ export async function buildPolicyInsight(params: {
       resultCount: 0,
       totalCount: 0,
       fieldsUsed: [],
+      /* 부르지 않기로 한 호출이므로 예산을 쓰지 않았다. */
+      upstreamCalls: 0,
     });
     /* 예전 문구는 "시군구를 선택한 경우에만 조회합니다"에서 끝나 사용자가
        다음에 무엇을 할 수 있는지 알 수 없었다. 이제 시군구 선택 화면이

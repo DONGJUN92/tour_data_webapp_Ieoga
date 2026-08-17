@@ -10,8 +10,68 @@ export type RecoveryStatus =
   | "verified"
   | "degraded"
   | "no_valid_candidate"
+  /* 여행자가 준 조건끼리 이미 모순이어서 **어떤 후보도 존재할 수 없는** 요청.
+     `no_valid_candidate`와 갈라 놓는 이유는 여행자가 할 수 있는 일이 정반대이기
+     때문이다 — 후보가 없으면 다시 시도하거나 조건을 넓히면 되지만, 조건 자체가
+     불가능하면 무엇을 얼마나 바꿔야 하는지 알려 주어야 한다. 이 판정은 외부
+     조회 0건으로 내린다. */
+  | "input_infeasible"
   | "unsupported_coverage"
   | "upstream_unavailable";
+
+/* 조건을 바꾸면 갈 수 있는 곳. `options`가 아니므로 적용 대상이 아니다.
+   화면은 이것을 "추천"이 아니라 "이렇게 바꾸면 열리는 곳"으로 보여야 한다. */
+export type NearMissCandidate = {
+  contentId: string;
+  title: string;
+  distanceMeters?: number;
+  /* 무엇이 얼마나 모자랐는지. 여행자가 우리를 검산할 수 있는 문장. */
+  reason: string;
+  reasonCode: RejectionReasonCode;
+  /* 이것만 바꾸면 통과하는 최소 조정. 없으면 단일 조정으로는 열리지 않는다. */
+  requiredRelaxation?: RejectedCandidate["requiredRelaxation"];
+  /* 실제 경로까지 확인한 탈락인지, 사전 계산 단계 탈락인지. */
+  verificationDepth?: "pre_filter" | "route_verified";
+};
+
+/* 조회 기준 시각에 운영하지 않는 곳. 밤 요청에서 특히 많다. */
+export type ClosedCandidate = {
+  contentId: string;
+  title: string;
+  distanceMeters?: number;
+  reason: string;
+};
+
+/* 요청이 왜 불가능한지, 그리고 여행자가 바꿀 수 있는 최소 조정.
+   `status === "input_infeasible"`일 때만 채워진다. */
+export type InputFeasibility = {
+  reason: "next_place_unreachable" | "window_too_short";
+  /* 직선거리 기준 최소 이동시간. 어떤 실제 경로도 이보다 빠를 수 없다. */
+  minimumTravelMinutes: number;
+  geodesicMeters?: number;
+  /* 이동에 실제로 쓸 수 있었던 시간과, 필요한 시간. */
+  availableTravelMinutes: number;
+  requiredTravelMinutes: number;
+  shortfallMinutes: number;
+  nextPlaceLabel?: string;
+  travelMode: "walk" | "car" | "transit" | "bicycle";
+  /* 여행자가 고를 수 있는 조정. 각 항목은 이것만 바꾸면 가능해지는 값이다. */
+  remedies: Array<{
+    kind:
+      | "travel_mode"
+      | "stay_minutes"
+      | "window_minutes"
+      /* 다음 장소의 약속 시각을 늦추는 것. 남은 시간을 늘리는 것과 다른 입력이라
+         갈라 놓는다 — 화면이 어느 칸을 고쳐야 하는지 알아야 한 번 누르면
+         다시 찾을 수 있다. */
+      | "appointment_later"
+      | "drop_next_place";
+    label: string;
+    labelEn: string;
+    /* 그 조정을 적용했을 때의 값(수단은 코드, 분 단위는 숫자). */
+    value?: string | number;
+  }>;
+};
 
 export type RecoveryMode =
   | "registered_itinerary"
@@ -461,6 +521,9 @@ export type RecoveryResult = {
     plannedStayMinutes: number;
     nextPlaceLabel?: string;
     nextPlaceArriveBy?: string;
+    /* 다음 장소를 알려 주었지만 약속 시각이 없어 **마감으로 쓰지 않은** 경우.
+       화면이 "이 장소 도착은 검증하지 않았다"를 말할 수 있어야 한다. */
+    nextPlaceIsDirectionHint?: boolean;
   };
   scope: {
     coverage: "nationwide";
@@ -474,6 +537,21 @@ export type RecoveryResult = {
      empty result can state its own cause. Counts only, no place names. */
   rejectionSummary: Array<{ reasonCode: RejectionReasonCode; count: number }>;
   counterfactual?: CounterfactualProof;
+  /* 후보를 보기 전에 요청 자체가 불가능하다고 판정한 근거와 바꿀 수 있는 것들. */
+  inputFeasibility?: InputFeasibility;
+  /* **조건을 바꾸면 갈 수 있는 곳**과 **지금은 문을 닫은 곳**.
+
+     이 배열은 `options`와 절대 섞이지 않는다. 여기 실린 장소는 실행 가능한
+     추천이 아니라 **탈락한 후보를 탈락한 상태로** 보여 주는 것이다. 엔진은
+     이 판정을 이미 하고 있었고, 최소 조정량까지 계산한 뒤 버렸다 — 실측에서
+     1순위 탈락안이 "안전여유가 1분 부족, 체류 60→30분이면 통과"였다.
+     그것을 알면서 "찾지 못했습니다"라고만 말하는 것이 오히려 덜 정직하다. */
+  alternatives?: {
+    /* 경로까지 검증했으나 시간이 모자란 곳. 최소 조정량이 함께 실린다. */
+    nearMisses: NearMissCandidate[];
+    /* 조회 기준 시각에는 휴무·운영시간 밖인 곳. */
+    closedNow: ClosedCandidate[];
+  };
   dataContributions: DataContribution[];
   sourceLedger: KtoAudit[];
   warnings: string[];

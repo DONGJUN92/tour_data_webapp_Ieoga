@@ -477,18 +477,29 @@ export const recoveryItinerarySchema = itineraryCoreSchema
    실제로는 아무도 세우지 않는 계획이 검증 대상으로 들어오지 않는다. */
 const OPEN_WINDOW_STEP_MINUTES = 30;
 
+/* `arriveBy`는 **선택**이다. 이것이 없으면 다음 장소는 하드 마감이 아니라
+   방향 힌트다.
+
+   예전에는 필수였고, 화면은 그 자리를 자유 시간의 끝으로 채워 보냈다. 그러면
+   여행자가 말한 적 없는 마감("남은 시간이 끝날 때까지 그 장소에 도착해야 한다")이
+   생기고, 그 장소가 조금만 멀면 **모든 후보가 산술적으로 탈락한다.** 실측에서
+   대전역에서 한빛탑을 고르면 추천이 0곳이었고, 같은 조건에서 다음 장소만 비우면
+   6곳이 나왔다. 없는 조건을 만들어 놓고 "갈 곳이 없다"고 답한 것이다.
+
+   약속 시각을 아는 여행자는 그것을 준다. 모르는 여행자에게 억지로 만들어
+   붙이지 않는다 — 대신 검증하지 않았다는 사실을 결과에 적는다. */
 const openWindowNextPlaceSchema = z
   .object({
     ...coordinateFields,
-    arriveBy: z.string().datetime({ offset: true }),
+    arriveBy: z.string().datetime({ offset: true }).optional(),
   })
   .superRefine(validateCoordinateAdministrativeScope);
 
 export const openWindowSchema = z
   .object({
     departureAt: z.string().datetime({ offset: true }).optional(),
-    /* 이 시각까지가 자유 시간이다. 다음 장소가 있으면 그 도착 시각과 같거나
-       그보다 뒤일 수 없다. */
+    /* 이 시각까지가 자유 시간이다. 다음 장소의 약속 시각이 이보다 앞서면 그쪽이
+       실제 마감이 되므로, 두 값 중 이른 쪽을 쓴다(엔진에서 계산). */
     availableUntil: z.string().datetime({ offset: true }),
     plannedStayMinutes: z
       .number()
@@ -518,14 +529,23 @@ export const openWindowSchema = z
         message: "출발 시각은 자유 시간 종료 시각보다 앞서야 합니다.",
       });
     }
-    if (!window.nextPlace) return;
+    if (!window.nextPlace?.arriveBy) return;
+    /* 약속 시각이 자유 시간의 끝보다 **앞서는** 것은 정상이다 — 그쪽이 실제
+       마감이고, 엔진이 이른 쪽을 쓴다. 예전에는 이 경우를 오류로 막았는데,
+       그 제약 때문에 화면이 약속 시각을 물어볼 수조차 없었다.
+
+       막아야 하는 것은 출발 시각보다 앞선 약속뿐이다 — 그건 이미 지난 약속이다. */
     const arriveBy = Date.parse(window.nextPlace.arriveBy);
-    if (Number.isFinite(arriveBy) && Number.isFinite(until) && arriveBy < until) {
+    if (
+      departureAt !== undefined &&
+      Number.isFinite(departureAt) &&
+      Number.isFinite(arriveBy) &&
+      arriveBy <= departureAt
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["availableUntil"],
-        message:
-          "자유 시간의 끝은 다음 장소 도착 시각보다 늦을 수 없습니다.",
+        path: ["nextPlace", "arriveBy"],
+        message: "다음 장소 도착 시각은 출발 시각보다 뒤여야 합니다.",
       });
     }
   });

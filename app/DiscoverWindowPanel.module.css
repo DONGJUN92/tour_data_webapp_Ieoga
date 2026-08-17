@@ -262,7 +262,10 @@
   font-weight: 700;
 }
 
-.selectField select {
+.selectField select,
+/* 다음 장소의 약속 시각. select와 같은 폼 필드이므로 같은 치수를 쓴다 — 하나만
+   높이가 다르면 같은 줄에 있는 두 입력이 어긋나 보인다. */
+.selectField input[type="datetime-local"] {
   min-height: 48px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);

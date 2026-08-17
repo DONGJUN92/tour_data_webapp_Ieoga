@@ -30,7 +30,11 @@ import {
   conservativeDrivingMinutes,
   conservativeTransitMinutes,
   conservativeWalkingMinutes,
+  geoTravelMode,
   haversineMeters,
+  optimisticReachMeters,
+  optimisticTravelMinutes,
+  type GeoTravelMode,
 } from "@/lib/geo";
 import {
   getRoute,
@@ -53,6 +57,7 @@ import { recoveryReferenceTime } from "./reference-time";
 import type {
   EvidenceGap,
   AccessibilityEvidence,
+  InputFeasibility,
   ContinuityProof,
   DataContribution,
   OpenWindowProof,
@@ -128,6 +133,49 @@ function reserveSubrequests(
   return true;
 }
 
+/* 후보 한 곳의 경로 검증이 실제로 쓰는 외부 호출 수.
+
+   예전 값은 `travelMode === "walk" ? 1 : 2`로 **이동수단만** 봤다. 그런데
+   TMAP 보행·자동차와 카카오 대중교통 어댑터는 구간마다 별도 호출을 한다
+   (`points.slice(0, -1).map(fetchSegment)`). 다음 장소가 마감으로 들어오면
+   경로는 `현재 → 후보 → 다음 장소` 3지점, 즉 실제 2건인데 1건으로 청구됐다.
+
+   그 어긋남은 조용히 끝나지 않았다. 계량기가 45건 안이라고 믿는 동안 실제 호출은
+   플랫폼 상한(무료 50건)을 넘고, 넘어서 실패한 경로 조회는 `ROUTE_UNAVAILABLE`로
+   기록된다 — 화면에는 "그 장소에는 갈 길이 없다"로 보인다. 실측에서 3지점 요청은
+   요청당 평균 2.7건, 2지점 요청은 0.2건의 `ROUTE_UNAVAILABLE`이 났다. 13배 차이는
+   후보의 성질이 아니라 우리 산수의 결과였다.
+
+   자전거만 예외다. 카카오 자전거는 경유지를 `via_x`/`via_y`로 한 번에 보내므로
+   구간 수와 무관하게 1건이다.
+
+   모르는 쪽으로 틀릴 때는 **많이 세는 쪽**으로 틀린다. 적게 세면 한도를 넘겨
+   위와 같은 거짓 표시가 다시 생기고, 많이 세면 검증 후보가 몇 곳 줄 뿐이다. */
+function perCandidateRouteCost(
+  input: RecoveryRequest,
+  context?: ItineraryContext,
+): number {
+  const mode = input.travelMode;
+  /* 가는 경로의 구간 수: 현재 → 후보 → (연속성 노드들). */
+  const outboundSegments = 1 + (context?.continuityNodes.length ?? 0);
+  /* 복귀 경로는 창이 있고 다음 장소가 마감으로 없을 때만 조회한다. 보행은 가는
+     경로를 되짚어 쓰므로 추가 호출이 없다(양방향 실측 편차 0.0%). */
+  const needsReturnRoute = Boolean(context?.openWindow && !context.nextFixed);
+  const returnSegments =
+    needsReturnRoute && mode !== "walk" ? 1 : 0;
+
+  if (mode === "bicycle") {
+    /* 경유지를 한 번에 보내므로 가는 경로 1건, 복귀가 필요하면 1건 더. */
+    return 1 + (needsReturnRoute ? 1 : 0);
+  }
+  /* 보행의 OSRM 폴백은 여기서 미리 잡지 않는다. TMAP이 실패할 때만 나가는
+     호출이고, 후보마다 1건씩 예약하면 정상 요청에서 검증 후보가 절반으로 줄기
+     때문이다. 그 몫은 예산과 플랫폼 상한 사이의 여유(45 대 50)가 흡수한다 —
+     엔진 밖 호출은 D1·세션처럼 내부 예산(1,000건)을 쓰므로 이 다섯 건은
+     실질적으로 이런 예외를 위한 자리다. */
+  return outboundSegments + returnSegments;
+}
+
 function subrequestBudget(): number {
   const configured = Number(getRuntimeSecret("RECOVERY_SUBREQUEST_BUDGET"));
   return Number.isFinite(configured) && configured > 0
@@ -136,6 +184,259 @@ function subrequestBudget(): number {
 }
 const CONTINUITY_VERIFICATION_RESERVE_MS = 2_500;
 const ACCESSIBILITY_DETAIL_RESERVE_MS = 8_000;
+
+/* 기상 조회의 실제 호출 수. `getWeatherEvidence`는 초단기실황과 단기예보를
+   각각 부르므로 지점 하나에 두 건이다. 원장에 남지 않으므로 계량기가 직접
+   더해야 하고, 두 자리에 리터럴 `2`가 흩어져 있으면 한쪽만 고쳐지기 쉽다. */
+const ORIGIN_WEATHER_CALLS = 2;
+const CANDIDATE_GRID_WEATHER_CALLS = 2;
+/* 후보 격자 예보에 예산을 쓰기 전에 반드시 남겨 두는 검증 몫(후보 수 기준).
+   예보는 정확도를 높이는 값이고 검증은 갈 수 있는지를 가르는 값이므로, 둘이
+   경쟁하면 검증이 이겨야 한다. */
+const MIN_RESERVED_VERIFICATION_CANDIDATES = 10;
+
+/* 탐색 반경을 도달 가능 거리보다 얼마나 넉넉하게 잡는가.
+
+   딱 맞게 자르면 "조건을 조금만 바꾸면 갈 수 있는 곳"이 탐색 결과에 아예 들어오지
+   않는다. 그런 곳은 결과에서 빠지더라도 **왜 빠졌는지 말해 줄 수 있어야** 하고,
+   그러려면 후보로 들어와 있어야 한다. 25%는 그 몫이다. */
+const DISCOVERY_REACH_MARGIN = 1.25;
+/* 탐색 반경의 하한. 짧은 창에서 도달 반경이 수백 미터로 계산되는 것은 맞지만,
+   그 반경 안에 공식 관광지가 몇 곳뿐인 지역에서는 근접 실패조차 보여 줄 수 없다.
+   2km는 "그래도 이 정도는 훑어본다"는 최소선이고, 실제 통과 판정은 아래 하한
+   계산이 따로 한다. */
+const MIN_DISCOVERY_RADIUS_METERS = 2_000;
+
+/* 수단별 보수(비관) 이동시간. 후보를 걸러내고 순위를 매기는 쪽에 쓴다.
+   예전에는 이 분기가 호출 지점마다 인라인으로 복제돼 있었다. */
+function conservativeMinutesFor(
+  mode: RecoveryRequest["travelMode"],
+  distanceMeters: number,
+): number {
+  return mode === "car"
+    ? conservativeDrivingMinutes(distanceMeters)
+    : mode === "bicycle"
+      ? conservativeCyclingMinutes(distanceMeters)
+      : mode === "transit"
+        ? conservativeTransitMinutes(distanceMeters)
+        : conservativeWalkingMinutes(distanceMeters);
+}
+
+/* 이 요청이 **이동에 쓸 수 있는** 시간. 창 전체에서 머무는 시간과 안전여유를
+   뺀 값이다. 체류는 엔진이 적용할 수 있는 **가장 짧은** 값을 쓴다 — 넉넉한
+   쪽으로 잡아야 갈 수 있는 후보를 탐색 단계에서 잃지 않는다. */
+function travelTimeBudgetMinutes(
+  input: RecoveryRequest,
+  context?: ItineraryContext,
+  /* 어느 체류 시간을 기준으로 계산할지.
+
+     `floor`는 엔진이 자동으로 줄일 수 있는 하한이다. **거부 판정**은 반드시
+     이쪽으로 해야 한다 — 체류를 줄이면 갈 수 있는 곳을 "갈 수 없다"고 막지
+     않기 위해서다.
+
+     `planned`는 여행자가 실제로 원한 체류다. **탐색 반경**은 이쪽으로 잡는다.
+     하한으로 반경을 잡으면 "체류를 절반으로 줄여야 닿는 먼 곳"까지 후보 풀에
+     들어와, 여행자가 원한 시간대로 갈 수 있는 가까운 곳을 밀어낸다. 실측에서
+     그렇게 해 보니 추천이 16곳에서 8곳으로 줄었다. */
+  basis: "floor" | "planned" = "floor",
+): number {
+  const minimumStay =
+    basis === "planned"
+      ? Math.max(
+          input.minimumStayMinutes ?? 30,
+          context?.openWindow?.plannedStayMinutes ??
+            context?.originalDurationMinutes ??
+            input.minimumStayMinutes ??
+            30,
+        )
+      : (input.minimumStayMinutes ?? 30);
+  const safetyBuffer = input.safetyBufferMinutes ?? 15;
+  const window = context?.openWindow;
+  if (!window) {
+    /* 등록 일정 교체와 구형 호출은 이동시간 한도를 직접 받는다. */
+    return Math.max(1, input.availableMinutes);
+  }
+  const windowMinutes = Math.max(
+    0,
+    Math.floor(
+      (window.endAt.getTime() - context.occurredAt.getTime()) / 60_000,
+    ),
+  );
+  /* 0을 1로 올리지 않는다. 머무는 시간과 안전여유가 창을 다 쓰면 이동에 쓸 수
+     있는 시간은 실제로 0분이고, 그 사실을 그대로 말해야 아래 판정과 반사실이
+     맞는 숫자를 낸다. 탐색 반경은 별도의 하한을 가지고 있다. */
+  return Math.max(0, windowMinutes - minimumStay - safetyBuffer);
+}
+
+/* 요청이 그 자체로 불가능한지. 불가능하면 근거와 조정안을, 아니면 undefined.
+
+   판정은 **하한**으로만 한다. 상한(보수 추정)으로 판정하면 실제로 갈 수 있는
+   요청을 불가능하다고 막게 되고, 그것이 fail-closed가 깨지는 유일한 방향이다. */
+function assessInputFeasibility(
+  input: RecoveryRequest,
+  context?: ItineraryContext,
+): InputFeasibility | undefined {
+  const window = context?.openWindow;
+  if (!window) return undefined;
+  const mode = geoTravelMode(input.travelMode);
+  const stayMinutes = input.minimumStayMinutes ?? 30;
+  const safetyBuffer = input.safetyBufferMinutes ?? 15;
+  const availableTravelMinutes = travelTimeBudgetMinutes(input, context);
+
+  /* 다음 장소가 마감으로 들어온 경우에만 그 구간이 강제된다. 방향 힌트일 때는
+     왕복만 필요하고, 왕복의 하한은 0에 가까우므로(아주 가까운 곳) 요청 자체가
+     불가능해지지 않는다 — 그때는 후보별 판정에 맡긴다. */
+  const nextLocation = context.nextFixed?.location;
+  if (!nextLocation) {
+    if (availableTravelMinutes > 0) return undefined;
+    /* 이동에 쓸 수 있는 시간이 0분이면 왕복조차 불가능하다. */
+    const windowMinutes = Math.max(
+      0,
+      Math.floor(
+        (window.endAt.getTime() - context.occurredAt.getTime()) / 60_000,
+      ),
+    );
+    const needed = stayMinutes + safetyBuffer + 1 - windowMinutes;
+    return {
+      reason: "window_too_short",
+      minimumTravelMinutes: 1,
+      availableTravelMinutes: 0,
+      requiredTravelMinutes: 1,
+      shortfallMinutes: Math.max(1, needed),
+      travelMode: mode,
+      remedies: [
+        {
+          kind: "stay_minutes",
+          label: `머무는 시간을 ${Math.max(30, windowMinutes - safetyBuffer - 30)}분 이하로 줄이기`,
+          labelEn: `shorten the stay to ${Math.max(30, windowMinutes - safetyBuffer - 30)} minutes or less`,
+          value: Math.max(30, windowMinutes - safetyBuffer - 30),
+        },
+        {
+          kind: "window_minutes",
+          label: `남은 시간을 ${windowMinutes + Math.max(1, needed)}분 이상으로 잡기`,
+          labelEn: `set the window to at least ${windowMinutes + Math.max(1, needed)} minutes`,
+          value: windowMinutes + Math.max(1, needed),
+        },
+      ],
+    };
+  }
+
+  const geodesicMeters = haversineMeters(input.origin, {
+    latitude: nextLocation.latitude,
+    longitude: nextLocation.longitude,
+  });
+  const minimumTravelMinutes = Math.ceil(
+    optimisticTravelMinutes(geodesicMeters, mode),
+  );
+  if (minimumTravelMinutes <= availableTravelMinutes) return undefined;
+
+  const shortfallMinutes = minimumTravelMinutes - availableTravelMinutes;
+  const nextPlaceLabel = window.nextPlaceLabel ?? nextLocation.label;
+
+  /* 조정안. 각 항목은 **그것만** 바꾸면 가능해지는 값이다. 안전여유는 어느
+     항목에서도 건드리지 않는다 — 안전 계약이고 순위 선호가 아니다. */
+  const remedies: InputFeasibility["remedies"] = [];
+  /* 더 빠른 수단으로 바꾸면 되는가. 제안은 **보수 추정**으로 검증한다 — 하한으로
+     제안하면 "자동차로 6분"처럼 지킬 수 없는 희망을 주게 된다. */
+  const fasterModes: Array<{ mode: GeoTravelMode; ko: string; en: string }> = [
+    { mode: "bicycle", ko: "자전거", en: "bicycle" },
+    { mode: "transit", ko: "대중교통", en: "transit" },
+    { mode: "car", ko: "자동차", en: "car" },
+  ];
+  for (const candidateMode of fasterModes) {
+    if (candidateMode.mode === mode) continue;
+    const conservative = conservativeMinutesFor(
+      candidateMode.mode,
+      geodesicMeters,
+    );
+    if (conservative <= availableTravelMinutes) {
+      remedies.push({
+        kind: "travel_mode",
+        label: `${withParticle(candidateMode.ko, "으로/로")} 이동하기 (약 ${conservative}분)`,
+        labelEn: `travel by ${candidateMode.en} (about ${conservative} min)`,
+        value: candidateMode.mode,
+      });
+    }
+  }
+  /* 체류 줄이기는 **제안하지 않는다.** 위 예산이 이미 자동 완화 하한(최소 체류)을
+     가정하고 계산됐기 때문이다 — 즉 여기까지 왔다는 것은 체류를 최소로 줄여도
+     모자란다는 뜻이고, 더 줄이라는 제안은 지킬 수 없는 희망이 된다. */
+  /* 약속을 늦추면 되는가. */
+  remedies.push({
+    kind: "appointment_later",
+    label: `약속 시각을 ${shortfallMinutes}분 이상 늦추기`,
+    labelEn: `move the appointment at least ${shortfallMinutes} minutes later`,
+    /* 늦춰야 하는 **양**이다. 화면이 현재 약속 시각에 더한다. */
+    value: shortfallMinutes,
+  });
+  /* 마지막 수단: 다음 장소를 마감으로 두지 않기. 지우라는 뜻이 아니라 약속
+     시각을 비워 방향 힌트로만 쓰면 남은 시간 안에 다녀올 곳을 찾는다는 뜻이다. */
+  remedies.push({
+    kind: "drop_next_place",
+    label: "약속 시각을 비우고 다녀올 수 있는 곳만 찾기",
+    labelEn: "clear the appointment time and just find places you can return from",
+  });
+
+  return {
+    reason: "next_place_unreachable",
+    minimumTravelMinutes,
+    geodesicMeters: Math.round(geodesicMeters),
+    availableTravelMinutes,
+    requiredTravelMinutes: minimumTravelMinutes,
+    shortfallMinutes,
+    nextPlaceLabel,
+    travelMode: mode,
+    remedies,
+  };
+}
+
+/* 불가능 판정을 한 문장으로. 숫자를 다 담아야 여행자가 우리를 검산할 수 있다. */
+function feasibilityStatement(feasibility: InputFeasibility): string {
+  if (feasibility.reason === "window_too_short") {
+    return `남은 시간이 머무는 시간과 안전여유 ${feasibility.shortfallMinutes}분을 담기에도 부족해 이동할 시간이 남지 않습니다.`;
+  }
+  const km = ((feasibility.geodesicMeters ?? 0) / 1000).toFixed(1);
+  /* "머무는 시간을 최소로 줄여도"를 반드시 적는다. 이 판정은 이미 자동 완화
+     하한을 가정한 계산이므로, 그 말이 없으면 여행자는 체류를 줄여 보라는
+     조언을 기대하게 되고 우리는 그것을 제안할 수 없다. */
+  return `${feasibility.nextPlaceLabel}까지 직선 ${km}km로, ${withParticle(travelModeLabel(feasibility.travelMode), "으로/로")} 가장 빠르게 가도 ${feasibility.minimumTravelMinutes}분이 걸립니다. 머무는 시간을 최소로 줄여도 이동에 쓸 수 있는 시간은 ${feasibility.availableTravelMinutes}분뿐이어서 ${feasibility.shortfallMinutes}분 부족합니다.`;
+}
+
+/* 후보 탐색에 쓸 반경.
+
+   예전에는 20km 고정이었다. 그 값은 공사 엔드포인트의 최대치이지 이 요청이
+   도달할 수 있는 거리가 아니다. 도보로 120분이 비었을 때 실제로 갈 수 있는
+   범위는 1km 남짓인데, 거리순 200건을 20km에서 긁어 오면 그 200건 대부분이
+   산술적으로 통과할 수 없는 곳이다. 검증 예산은 그 건초더미에 쓰였다.
+
+   실측에서 도보 요청으로 추천된 장소는 예외 없이 1.6km 안에 있었고, 60분 창에서는
+   440m 안이었다. 반경을 시간 예산에서 유도하면 같은 100건이 거의 전부 실현 가능한
+   후보로 채워진다 — 호출을 늘리지 않고 후보의 질을 바꾸는 변경이다. */
+function discoveryRadiusMeters(
+  input: RecoveryRequest,
+  context?: ItineraryContext,
+): number {
+  /* 반경은 **여행자가 원한 체류**를 기준으로 잡는다. 위 주석의 이유다. */
+  const travelBudget = travelTimeBudgetMinutes(input, context, "planned");
+  /* 다음 장소가 마감으로 들어오면 경로는 편도가 아니라 `현재 → 후보 → 다음 장소`
+     이지만, 후보가 그 마감 지점 근처에 있을 수도 있으므로 편도 예산을 깎지 않는다.
+     복귀가 필요한 경우에만 절반으로 나눈다. */
+  const oneWayBudget =
+    context?.openWindow && !context.nextFixed
+      ? travelBudget / 2
+      : travelBudget;
+  const reach = optimisticReachMeters(
+    oneWayBudget,
+    geoTravelMode(input.travelMode),
+  );
+  return Math.min(
+    KTO_CANDIDATE_RADIUS_METERS,
+    Math.max(
+      MIN_DISCOVERY_RADIUS_METERS,
+      Math.ceil(reach * DISCOVERY_REACH_MARGIN),
+    ),
+  );
+}
 
 type ItineraryNode = NonNullable<
   RecoveryRequest["itinerary"]
@@ -161,6 +462,13 @@ type ItineraryContext = {
     plannedStayMinutes: number;
     nextPlaceLabel?: string;
     nextPlaceArriveBy?: Date;
+    /* 다음 장소를 알려 주었지만 **약속 시각은 주지 않은** 경우. 그때 그 장소는
+       마감이 아니라 방향 힌트이고, 검증은 출발지 왕복으로 한다. 이 사실을
+       결과에 밝히기 위해 따로 들고 다닌다 — 라벨이 있다는 것만으로 "다음 장소
+       도착까지 계산했다"고 적으면 거짓이 된다. */
+    nextPlaceIsDirectionHint: boolean;
+    /* 방향 힌트의 좌표. 순위에서 "가는 방향에 있는가"를 계산할 때 쓴다. */
+    nextPlaceLocation?: { latitude: number; longitude: number };
   };
 };
 
@@ -177,6 +485,10 @@ type WorkingCandidate = {
   longitude: number;
   distanceMeters: number;
   estimatedTravelMinutes: number;
+  /* 경로 검증 전의 **회로 전체** 보수 추정 — 왕복이거나 다음 장소까지다.
+     `estimatedTravelMinutes`는 출발지→후보 편도뿐이라 순위를 정하는 데 쓰면
+     정작 탈락을 가르는 구간을 못 본다. */
+  estimatedCircuitMinutes?: number;
   imageUrl?: string;
   modifiedAt?: string;
   indoor: boolean;
@@ -516,6 +828,10 @@ function auditFromFailure(
     totalCount: 0,
     fieldsUsed: [],
     errorCode: "UNKNOWN",
+    /* `KtoError`가 아닌 실패는 클라이언트 밖에서 난 것이므로 실제로 몇 건이
+       나갔는지 알 수 없다. 예산을 적게 세는 쪽으로 틀리면 한도를 넘기므로
+       한 건 나간 것으로 본다. */
+    upstreamCalls: 1,
   };
 }
 
@@ -533,7 +849,18 @@ function notRequiredAudit(
     totalCount: 0,
     fieldsUsed: [],
     ...(reason ? { errorCode: reason } : {}),
+    /* 부르지 않기로 한 호출이다. 예산을 청구하면 안 된다 — 이 항목들이 원장에
+       쌓여 계량기를 밀어 올리고 있었다. */
+    upstreamCalls: 0,
   };
+}
+
+/* 원장에 적힌 **실제 외부 호출 수**. 항목 수가 아니다. */
+function upstreamCallsSpent(ledger: KtoAudit[]): number {
+  return ledger.reduce(
+    (total, audit) => total + (audit.upstreamCalls ?? 1),
+    0,
+  );
 }
 
 function publicAvailability(
@@ -1280,7 +1607,10 @@ function openWindowContext(
     : requestedDepartureAt;
 
   const nextPlace = window.nextPlace;
-  const nextPlaceArriveBy = nextPlace
+  /* 약속 시각이 **주어졌을 때만** 마감이 된다. 주지 않았으면 이 장소는 방향
+     힌트이고, 아래에서 `nextFixed`가 만들어지지 않으므로 검증은 출발지 왕복으로
+     내려간다 — 즉 실제로 결과가 나오는 경로다. */
+  const nextPlaceArriveBy = nextPlace?.arriveBy
     ? new Date(nextPlace.arriveBy)
     : undefined;
   const nextFixed: ItineraryNode | undefined =
@@ -1315,13 +1645,22 @@ function openWindowContext(
     lockedNodeIds: nextFixed ? [nextFixed.id] : [],
     originalDurationMinutes: window.plannedStayMinutes,
     openWindow: {
-      endAt,
+      /* 약속 시각이 자유 시간의 끝보다 앞서면 그쪽이 실제 마감이다. 늦으면
+         자유 시간이 먼저 끝나므로 그쪽을 쓴다. 이른 쪽이 항상 이긴다. */
+      endAt:
+        nextFixed && nextPlaceArriveBy && nextPlaceArriveBy < endAt
+          ? nextPlaceArriveBy
+          : endAt,
       plannedStayMinutes: window.plannedStayMinutes,
       nextPlaceLabel: nextPlace?.label,
-      nextPlaceArriveBy:
-        nextPlaceArriveBy && !Number.isNaN(nextPlaceArriveBy.getTime())
-          ? nextPlaceArriveBy
-          : undefined,
+      nextPlaceArriveBy: nextFixed ? nextPlaceArriveBy : undefined,
+      nextPlaceIsDirectionHint: Boolean(nextPlace) && !nextFixed,
+      nextPlaceLocation: nextPlace
+        ? {
+            latitude: nextPlace.latitude,
+            longitude: nextPlace.longitude,
+          }
+        : undefined,
     },
   };
 }
@@ -1401,6 +1740,7 @@ function summariseOpenWindow(
     plannedStayMinutes: window.plannedStayMinutes,
     nextPlaceLabel: window.nextPlaceLabel,
     nextPlaceArriveBy: window.nextPlaceArriveBy?.toISOString(),
+    nextPlaceIsDirectionHint: window.nextPlaceIsDirectionHint || undefined,
   };
 }
 
@@ -1422,12 +1762,19 @@ function scoreCandidate(
   const windowProof = candidate.scheduleDiff.openWindow;
   const appointmentProof = candidate.scheduleDiff.nextFixedAppointment;
   /* 거리값은 같은 5km라도 이동수단·경로에 따라 부담이 전혀 다르다. 실제 검증
-     뒤에는 왕복/다음 장소까지의 경로 시간을, 그 전에는 수단별 보수 추정을 쓴다. */
+     뒤에는 왕복/다음 장소까지의 경로 시간을, 그 전에는 수단별 보수 추정을 쓴다.
+
+     경로 검증 **전** 순위가 문제였다. 다음 장소가 마감으로 들어온 요청에서는
+     `candidate.estimatedTravelMinutes`, 즉 출발지→후보 구간만 보고 있었다.
+     그런데 모든 후보를 탈락시키는 구간은 그 다음, 후보→다음 장소 쪽이다. 즉
+     `slackScore`(가중치 최대 0.40)가 정작 판정을 가르는 구간에 대해 아무 정보도
+     담지 않은 채 검증 순서를 정하고 있었다. 회로 추정값을 쓴다. */
   const travelBurdenMinutes = windowProof
     ? windowProof.travelToMinutes + windowProof.returnMinutes
-    : input.openWindow && !input.openWindow.nextPlace
-      ? candidate.estimatedTravelMinutes * 2
-      : candidate.estimatedTravelMinutes;
+    : (candidate.estimatedCircuitMinutes ??
+      (input.openWindow && !input.openWindow.nextPlace
+        ? candidate.estimatedTravelMinutes * 2
+        : candidate.estimatedTravelMinutes));
   const availableTravelMinutes = Math.max(
     1,
     authoritativeAvailableMinutes -
@@ -1539,11 +1886,66 @@ function scoreCandidate(
   };
 }
 
+/* 밤에도 운영할 가능성이 있는 분류인지. **정렬에만** 쓴다.
+
+   이 값으로 후보를 버리거나 판정을 바꾸지 않는다 — 그건 공식 운영정보가 할 일이고,
+   여기서 추측으로 대신하면 실제로 문을 연 곳을 놓친다. 하는 일은 순서 하나다:
+   밤 요청에서 검증 예산을 어느 분류에 먼저 쓸지.
+
+   그게 필요한 이유는 아래 라운드로빈이 11개 분류를 **균등하게** 돌기 때문이다.
+   밤 10시에는 문화시설·체험관광처럼 구조적으로 닫힌 분류가 검증 슬롯의 절반
+   가까이를 가져가고, 그 후보들은 운영정보 조회를 한 건씩 쓴 뒤 `OFFICIALLY_CLOSED`로
+   떨어진다. 실측에서 밤 요청의 탈락 사유 1위가 이것이었다.
+
+   최악의 경우에도 오늘과 같은 결과가 나온다(순서만 다름). 그래서 하방 위험이 없다.
+
+   값은 추측이 아니라 **실측에 맞춘 것**이다. 대전역 22:11 KST 요청에서 통과한
+   10곳은 전부 시장·거리·공원·광장(공식 분류 `PARK` 또는 신분류가 없어 `OTHER`로
+   떨어지는 `contenttypeid=12` 관광지)이었고, 휴무로 탈락한 곳은 식당 4곳·축제
+   1곳·라운지 1곳이었다. 첫 시도에서 식당을 "심야까지 열려 있는 쪽"으로 올려
+   두었다가 같은 측정에서 4곳 전부 탈락하는 것을 보고 내렸다.
+
+   근거가 한 지점·한 시각뿐이므로 나머지 분류는 중립(1)에 둔다. 지역과 시각을
+   넓혀 다시 측정하면 그때 조정할 값이고, 그때까지 없는 근거를 있는 것처럼
+   숫자로 박아 두지 않는다. */
+const NIGHT_VIABILITY: Record<string, number> = {
+  /* 실측에서 야간에 통과한 유형. 공공 공간이라 운영시간 개념이 약하다. */
+  PARK: 0,
+  OTHER: 0,
+  /* 중립 — 아직 근거가 없다. */
+  SHOPPING: 1,
+  HERITAGE: 1,
+  NATURE: 1,
+  COURSE: 1,
+  /* 영업·개관 시간이 정해져 있어 야간에 닫히는 것이 확인된 유형. */
+  FOOD: 2,
+  EVENT: 2,
+  LEISURE: 2,
+  CULTURE: 2,
+  EXPERIENCE: 2,
+  ACCOMMODATION: 2,
+};
+
+/* 체류가 시작될 시각이 밤인가. 한국 시간 기준이고, 판정은 정렬에만 쓰이므로
+   경계는 넉넉하게 잡는다. */
+function isNightWindow(referenceAt: Date): boolean {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Seoul",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).format(referenceAt),
+  );
+  if (!Number.isFinite(hour)) return false;
+  return hour >= 19 || hour < 8;
+}
+
 /* 점수 상위가 한 분류에 몰려 공원·문화유산·식당이 검증 단계에 도달하지 못하는
    것을 막는다. 공식 KTO 분류별 큐에서 한 곳씩 순환하므로 각 분류 내부 점수순은
    유지하면서 검증 풀의 발견 다양성을 확보한다. */
 function diversifyCandidatesByCategory(
   candidates: WorkingCandidate[],
+  options: { nightFirst?: boolean } = {},
 ): WorkingCandidate[] {
   const buckets = new Map<string, WorkingCandidate[]>();
   for (const candidate of candidates) {
@@ -1553,16 +1955,38 @@ function diversifyCandidatesByCategory(
     buckets.set(code, bucket);
   }
 
+  /* 낮에는 모든 분류가 한 묶음이다 — 지금까지의 균등 라운드로빈 그대로.
+
+     밤에는 **계층**으로 나눈다. 분류 순서만 바꿔 보았지만 아무 차이가 없었다
+     (대전역 10곳→10곳, 서울시청 9곳→9곳). 당연한 결과다: 라운드로빈은 각
+     묶음에서 한 곳씩 가져가므로 묶음의 순서를 바꿔도 뽑히는 **집합**이 거의
+     같고, 순서는 잘리는 경계에서만 의미가 있다.
+
+     그래서 앞 계층을 다 쓴 **뒤에** 다음 계층으로 넘어간다. 계층 안에서는 여전히
+     균등 라운드로빈이므로 다양성은 그 안에서 유지되고, 야간에 구조적으로 닫힌
+     유형은 뒤로 밀린다. 후보를 버리지는 않으므로 앞 계층이 비면 그대로 흘러
+     내려온다 — 최악의 경우가 오늘과 같은 결과라는 성질은 유지된다. */
+  const tiers = new Map<number, string[]>();
+  for (const code of buckets.keys()) {
+    const tier = options.nightFirst ? (NIGHT_VIABILITY[code] ?? 1) : 0;
+    const group = tiers.get(tier) ?? [];
+    group.push(code);
+    tiers.set(tier, group);
+  }
+
   const diversified: WorkingCandidate[] = [];
-  while (diversified.length < candidates.length) {
-    let appended = false;
-    for (const bucket of buckets.values()) {
-      const candidate = bucket.shift();
-      if (!candidate) continue;
-      diversified.push(candidate);
-      appended = true;
+  for (const tier of [...tiers.keys()].sort((a, b) => a - b)) {
+    const order = tiers.get(tier) ?? [];
+    for (;;) {
+      let appended = false;
+      for (const code of order) {
+        const candidate = buckets.get(code)?.shift();
+        if (!candidate) continue;
+        diversified.push(candidate);
+        appended = true;
+      }
+      if (!appended) break;
     }
-    if (!appended) break;
   }
   return diversified;
 }
@@ -1572,6 +1996,9 @@ async function accessibilityDetails(
   audience: RecoveryRequest["audience"],
   signal?: AbortSignal,
   deadlineAt?: number,
+  /* 예산 계량기. 예전에는 이 함수가 계량기를 몰랐고 시간 마감만 봤다. 그래서
+     후보 36곳 전부에 1건씩 호출해 요청 예산의 80%를 여기서 태웠다. */
+  meter?: SubrequestMeter,
 ): Promise<{ details: Map<string, KtoItem>; audits: KtoAudit[] }> {
   if (audience === "general") return { details: new Map(), audits: [] };
 
@@ -1587,6 +2014,10 @@ async function accessibilityDetails(
       break;
     }
     const group = candidates.slice(offset, offset + 4);
+    /* 이 묶음만큼의 예산을 확보하지 못하면 부르지 않는다. 호출 뒤에 세는 것과
+       호출 전에 확보하는 것의 차이가 곧 "한도를 넘겨 실패한 뒤 그 실패를 다른
+       사유로 기록하는가"의 차이다. */
+    if (!reserveSubrequests(meter, group.length)) break;
     const settled = await Promise.allSettled(
       group.map((candidate) =>
         getAccessibilityDetail(candidate.contentId, { signal }),
@@ -2205,6 +2636,44 @@ async function enrichForContinuity(params: {
           stayMinutes,
           safetyBufferMinutes: safetyBuffer,
         });
+        atRisk = (scheduleDiff.preservedWaypoints ?? []).filter(
+          (waypoint) => waypoint.status === "at_risk",
+        );
+      }
+    }
+
+    /* 빈 시간 창을 넘긴 경우에도 같은 자동 완화를 적용한다.
+
+       위 블록은 **다음 고정 일정 도착**이 위험할 때만 체류를 줄였고, 창 자체를
+       넘기는 경우(`OPEN_WINDOW_OVERFLOW`)에는 아무 조정 없이 탈락시켰다. 그런데
+       실측에서 탈락 사유 1위가 이것이었고, 반사실을 보면 "안전여유가 **1분**
+       부족" 같은 것이 많았다 — 60분 머물 생각을 55분으로 줄이면 갈 수 있는 곳을
+       "갈 수 없는 곳"으로 버린 것이다.
+
+       줄이는 하한은 여행자가 선언한 최소 체류다. 안전여유는 건드리지 않는다.
+       그리고 줄였다는 사실은 증명서의 `appliedStayMinutes`에 그대로 남아 카드가
+       "요청한 60분보다 짧게 잡았다"고 말할 수 있다 — 조용히 줄이지 않는다. */
+    const overflow = scheduleDiff.openWindow;
+    if (overflow && overflow.status === "at_risk") {
+      const shortfall = Math.max(
+        0,
+        overflow.requiredBufferMinutes - overflow.leftoverMinutes,
+      );
+      const automaticReduction = Math.min(
+        Math.max(0, stayMinutes - minimumStay),
+        shortfall,
+      );
+      if (automaticReduction > 0) {
+        stayMinutes -= automaticReduction;
+        scheduleDiff = itineraryScheduleDiff({
+          context,
+          candidate,
+          route,
+          returnRoute,
+          stayMinutes,
+          safetyBufferMinutes: safetyBuffer,
+        });
+        /* 체류가 줄면 다음 경유지 도착도 앞당겨지므로 위 판정을 다시 읽는다. */
         atRisk = (scheduleDiff.preservedWaypoints ?? []).filter(
           (waypoint) => waypoint.status === "at_risk",
         );
@@ -3375,6 +3844,83 @@ function summariseRejections(
     .sort((a, b) => b.count - a.count);
 }
 
+/* 몇 곳까지 보여 줄까. 목록이 길어지면 "추천이 아니다"라는 구분이 흐려진다. */
+const ALTERNATIVE_TIER_LIMIT = 6;
+
+/* 탈락 후보를 **탈락한 상태로** 화면에 올릴 수 있게 정리한다.
+
+   엔진은 이 정보를 이미 계산하고 있었다. 어느 조건이 얼마나 모자랐는지,
+   무엇만 바꾸면 통과하는지까지 구해 놓고 `rejectedCount` 숫자 하나만 남기고
+   버렸다. 실측에서 정선 요청의 1순위 탈락안은 "안전여유가 1분 부족, 체류
+   60분→30분이면 통과"였는데, 여행자가 본 화면은 "찾지 못했습니다"였다.
+
+   숨기는 것이 정직한 것이 아니다. 이 제품이 하지 않겠다고 약속한 것은
+   **확인하지 않은 것을 확인한 척하는 것**이고, 탈락 사유를 붙여 탈락한 곳을
+   보여 주는 것은 그 반대편에 있다. 실제로 코드 주석이 이미 같은 말을 하고
+   있다 — "목록에서 지워 버리면 여행자는 그런 곳이 있었다는 사실조차 모른 채
+   '갈 곳이 없다'는 화면을 본다." */
+function summariseAlternatives(
+  rejected: RejectedCandidate[],
+): RecoveryResult["alternatives"] {
+  /* 시간이 모자란 곳. 경로까지 확인한 탈락을 먼저, 그다음 조정량이 작은 순.
+     사전 계산 단계에서 떨어진 곳도 함께 담지만 깊이를 밝혀 구분한다. */
+  const nearMisses = rejected
+    .filter(
+      (candidate) =>
+        candidate.contentId &&
+        (candidate.reasonCode === "OPEN_WINDOW_OVERFLOW" ||
+          candidate.reasonCode === "NEXT_FIXED_APPOINTMENT_AT_RISK" ||
+          candidate.reasonCode === "CONTINUITY_WAYPOINT_AT_RISK" ||
+          candidate.reasonCode === "TIME_LIMIT"),
+    )
+    .sort((a, b) => {
+      const depth = (entry: RejectedCandidate) =>
+        entry.verificationDepth === "route_verified" ? 0 : 1;
+      const byDepth = depth(a) - depth(b);
+      if (byDepth) return byDepth;
+      /* 조정이 필요 없는 쪽이 먼저다. 그다음 조정량이 작은 순. */
+      const amount = (entry: RejectedCandidate) =>
+        entry.requiredRelaxation?.amount ?? Number.MAX_SAFE_INTEGER;
+      return (
+        amount(a) - amount(b) ||
+        (a.distanceMeters ?? Number.POSITIVE_INFINITY) -
+          (b.distanceMeters ?? Number.POSITIVE_INFINITY)
+      );
+    })
+    .slice(0, ALTERNATIVE_TIER_LIMIT)
+    .map((candidate) => ({
+      contentId: candidate.contentId as string,
+      title: candidate.title,
+      distanceMeters: candidate.distanceMeters,
+      reason: candidate.reason,
+      reasonCode: candidate.reasonCode,
+      requiredRelaxation: candidate.requiredRelaxation,
+      verificationDepth: candidate.verificationDepth,
+    }));
+
+  /* 지금은 문을 닫은 곳. 밤 10시에 "찾지 못했습니다" 대신 실제 정보가 된다. */
+  const closedNow = rejected
+    .filter(
+      (candidate) =>
+        candidate.contentId && candidate.reasonCode === "OFFICIALLY_CLOSED",
+    )
+    .sort(
+      (a, b) =>
+        (a.distanceMeters ?? Number.POSITIVE_INFINITY) -
+        (b.distanceMeters ?? Number.POSITIVE_INFINITY),
+    )
+    .slice(0, ALTERNATIVE_TIER_LIMIT)
+    .map((candidate) => ({
+      contentId: candidate.contentId as string,
+      title: candidate.title,
+      distanceMeters: candidate.distanceMeters,
+      reason: candidate.reason,
+    }));
+
+  if (!nearMisses.length && !closedNow.length) return undefined;
+  return { nearMisses, closedNow };
+}
+
 function selectCounterfactual(
   rejected: RejectedCandidate[],
 ): RecoveryResult["counterfactual"] {
@@ -3440,9 +3986,17 @@ export async function recoverTrip(
            것은 이 시간 계산에 **복귀 시간이 들어 있다**는 사실 하나다. */
         ...(context.changeKind === "insert"
           ? [
-              context.openWindow?.nextPlaceLabel
+              /* 라벨이 아니라 **실제로 마감으로 쓴 노드**를 보고 적는다. 예전에는
+                 라벨만 보고 "다음 장소 도착까지 계산했습니다"라고 적었는데,
+                 약속 시각 없이 이름만 알려 준 경우에도 같은 문장이 나갔다. */
+              context.nextFixed
                 ? `다음 장소 도착까지 실제 ${travelModeLabel(input.travelMode)} 경로로 계산했습니다.`
                 : `돌아오는 ${travelModeLabel(input.travelMode)} 시간까지 포함해 계산했습니다.`,
+              ...(context.openWindow?.nextPlaceIsDirectionHint
+                ? [
+                    `${context.openWindow.nextPlaceLabel} 도착 시각을 알려 주지 않으셨으므로 그 도착 시각은 검증하지 않았습니다. 남은 시간 안에 다녀와서 출발지로 돌아올 수 있는 곳만 확인했으며, ${context.openWindow.nextPlaceLabel} 방향에 가까운 곳을 먼저 보여 드립니다. 약속 시각을 입력하면 그 시각까지 도착할 수 있는지 함께 검증합니다.`,
+                  ]
+                : []),
             ]
           : []),
       ]
@@ -3453,12 +4007,60 @@ export async function recoverTrip(
   const sourceLedger: KtoAudit[] = [];
   const rejected: RejectedCandidate[] = [];
 
+  /* 후보를 보기 **전에** 여행자가 준 조건끼리 모순이 없는지 확인한다.
+
+     이 판정은 외부 조회를 한 건도 쓰지 않는다. 직선거리를 그 수단의 최고속도로
+     나누므로 어떤 실제 경로도 이보다 빠를 수 없고, 삼각부등식상 `현재 → 후보 →
+     다음 장소`는 `현재 → 다음 장소`보다 짧을 수 없다. 그래서 여기서 부족이 나오면
+     한국의 어느 관광지를 넣어도 통과할 수 없다.
+
+     예전에는 이 계산을 아무도 하지 않았다. 대신 후보 200곳을 가져와 45번을 조회한
+     뒤 "이 시간 안에 다녀올 수 있는 곳을 찾지 못했습니다"라고 답했다. 여행자는
+     원인이 자기 입력이라는 것도, 무엇을 바꾸면 되는지도 알 수 없었다. */
+  const feasibility = assessInputFeasibility(input, context);
+  if (feasibility) {
+    return {
+      requestId,
+      referenceTime,
+      status: "input_infeasible",
+      recoveryMode,
+      itinerarySummary: summariseItinerary(context),
+      openWindowSummary: summariseOpenWindow(context),
+      scope: {
+        coverage: "nationwide",
+        regionCode: input.origin.areaCode,
+        districtCode: input.origin.sigunguCode,
+        originLabel: input.origin.label,
+      },
+      options: [],
+      rejectedCount: 0,
+      rejectionSummary: [],
+      inputFeasibility: feasibility,
+      dataContributions: [],
+      /* 원장이 비어 있는 것이 이 응답의 요점이다 — 확인하지 않았다는 사실을
+         숨기지 않으면서, 확인할 필요가 없었다는 것도 함께 말한다. */
+      sourceLedger,
+      warnings: [
+        ...warnings,
+        feasibilityStatement(feasibility),
+        "요청한 조건으로는 어떤 장소도 들어갈 수 없어 공식 관광정보를 조회하지 않았습니다. 아래 조정 중 하나를 적용하면 바로 다시 찾습니다.",
+      ],
+      generatedAt: new Date().toISOString(),
+      ruleVersion: RECOVERY_RULE_VERSION,
+    };
+  }
+
+  /* 이 요청이 실제로 도달할 수 있는 범위. 후보 탐색·무장애 목록이 모두 이 값을
+     쓴다 — 세 곳이 다른 반경을 쓰면 어떤 후보는 접근성 정보만 있고 어떤 후보는
+     그 반대가 된다. */
+  const candidateRadiusMeters = discoveryRadiusMeters(input, context);
+
   let nearby: KtoCallResult;
   try {
     nearby = await getNearbyTourism({
       longitude: input.origin.longitude,
       latitude: input.origin.latitude,
-      radius: KTO_CANDIDATE_RADIUS_METERS,
+      radius: candidateRadiusMeters,
       pageNo: 1,
       numOfRows: KTO_CANDIDATE_PAGE_SIZE,
       /* Candidate discovery is the one call the whole recovery depends on:
@@ -3546,7 +4148,7 @@ export async function recoverTrip(
         {
           longitude: input.origin.longitude,
           latitude: input.origin.latitude,
-          radius: KTO_CANDIDATE_RADIUS_METERS,
+          radius: candidateRadiusMeters,
           pageNo,
           numOfRows: KTO_CANDIDATE_PAGE_SIZE,
         },
@@ -3580,7 +4182,9 @@ export async function recoverTrip(
     totalCount: reportedTotal,
   };
   warnings.push(
-    "후보 탐색은 한국관광공사가 제공하는 관광정보의 최대 검색 범위 20km 안에서 수행합니다.",
+    candidateRadiusMeters >= KTO_CANDIDATE_RADIUS_METERS
+      ? "후보 탐색은 한국관광공사가 제공하는 관광정보의 최대 검색 범위 20km 안에서 수행합니다."
+      : `${withParticle(travelModeLabel(input.travelMode), "으로/로")} 남은 시간 안에 다녀올 수 있는 범위인 반경 ${(candidateRadiusMeters / 1000).toFixed(1)}km 안에서 후보를 찾았습니다. 그보다 먼 곳은 어떤 경로로도 이 시간 안에 다녀올 수 없어 조회하지 않았습니다.`,
   );
   if (
     expansionStoppedByDeadline ||
@@ -3671,7 +4275,7 @@ export async function recoverTrip(
       : getNearbyAccessibleTourism({
           longitude: input.origin.longitude,
           latitude: input.origin.latitude,
-          radius: KTO_CANDIDATE_RADIUS_METERS,
+          radius: candidateRadiusMeters,
         }, { signal: execution.signal, timeoutMs: 4_000, retry: false });
   const weatherPromise = context
       ? getWeatherEvidence(
@@ -3876,6 +4480,8 @@ export async function recoverTrip(
     accessibleItems.map((item) => stringValue(item.contentid)).filter(Boolean),
   );
   const indoorRequired = indoorRequirement(input);
+  const travelGeoMode = geoTravelMode(input.travelMode);
+  const travelBudgetMinutes = travelTimeBudgetMinutes(input, context);
 
   const preliminary: WorkingCandidate[] = [];
   for (const item of nearby.items) {
@@ -3943,14 +4549,10 @@ export async function recoverTrip(
        실제로 10분이면 닿는 후보가 "가용시간 초과"로 떨어진다. 수단별 속도로
        나눈다. 이 값은 걸러내기 전용이고, 살아남은 후보의 이동시간은 아래에서
        실제 경로로 다시 계산해 덮어쓴다. */
-    const estimatedTravelMinutes =
-      input.travelMode === "car"
-        ? conservativeDrivingMinutes(distanceMeters)
-        : input.travelMode === "bicycle"
-          ? conservativeCyclingMinutes(distanceMeters)
-          : input.travelMode === "transit"
-            ? conservativeTransitMinutes(distanceMeters)
-            : conservativeWalkingMinutes(distanceMeters);
+    const estimatedTravelMinutes = conservativeMinutesFor(
+      input.travelMode,
+      distanceMeters,
+    );
     if (!context && estimatedTravelMinutes > input.availableMinutes) {
       rejected.push({
         contentId,
@@ -3971,6 +4573,85 @@ export async function recoverTrip(
         verificationDepth: "pre_filter",
       });
       continue;
+    }
+
+    /* 빈 시간 추천의 사전 걸러내기.
+
+       예전에는 이 자리에 `!context &&` 조건이 붙어 있어서, 빈 시간 경로에는 시간
+       사전 필터가 **하나도 걸리지 않았다.** 그래서 도보로 왕복 4시간이 걸리는
+       후보가 검증 풀에 들어와 운영시간·경로 조회를 각각 소비하고 나서야 "창 초과"로
+       떨어졌다. 실측에서 짧은 창은 탈락 13건 중 10건, 정선은 13건 중 12건이 이
+       사유였다 — 애초에 넣지 말아야 했던 후보들이다.
+
+       거부는 반드시 **하한**으로 한다. 여기서 쓰는 값은 그 수단의 최고속도로
+       직선을 달렸을 때의 시간이므로, 어떤 실제 경로도 이보다 빠를 수 없다. 즉
+       이 검사를 통과하지 못한 후보는 "우리가 못 찾은 것"이 아니라 "존재할 수 없는
+       것"이다. 반대로 이 검사를 통과한 후보는 아래에서 실제 경로로 다시 판정한다. */
+    if (context) {
+      const nextLocation = context.nextFixed?.location;
+      const optimisticCircuitMinutes = nextLocation
+        ? optimisticTravelMinutes(distanceMeters, travelGeoMode) +
+          optimisticTravelMinutes(
+            haversineMeters(
+              { latitude, longitude },
+              {
+                latitude: nextLocation.latitude,
+                longitude: nextLocation.longitude,
+              },
+            ),
+            travelGeoMode,
+          )
+        : optimisticTravelMinutes(distanceMeters, travelGeoMode) * 2;
+      if (optimisticCircuitMinutes > travelBudgetMinutes) {
+        const shortfall = Math.ceil(
+          optimisticCircuitMinutes - travelBudgetMinutes,
+        );
+        /* 사유 코드는 **실패한 조건**을 가리켜야 한다. 어느 단계에서 알아챘는지가
+           아니다. 빈 시간 추천에서 회로가 창을 넘긴 것은 경로 검증 뒤에 알든
+           그 전에 알든 같은 사실이고, 화면의 안내문과 반사실도 그 사실에 붙어
+           있다. 단계 차이는 `verificationDepth`가 따로 말한다. */
+        const appliedStay = input.minimumStayMinutes ?? 30;
+        const reducedStay = Math.floor((appliedStay - shortfall) / 30) * 30;
+        rejected.push({
+          contentId,
+          title,
+          reasonCode: context.openWindow
+            ? "OPEN_WINDOW_OVERFLOW"
+            : "TIME_LIMIT",
+          reason: nextLocation
+            ? `${withParticle(travelModeLabel(input.travelMode), "으로/로")} 가장 빠르게 가도 이곳을 거쳐 ${nextLocation.label ?? "다음 장소"}까지 ${Math.ceil(optimisticCircuitMinutes)}분이 필요해, 이동에 쓸 수 있는 ${travelBudgetMinutes}분을 ${shortfall}분 넘습니다.`
+            : `${withParticle(travelModeLabel(input.travelMode), "으로/로")} 가장 빠르게 왕복해도 ${Math.ceil(optimisticCircuitMinutes)}분이 필요해, 이동에 쓸 수 있는 ${travelBudgetMinutes}분을 ${shortfall}분 넘습니다.`,
+          distanceMeters,
+          changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+          /* 여행자가 실제로 할 수 있는 조정을 제안한다. 머무는 시간을 30분 격자로
+             줄여서 들어가면 그것을, 그래도 안 되면 남은 시간 자체를 늘리는 쪽을
+             제안한다. 안전여유는 어느 쪽에서도 건드리지 않는다. */
+          requiredRelaxation:
+            context.openWindow && reducedStay >= 30
+              ? {
+                  constraint: "minimum_stay",
+                  amount: appliedStay - reducedStay,
+                  unit: "minutes",
+                  currentLimit: appliedStay,
+                  requiredLimit: reducedStay,
+                  description: `머무는 시간 ${appliedStay}분 → ${reducedStay}분`,
+                  preservesLockedNodes: true,
+                  preservesNextFixedAppointment: true,
+                }
+              : {
+                  constraint: "available_time",
+                  amount: shortfall,
+                  unit: "minutes",
+                  currentLimit: travelBudgetMinutes,
+                  requiredLimit: Math.ceil(optimisticCircuitMinutes),
+                  description: `이동에 쓸 수 있는 시간 ${travelBudgetMinutes}분 → ${Math.ceil(optimisticCircuitMinutes)}분`,
+                  preservesLockedNodes: true,
+                  preservesNextFixedAppointment: false,
+                },
+          verificationDepth: "pre_filter",
+        });
+        continue;
+      }
     }
 
     /* Rain/indoor is a safety-critical hard constraint. A candidate whose
@@ -4062,6 +4743,25 @@ export async function recoverTrip(
       longitude,
       distanceMeters,
       estimatedTravelMinutes,
+      /* 순위용 회로 추정. 사전 걸러내기와 같은 기하를 쓰되, 걸러내기는 하한으로
+         하고 순위는 보수 추정으로 한다 — 거부는 하한, 비교는 상한이다. */
+      estimatedCircuitMinutes: context
+        ? (() => {
+            const nextLocation = context.nextFixed?.location;
+            if (!nextLocation) return estimatedTravelMinutes * 2;
+            const toNextMeters = haversineMeters(
+              { latitude, longitude },
+              {
+                latitude: nextLocation.latitude,
+                longitude: nextLocation.longitude,
+              },
+            );
+            return (
+              estimatedTravelMinutes +
+              conservativeMinutesFor(input.travelMode, toNextMeters)
+            );
+          })()
+        : undefined,
       imageUrl: normalizedImage(item.firstimage),
       modifiedAt: stringValue(item.modifiedtime) || undefined,
       evidenceGaps,
@@ -4111,20 +4811,57 @@ export async function recoverTrip(
     (a, b) => b.baseScore - a.baseScore || a.distanceMeters - b.distanceMeters,
   );
 
-  const verificationPool = diversifyCandidatesByCategory(preliminary).slice(
+  /* 체류가 시작될 시각이 밤이면 분류 순회 순서를 야간 운영 가능성 순으로 놓는다.
+     후보를 버리지 않고 정렬만 바꾸므로, 최악의 경우도 오늘과 같은 결과다. */
+  const nightFirst = isNightWindow(referenceAt);
+  const verificationPool = diversifyCandidatesByCategory(preliminary, {
+    nightFirst,
+  }).slice(0, CONTINUITY_VERIFICATION_HARD_LIMIT);
+
+  /* 예산 계량기를 **여기서** 만든다. 예전에는 무장애 상세 조회가 끝난 뒤에
+     만들었고, 그 조회는 계량기를 모른 채 검증 풀 36곳 전부에 1건씩 호출했다.
+     원장에 36건이 쌓인 뒤 계량기가 그것을 읽으면 45건 중 42~44건이 이미 쓴
+     것으로 계산되어, 실제 검증은 한 곳도 하지 못했다. 실측에서 휠체어·유아차
+     대상은 명동·대전·제주에서 예외 없이 추천 0곳·탈락 0건이었다 — 화면이 이유
+     조차 말할 수 없는 상태다. */
+  const meter: SubrequestMeter = {
+    spent: upstreamCallsSpent(sourceLedger) + ORIGIN_WEATHER_CALLS,
+    budget: subrequestBudget(),
+    exhausted: false,
+    routeCost: perCandidateRouteCost(input, context),
+  };
+
+  /* 접근성 상세를 **검증할 수 있는 만큼만** 조회한다. 검증하지 못할 후보의
+     접근성을 확인해 두는 것은 그 자체로 낭비이고, 그 낭비가 검증 예산을 먹는다.
+     후보 한 곳을 끝까지 보는 비용은 접근성 1 + 운영시간 1 + 경로 routeCost다. */
+  const perCandidateFullCost =
+    (input.audience === "general" || disabled.has("KorWithService2") ? 0 : 1) +
+    1 +
+    meter.routeCost;
+  const affordableCandidates = Math.max(
     0,
-    CONTINUITY_VERIFICATION_HARD_LIMIT,
+    Math.floor((meter.budget - meter.spent) / perCandidateFullCost),
   );
 
   /* 제거실험으로 무장애 정보를 끈 경우에는 상세 조회도 하지 않는다. 목록만
      끄고 상세는 호출하면 "무장애 정보 없이도 검증된다"는 잘못된 비교가 된다. */
   const { details, audits: detailAudits } = await accessibilityDetails(
-    verificationPool,
+    verificationPool.slice(0, affordableCandidates),
     disabled.has("KorWithService2") ? "general" : input.audience,
     execution.signal,
     execution.deadlineAt,
+    meter,
   );
   sourceLedger.push(...detailAudits);
+  if (
+    input.audience !== "general" &&
+    !disabled.has("KorWithService2") &&
+    affordableCandidates < verificationPool.length
+  ) {
+    warnings.push(
+      `한 요청에 허용된 외부 조회 횟수 안에서 접근성을 확인할 수 있는 ${affordableCandidates.toLocaleString("ko-KR")}곳만 조회했습니다. 나머지 후보는 접근성을 확인하지 않았으므로 결과에 넣지 않았습니다.`,
+    );
+  }
 
   const accessibilityVerified = verificationPool
     .map((candidate) => {
@@ -4203,9 +4940,9 @@ export async function recoverTrip(
   const continuityCandidates: WorkingCandidate[] = [];
   /* 공식 분류를 순환해 최대 24곳을 검증한다. 각 후보는 실제 경로와 운영시간을
      모두 통과해야 하며, 25초 요청 신호가 끝나면 미검증 후보는 결과에 넣지 않는다. */
-  const shortlist = diversifyCandidatesByCategory(
-    accessibilityVerified,
-  );
+  const shortlist = diversifyCandidatesByCategory(accessibilityVerified, {
+    nightFirst,
+  });
   if (Date.now() >= continuityDeadlineAt || execution.signal?.aborted) {
     warnings.push(
       "위기 순간 응답시간을 지키기 위해 상위 후보 검증을 중단했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않았습니다.",
@@ -4215,9 +4952,6 @@ export async function recoverTrip(
        재사용하면 시간상 도달 가능한 먼 후보의 실제 날씨가 달라도 놓친다.
        격자가 같은 후보는 한 번만 조회하며, 실패하면 출발지 예보로 물러서고
        그 사실을 밝힌다 — 다른 지점의 예보를 이 곳의 예보인 것처럼 쓰면 안 된다. */
-    /* 여기까지 엔진이 부른 외부 호출. 원장에 남은 건수에 출발지 예보 두 건을
-       더한 값이다. */
-    const budgetMeterSpent = sourceLedger.length + 2;
     const gridWeather = new Map<
       string,
       Awaited<ReturnType<typeof getWeatherEvidence>>
@@ -4237,15 +4971,21 @@ export async function recoverTrip(
     /* 후보 지점 예보는 정확도를 높이는 값이지, 갈 수 있는지를 가르는 값이
        아니다. 예산이 빠듯하면 여기에 격자마다 두 건씩 쓰는 대신 그 몫으로 후보를
        더 검증한다 — 출발지 예보로 물러서는 길은 이미 있고, 물러섰다는 사실도
-       아래에서 밝힌다. 검증 몫을 먼저 떼어 두고 남는 것으로만 부른다. */
-    const forecastCost = distinctGrids.size * 2;
-    const verificationReserve = 30;
+       아래에서 밝힌다. 검증 몫을 먼저 떼어 두고 남는 것으로만 부른다.
+
+       예약은 같은 계량기에서 한다. 예전에는 여기만 별도 계산을 했고, 그 계산은
+       원장 항목 수를 세는 옛 방식이었다. 두 곳이 다른 숫자를 보면 어느 쪽도
+       실제 호출량을 알지 못한다. */
+    const forecastCost = distinctGrids.size * CANDIDATE_GRID_WEATHER_CALLS;
+    const verificationReserve =
+      MIN_RESERVED_VERIFICATION_CANDIDATES * (1 + meter.routeCost);
     const affordCandidateForecast =
-      budgetMeterSpent + forecastCost + verificationReserve <=
-      subrequestBudget();
+      meter.spent + forecastCost + verificationReserve <= meter.budget;
     if (!affordCandidateForecast && distinctGrids.size) {
       candidateForecastFallbacks += distinctGrids.size;
       distinctGrids.clear();
+    } else if (distinctGrids.size) {
+      reserveSubrequests(meter, forecastCost);
     }
     if (distinctGrids.size) {
       const fetched = await Promise.allSettled(
@@ -4273,32 +5013,19 @@ export async function recoverTrip(
     }
 
     let attemptedCandidates = 0;
-    /* 실제로 부른 횟수를 센다. 후보마다 미리 최악을 잡아 두면, 운영시간에서
-       한 건만 쓰고 떨어지는 후보(실측 절반 이상)의 몫까지 예약해 버려 훨씬
-       일찍 멈춘다. 후보 검증이 호출 직전에 스스로 예산을 확인하고 세도록
-       계량기를 넘긴다. 배치가 동시에 돌아도 증가는 await 전에 동기적으로
-       일어나므로 초과되지 않는다. */
-    const meter: SubrequestMeter = {
-      /* 원장에 남은 공사 호출 + 출발지 예보 두 건 + 실제로 부른 후보 격자 예보.
-         예보는 원장에 남지 않으므로 따로 더한다. 빠뜨리면 계량기가 실제보다
-         적게 세어 한도를 넘긴다. */
-      spent: sourceLedger.length + 2 + gridWeather.size * 2,
-      budget: subrequestBudget(),
-      exhausted: false,
-      /* 보행 복귀는 가는 경로를 되짚어 쓰므로 추가 호출이 없다. */
-      routeCost: input.travelMode === "walk" ? 1 : 2,
-    };
-    for (
-      let offset = 0;
+    /* 예산이 부족해 **아무 호출도 하지 못하고** 물러난 후보. 탈락이 아니므로
+       `rejected`에 넣지 않지만, 세어서 밝힌다.
+
+       예전에는 이 부류가 어디에도 남지 않았다. 배치 6곳이 운영정보 예산을 각자
+       선점한 뒤 경로 예산을 못 얻어 전부 `null`로 빠지면, 실제 조회 6건을 쓰고
+       결과는 0곳인데 `rejected`·`rejectionSummary`·경고문 어디에도 그 6곳이
+       없었다. 화면은 "추천 0곳, 탈락 0건"이라는, 아무 근거도 없는 상태가 된다. */
+    let unexaminedCandidates = 0;
+    let offset = 0;
+    while (
       offset < shortlist.length &&
-      continuityCandidates.length < CONTINUITY_RESULT_LIMIT;
-      offset += CONTINUITY_VERIFICATION_BATCH_SIZE
+      continuityCandidates.length < CONTINUITY_RESULT_LIMIT
     ) {
-      /* 운영정보 한 건조차 부를 수 없으면 더 볼 수 없다. */
-      if (meter.spent + 1 > meter.budget) {
-        meter.exhausted = true;
-        break;
-      }
       if (
         execution.signal?.aborted ||
         continuityDeadlineAt - Date.now() <=
@@ -4307,13 +5034,27 @@ export async function recoverTrip(
         break;
       }
 
-      /* Three matches the KTO client's measured safe concurrency. A failed
-         route or closed venue therefore consumes only its own slot, and the
-         next category-diversified batch is tried while time remains. */
-      const batch = shortlist.slice(
-        offset,
-        offset + CONTINUITY_VERIFICATION_BATCH_SIZE,
+      /* **먼저 몇 곳을 감당할 수 있는지 계산하고 그만큼만 시작한다.**
+         `batch.map`은 비동기 함수를 동기적으로 매핑하므로, 첫 `await`가 풀리기
+         전에 배치의 모든 후보가 운영정보 예산을 선점한다. 남은 예산이 경로 한
+         건뿐인데 여섯 곳을 시작하면, 여섯 곳 모두 운영정보를 실제로 조회한 뒤
+         경로를 얻지 못해 버려진다 — 조회는 나갔고 결과는 없다. */
+      const perCandidate = 1 + meter.routeCost;
+      const affordable = Math.floor(
+        (meter.budget - meter.spent) / perCandidate,
       );
+      if (affordable <= 0) {
+        meter.exhausted = true;
+        break;
+      }
+      const batchSize = Math.min(
+        CONTINUITY_VERIFICATION_BATCH_SIZE,
+        affordable,
+        CONTINUITY_RESULT_LIMIT - continuityCandidates.length,
+      );
+      const batch = shortlist.slice(offset, offset + batchSize);
+      if (!batch.length) break;
+      offset += batch.length;
       attemptedCandidates += batch.length;
       const settled = await Promise.allSettled(
         batch.map((candidate) =>
@@ -4337,16 +5078,26 @@ export async function recoverTrip(
       }
     }
 
+    /* 예산·시간 때문에 아예 보지 못한 후보. 위 수용 제어가 시작 자체를 막으므로
+       이 값은 "시작했다가 조용히 사라진 수"가 아니라 "시작하지 않은 수"다. */
+    unexaminedCandidates = shortlist.length - attemptedCandidates;
+
     if (
-      attemptedCandidates < shortlist.length &&
+      unexaminedCandidates > 0 &&
       continuityCandidates.length < CONTINUITY_RESULT_LIMIT
     ) {
       /* 왜 멈췄는지를 갈라 적는다. 두 한도는 사용자가 할 수 있는 일이 다르다 —
-         시간이면 다시 시도하면 되고, 호출 한도면 다시 시도해도 같다. */
+         시간이면 다시 시도하면 되고, 호출 한도면 다시 시도해도 같다.
+
+         그리고 **시도한 수를 "검증했다"고 적지 않는다.** 예전 문구는
+         `attemptedCandidates`를 그대로 넣어서 "6곳을 실제 경로·운영시간으로
+         검증했습니다"라고 말하면서 추천은 0곳인 응답을 만들었다. 검증 정직성이
+         이 제품의 약속인데 그 약속을 말하는 문장 자체가 과장돼 있었다. */
+      const verified = continuityCandidates.length;
       warnings.push(
         meter.exhausted
-          ? `한 요청에 허용된 외부 조회 횟수 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 나머지 후보는 확인하지 못했으므로 결과처럼 표시하지 않았습니다.`
-          : `응답 시간 예산 안에서 ${attemptedCandidates}곳을 실제 경로·운영시간으로 검증했습니다. 검증하지 못한 후보는 결과처럼 표시하지 않았습니다.`,
+          ? `한 요청에 허용된 외부 조회 횟수 안에서 ${attemptedCandidates}곳을 조회해 ${verified}곳이 실제 경로·운영시간을 통과했습니다. 나머지 ${unexaminedCandidates}곳은 조회하지 않았으므로 결과처럼 표시하지 않았습니다.`
+          : `응답 시간 예산 안에서 ${attemptedCandidates}곳을 조회해 ${verified}곳이 실제 경로·운영시간을 통과했습니다. 조회하지 못한 ${unexaminedCandidates}곳은 결과처럼 표시하지 않았습니다.`,
       );
     }
   }
@@ -4458,6 +5209,9 @@ export async function recoverTrip(
        the work. Counts only; no place names, so it stays safe to log. */
     rejectionSummary: summariseRejections(rejected),
     counterfactual: selectCounterfactual(rejected),
+    /* 조건을 바꾸면 갈 수 있는 곳과 지금은 닫은 곳. `options`와 분리된 배열이라
+       기존 적용·저장 경로는 이 값을 보지 않는다 — 검증된 추천만 적용된다. */
+    alternatives: summariseAlternatives(rejected),
     dataContributions,
     sourceLedger,
     warnings,

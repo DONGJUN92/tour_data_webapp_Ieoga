@@ -132,8 +132,13 @@ export async function callKtoHedged(
 ): Promise<KtoCallResult> {
   const hedgeAfterMs = options.hedgeAfterMs ?? 1_200;
   const controllers: AbortController[] = [];
+  /* 실제로 띄운 시도 수. 헤지가 걸리면 2건이 바깥으로 나가는데, 승자의 감사
+     기록만 돌려주면 그 안에는 1건으로 적혀 있다. 예산 계량기가 그 값을 믿으면
+     느린 구간에서 조용히 한도를 넘는다. */
+  let launched = 0;
 
   function launch(): Promise<KtoCallResult> {
+    launched += 1;
     const controller = new AbortController();
     controllers.push(controller);
     const signal = options.signal
@@ -168,7 +173,15 @@ export async function callKtoHedged(
        attempt fails, which is exactly the desired semantics: a hedge must not
        turn one slow-but-fine call into an error. */
     const result = await Promise.any([first, hedged]);
-    return result;
+    /* 승자 한 건이 아니라 **띄운 만큼**을 적는다. 승자 자신이 재시도를 했다면
+       그 값이 이미 1보다 크므로, 큰 쪽을 남긴다. */
+    return {
+      ...result,
+      audit: {
+        ...result.audit,
+        upstreamCalls: Math.max(result.audit.upstreamCalls, launched),
+      },
+    };
   } catch (error) {
     /* AggregateError means both attempts failed. Surface the first attempt's
        own error so the audit keeps its real code rather than a wrapper. */
@@ -193,6 +206,9 @@ export async function callKto(
 ): Promise<KtoCallResult> {
   const serviceKey = getRuntimeSecret("KTO_SERVICE_KEY");
   const startedAt = Date.now();
+  /* 실제로 나간 fetch 횟수. 시도 루프 안에서 호출 직전에 증가시킨다 — 재시도와
+     실패도 예산을 쓰기 때문이다. */
+  let upstreamCalls = 0;
   const baseAudit: KtoAudit = {
     apiName: service,
     operation,
@@ -201,6 +217,7 @@ export async function callKto(
     resultCount: 0,
     totalCount: 0,
     fieldsUsed: options.fieldsUsed ?? [],
+    upstreamCalls: 0,
   };
 
   if (!serviceKey) {
@@ -242,6 +259,9 @@ export async function callKto(
           ...result.audit,
           latencyMs: Date.now() - startedAt,
           fieldsUsed: options.fieldsUsed ?? result.audit.fieldsUsed,
+          /* 캐시 적중은 바깥으로 나가지 않았다. 저장된 값에 딸려 온 호출 수를
+             그대로 쓰면 이번 요청의 예산을 쓴 것처럼 계산된다. */
+          upstreamCalls: 0,
         },
       };
     }
@@ -269,6 +289,7 @@ export async function callKto(
        block the queue longer than its own timeout. */
     await acquireRequestSlot();
     try {
+      upstreamCalls += 1;
       const response = await fetch(url, {
         headers: { Accept: "application/json" },
         signal: options.signal
@@ -334,6 +355,7 @@ export async function callKto(
         resultCount: items.length,
         totalCount,
         sourceReferenceDate: sourceReferenceDate(items),
+        upstreamCalls,
       };
 
       const result: KtoCallResult = {
@@ -382,6 +404,9 @@ export async function callKto(
     httpStatus: lastStatus,
     latencyMs: Date.now() - startedAt,
     errorCode: lastCode,
+    /* 실패한 호출도 예산을 썼다. 0으로 두면 상류가 불안정할 때 계량기가 실제보다
+       적게 세어 한도를 넘긴다. */
+    upstreamCalls,
   };
   throw new KtoError(
     "한국관광공사 OpenAPI 응답을 확인하지 못했습니다.",

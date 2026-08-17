@@ -614,7 +614,12 @@ test("60분 빈시간 선택은 분 경계에서도 줄지 않고 embed 체류·
   ]);
   assert.doesNotMatch(discover, /setMinutes\(target\.getMinutes\(\) - remainder\)/);
   assert.match(discover, /availableUntil: requestWindowEndIso/);
-  assert.match(discover, /arriveBy: requestWindowEndIso/);
+  /* 이 회귀 테스트가 지키는 것은 "60분을 고르면 정확히 60분의 창이 생긴다"이고,
+     그 창의 끝은 계속 `requestWindowEndIso`다. 다음 장소의 도착 시각은 별개
+     입력이므로 창의 끝을 재사용하지 않는다 — 그 재사용이 전국의 후보를 탈락시킨
+     원인이었다. */
+  assert.match(discover, /arriveBy: requestArriveByIso/);
+  assert.doesNotMatch(discover, /arriveBy: requestWindowEndIso/);
   assert.match(embed, /const EMBED_STAY_MINUTES = 30/);
   assert.match(embed, /minimumStayMinutes: EMBED_STAY_MINUTES/);
   assert.match(embed, /plannedStayMinutes: EMBED_STAY_MINUTES/);

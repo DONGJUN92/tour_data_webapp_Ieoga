@@ -16,9 +16,16 @@ import { optionApplicationSafety } from "./traveler-safety";
 import { ReferenceTimePicker } from "./ReferenceTimePicker";
 import {
   formatReferenceTime,
+  koreaDateTimeLocalValue,
   resolveReferenceTime,
   type ReferenceTimeMode,
 } from "./reference-time";
+import {
+  geoTravelMode,
+  haversineMeters,
+  optimisticTravelMinutes,
+} from "@/lib/geo";
+import { withParticle } from "@/lib/text/korean";
 import {
   AUDIENCES,
   AUDIENCES_EN,
@@ -254,6 +261,38 @@ function minutesLabel(language: Language, minutes: number): string {
   );
 }
 
+/* 안전여유. 요청 본문과 화면의 사전 판정이 **같은 값**을 써야 한다 — 화면이
+   15분으로 계산해 "가능"이라고 말했는데 엔진이 다른 값으로 탈락시키면 그 화면은
+   거짓말이 된다. 예전에는 제출 시점에만 리터럴로 박혀 있었다. */
+const SAFETY_BUFFER_MINUTES = 15;
+
+/* 자동으로 줄일 수 있는 체류의 하한. 이보다 짧게 머무는 것은 "다녀왔다"고 하기
+   어려우므로, 여기까지 줄여도 들어가지 않으면 그 후보는 탈락시킨다. */
+const STAY_FLOOR_MINUTES = 30;
+
+/* `TRAVEL_MODES`의 라벨은 "걸어서"처럼 부사형이라 "…까지 걸어서 최소 20분"에는
+   맞지만 "걸어서으로"처럼 조사가 붙는 자리에는 쓸 수 없다. 엔진의
+   `travelModeLabel`과 같은 명사형을 쓴다 — 화면과 결과 문장이 같은 단어를
+   써야 여행자가 두 곳을 같은 것으로 읽는다. */
+function travelModeNoun(language: Language, mode: TravelMode): string {
+  if (language === "en") {
+    return mode === "car"
+      ? "by car"
+      : mode === "transit"
+        ? "by transit"
+        : mode === "bicycle"
+          ? "by bicycle"
+          : "on foot";
+  }
+  return mode === "car"
+    ? "자동차"
+    : mode === "transit"
+      ? "대중교통"
+      : mode === "bicycle"
+        ? "자전거"
+        : "도보";
+}
+
 export default function DiscoverWindowPanel({
   language,
   origin,
@@ -292,6 +331,12 @@ export default function DiscoverWindowPanel({
   const [indoorOnly, setIndoorOnly] = useState(false);
   const [nextPlaceKeyword, setNextPlaceKeyword] = useState("");
   const [nextPlace, setNextPlace] = useState<PlaceSearchResult | null>(null);
+  /* 다음 장소의 **실제 약속 시각**. 비어 있으면 보내지 않는다.
+     예전에는 이 값을 묻지 않고 자유 시간의 끝을 대신 넣어 보냈다. 그러면
+     여행자가 말한 적 없는 마감이 생기고, 그 장소가 조금만 멀어도 모든 후보가
+     탈락한다. 모르면 모르는 채로 두는 것이 맞다. */
+  const [nextPlaceArriveLocal, setNextPlaceArriveLocal] = useState("");
+  const [nextPlaceArriveError, setNextPlaceArriveError] = useState("");
   const [nextPlaceResults, setNextPlaceResults] = useState<PlaceSearchResult[]>(
     [],
   );
@@ -301,6 +346,9 @@ export default function DiscoverWindowPanel({
   const [error, setError] = useState("");
   const [result, setResult] = useState<RecoveryResponse | null>(null);
   const submitGenerationRef = useRef(0);
+  /* 조정안을 한 번 누르면 입력을 바꾸고 **바로 다시 찾는다.** 그 재조회는
+     사용자가 버튼을 누른 것과 같은 경로를 타야 하므로 폼을 직접 제출한다. */
+  const formRef = useRef<HTMLFormElement>(null);
 
   const previewReferenceTime = resolveReferenceTime(
     referenceTimeMode,
@@ -331,6 +379,56 @@ export default function DiscoverWindowPanel({
 
   const stayTooLong = plannedStayMinutes >= windowMinutes;
 
+  /* 다음 장소를 고르는 **즉시** 계산하는 실행 가능성. 외부 조회가 0건이다 —
+     직선거리를 그 수단의 최고속도로 나누므로 어떤 경로로도 이보다 빠를 수 없다.
+     그래서 여기서 "부족"이 나오면 후보를 20km까지 뒤져도 나올 것이 없다.
+
+     예전에는 이 계산을 아무도 하지 않은 채 요청을 보내고, 45번의 외부 조회를
+     소진한 뒤 "다녀올 수 있는 곳을 찾지 못했습니다"라고 답했다. 여행자는 자기가
+     입력한 조건이 원인이라는 것을 알 방법이 없었다. */
+  const nextPlaceReach = useMemo(() => {
+    if (!nextPlace || !originReady) return null;
+    const originLat = Number(origin.latitude);
+    const originLon = Number(origin.longitude);
+    if (!Number.isFinite(originLat) || !Number.isFinite(originLon)) return null;
+    const meters = haversineMeters(
+      { latitude: originLat, longitude: originLon },
+      { latitude: nextPlace.latitude, longitude: nextPlace.longitude },
+    );
+    const minTravelMinutes = Math.ceil(
+      optimisticTravelMinutes(meters, geoTravelMode(travelMode)),
+    );
+    /* 약속 시각을 주지 않았으면 마감이 없으므로 불가능도 없다. 거리만 알려 준다. */
+    if (!nextPlaceArriveLocal) {
+      return { meters, minTravelMinutes, shortfallMinutes: 0 };
+    }
+    const arriveMs = Date.parse(`${nextPlaceArriveLocal}:00+09:00`);
+    if (!Number.isFinite(arriveMs)) {
+      return { meters, minTravelMinutes, shortfallMinutes: 0 };
+    }
+    const budgetMinutes = Math.floor(
+      (arriveMs - previewReferenceTimestamp) / 60_000,
+    );
+    const requiredMinutes =
+      minTravelMinutes + plannedStayMinutes + SAFETY_BUFFER_MINUTES;
+    return {
+      meters,
+      minTravelMinutes,
+      budgetMinutes,
+      requiredMinutes,
+      shortfallMinutes: Math.max(0, requiredMinutes - budgetMinutes),
+    };
+  }, [
+    nextPlace,
+    originReady,
+    origin.latitude,
+    origin.longitude,
+    travelMode,
+    nextPlaceArriveLocal,
+    previewReferenceTimestamp,
+    plannedStayMinutes,
+  ]);
+
   useEffect(() => {
     const refresh = () => setReferenceClockMs(Date.now());
     const initial = window.setTimeout(refresh, 0);
@@ -340,6 +438,49 @@ export default function DiscoverWindowPanel({
       window.clearInterval(interval);
     };
   }, []);
+
+  /* 서버가 돌려준 조정안을 입력에 적용하고 바로 다시 찾는다.
+
+     여행자가 직접 어느 칸을 어떻게 고쳐야 하는지 알아내야 한다면 그 안내는
+     반쪽이다. 서버는 "머무는 시간을 30분으로", "자전거로 (약 13분)"처럼 값까지
+     계산해 보내므로, 화면은 그 값을 해당 입력에 넣고 재조회만 하면 된다. */
+  function applyRemedy(remedy: { kind: string; value?: string | number }) {
+    const numeric = Number(remedy.value);
+    if (remedy.kind === "travel_mode" && typeof remedy.value === "string") {
+      setTravelMode(remedy.value as TravelMode);
+    } else if (remedy.kind === "stay_minutes" && Number.isFinite(numeric)) {
+      /* 화면은 30분 격자만 받는다. 서버도 그 격자로 제안하지만, 안전하게
+         허용된 선택값 중 제안값 이하의 가장 큰 값으로 맞춘다. */
+      const allowed = [...STAY_CHOICES]
+        .filter((value) => value <= numeric)
+        .pop();
+      setPlannedStayMinutes(allowed ?? STAY_CHOICES[0]);
+    } else if (remedy.kind === "window_minutes" && Number.isFinite(numeric)) {
+      /* 남은 시간은 제안값 **이상**이어야 하므로 위로 맞춘다. */
+      const allowed = WINDOW_CHOICES.find((value) => value >= numeric);
+      setWindowMinutes(allowed ?? WINDOW_CHOICES[WINDOW_CHOICES.length - 1]);
+    } else if (
+      remedy.kind === "appointment_later" &&
+      Number.isFinite(numeric) &&
+      nextPlaceArriveLocal
+    ) {
+      const current = Date.parse(`${nextPlaceArriveLocal}:00+09:00`);
+      if (!Number.isFinite(current)) return;
+      setNextPlaceArriveLocal(
+        koreaDateTimeLocalValue(current + numeric * 60_000),
+      );
+    } else if (remedy.kind === "drop_next_place") {
+      /* 장소는 지우지 않는다. 약속 시각만 비워 방향 힌트로 남긴다. */
+      setNextPlaceArriveLocal("");
+    } else {
+      return;
+    }
+    setNextPlaceArriveError("");
+    /* 상태가 커밋된 **뒤에** 제출한다. 같은 틱에서 `requestSubmit()`을 부르면
+       아직 반영되지 않은 옛 값으로 요청이 나간다. 효과(useEffect) 안에서
+       상태를 되돌리는 방식은 렌더를 한 번 더 유발하므로 쓰지 않는다. */
+    window.setTimeout(() => formRef.current?.requestSubmit(), 0);
+  }
 
   function invalidateReferenceResult() {
     submitGenerationRef.current += 1;
@@ -459,6 +600,41 @@ export default function DiscoverWindowPanel({
       );
       return;
     }
+    /* 약속 시각을 적었다면 형식과 순서를 여기서 확정한다. 서버 스키마도 같은
+       것을 검증하지만, 형식 오류로 왕복 한 번을 버릴 이유가 없다. */
+    let requestArriveByIso: string | undefined;
+    if (nextPlace && nextPlaceArriveLocal) {
+      const arriveMs = Date.parse(`${nextPlaceArriveLocal}:00+09:00`);
+      if (
+        !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(
+          nextPlaceArriveLocal,
+        ) ||
+        !Number.isFinite(arriveMs)
+      ) {
+        setState("error");
+        setNextPlaceArriveError(
+          tr(
+            language,
+            "약속 시각을 한국 시간 기준으로 올바르게 입력해 주세요.",
+            "Enter the appointment time in Korea Standard Time.",
+          ),
+        );
+        return;
+      }
+      if (arriveMs <= requestReferenceTime.timestamp) {
+        setState("error");
+        setNextPlaceArriveError(
+          tr(
+            language,
+            "약속 시각이 조회 기준 시각보다 앞섭니다. 이후 시각을 입력해 주세요.",
+            "The appointment time is before the reference time.",
+          ),
+        );
+        return;
+      }
+      setNextPlaceArriveError("");
+      requestArriveByIso = new Date(arriveMs).toISOString();
+    }
     setState("loading");
     setResult(null);
     const requestGeneration = ++submitGenerationRef.current;
@@ -488,8 +664,20 @@ export default function DiscoverWindowPanel({
           audience,
           indoorOnly,
           travelMode,
-          safetyBufferMinutes: 15,
-          minimumStayMinutes: Math.min(plannedStayMinutes, 180),
+          safetyBufferMinutes: SAFETY_BUFFER_MINUTES,
+          /* 원하는 체류(`plannedStayMinutes`)와 **수용 가능한 하한**을 분리한다.
+
+             예전에는 두 값을 같게 보냈다. 그래서 엔진의 자동 완화 로직
+             (`stayMinutes - minimumStay`)이 항상 0이 되어 한 번도 작동하지 않았고,
+             "체류를 5분만 줄이면 갈 수 있는 곳"이 그대로 탈락했다. 실측 반사실에서
+             가장 흔한 문구가 "안전여유가 1분 부족"이었다.
+
+             엔진은 필요할 때만, 그리고 이 하한까지만 줄인다. 줄인 경우 카드가
+             실제 체류 시간을 표시하고 요청값과 다르다는 사실도 함께 말한다. */
+          minimumStayMinutes: Math.min(
+            STAY_FLOOR_MINUTES,
+            plannedStayMinutes,
+          ),
           analyticsConsent,
           openWindow: {
             departureAt: requestDepartureAtIso,
@@ -502,7 +690,12 @@ export default function DiscoverWindowPanel({
                   label: nextPlace.title,
                   areaCode: nextPlace.areaCode || undefined,
                   sigunguCode: nextPlace.sigunguCode || undefined,
-                  arriveBy: requestWindowEndIso,
+                  /* 여행자가 적은 약속 시각만 보낸다. 적지 않았으면 보내지
+                     않는다 — 예전에는 이 자리에 자유 시간의 끝을 넣었고,
+                     그래서 "그 시각까지 그 장소에 도착해야 한다"는, 여행자가
+                     말한 적 없는 마감이 생겼다. 그 마감 하나로 전국의 모든
+                     후보가 탈락했다. */
+                  arriveBy: requestArriveByIso,
                 }
               : undefined,
           },
@@ -553,6 +746,16 @@ export default function DiscoverWindowPanel({
         generatedAt: readText(record, ["generatedAt"]) || undefined,
         recoveryMode: readText(record, ["recoveryMode"]) || undefined,
         counterfactual: asRecord(record?.counterfactual) ?? undefined,
+        /* 요청이 불가능했다는 판정과, 조건을 바꾸면 열리는 곳·지금 닫은 곳.
+           예전에는 응답에 있어도 파싱하지 않아 화면이 쓸 수 없었다. */
+        inputFeasibility:
+          (asRecord(record?.inputFeasibility) as
+            | RecoveryResponse["inputFeasibility"]
+            | undefined) ?? undefined,
+        alternatives:
+          (asRecord(record?.alternatives) as
+            | RecoveryResponse["alternatives"]
+            | undefined) ?? undefined,
       });
       setState("success");
     } catch (submitError) {
@@ -571,7 +774,7 @@ export default function DiscoverWindowPanel({
 
   return (
     <div className={styles.panel}>
-      <form className={styles.form} onSubmit={submit}>
+      <form ref={formRef} className={styles.form} onSubmit={submit}>
         <span className={styles.step}>
           {tr(language, "지금 시간이 생겼어요", "You just got free time")}
         </span>
@@ -769,24 +972,83 @@ export default function DiscoverWindowPanel({
           <p className={styles.derived}>
             {tr(
               language,
-              "알려 주시면 그곳 도착까지 실제 경로로 검증하고, 가는 길에 들를 수 있는 곳만 제안합니다. 알려 주지 않으면 출발지로 되돌아오는 시간까지 계산합니다.",
-              "If you tell us, we verify arrival there on a real route and only suggest stops on the way. If not, we calculate the time to return to where you are now.",
+              "장소만 알려 주시면 그 방향에 가까운 곳을 먼저 보여 드립니다. 약속 시각까지 알려 주시면 그 시각에 도착할 수 있는지도 실제 경로로 검증합니다.",
+              "Tell us the place and we show stops in that direction first. Add the appointment time and we also verify you can arrive by then, on a real route.",
             )}
           </p>
           {nextPlace ? (
-            <p className={styles.originReady}>
-              <strong>{nextPlace.title}</strong>
-              <button
-                type="button"
-                onClick={() => {
-                  setNextPlace(null);
-                  setNextPlaceResults([]);
-                  setNextPlaceKeyword("");
-                }}
-              >
-                {tr(language, "지우기", "Clear")}
-              </button>
-            </p>
+            <>
+              <p className={styles.originReady}>
+                <strong>{nextPlace.title}</strong>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNextPlace(null);
+                    setNextPlaceResults([]);
+                    setNextPlaceKeyword("");
+                    setNextPlaceArriveLocal("");
+                    setNextPlaceArriveError("");
+                  }}
+                >
+                  {tr(language, "지우기", "Clear")}
+                </button>
+              </p>
+              <label className={styles.selectField}>
+                <span>
+                  {tr(
+                    language,
+                    "그곳에 도착해야 하는 시각 (선택)",
+                    "Time you must arrive there (optional)",
+                  )}
+                </span>
+                <input
+                  type="datetime-local"
+                  value={nextPlaceArriveLocal}
+                  min={koreaDateTimeLocalValue(previewReferenceTimestamp)}
+                  onChange={(event) => {
+                    setNextPlaceArriveLocal(event.target.value);
+                    setNextPlaceArriveError("");
+                    invalidateReferenceResult();
+                  }}
+                />
+              </label>
+              <p className={styles.derived}>
+                {tr(
+                  language,
+                  "비워 두면 도착 시각을 검증하지 않고, 남은 시간 안에 다녀와서 돌아올 수 있는 곳을 찾습니다.",
+                  "Leave it blank and we will not verify arrival — we find places you can visit and return from inside your free time.",
+                )}
+              </p>
+              {nextPlaceArriveError && (
+                <p className={styles.messageError} role="alert">
+                  {nextPlaceArriveError}
+                </p>
+              )}
+              {nextPlaceReach && (
+                <p
+                  className={
+                    nextPlaceReach.shortfallMinutes > 0
+                      ? styles.messageError
+                      : styles.derived
+                  }
+                  role={
+                    nextPlaceReach.shortfallMinutes > 0 ? "alert" : undefined
+                  }
+                >
+                  {nextPlaceReach.shortfallMinutes > 0
+                    ? tr(
+                        language,
+                        `${nextPlace.title}까지 직선 ${(nextPlaceReach.meters / 1000).toFixed(1)}km로, ${withParticle(travelModeNoun("ko", travelMode), "으로/로")} 아무리 빨라도 ${nextPlaceReach.minTravelMinutes}분이 걸립니다. 머무는 시간 ${plannedStayMinutes}분과 안전여유 ${SAFETY_BUFFER_MINUTES}분을 더하면 ${nextPlaceReach.requiredMinutes}분이 필요한데 ${nextPlaceReach.budgetMinutes}분밖에 없어 ${nextPlaceReach.shortfallMinutes}분 부족합니다. 이대로는 어떤 곳도 제안할 수 없습니다 — 이동수단을 바꾸거나, 머무는 시간을 줄이거나, 약속 시각을 늦춰 주세요.`,
+                        `${nextPlace.title} is ${(nextPlaceReach.meters / 1000).toFixed(1)}km away in a straight line, which takes at least ${nextPlaceReach.minTravelMinutes} minutes. With a ${plannedStayMinutes}-minute stay and a ${SAFETY_BUFFER_MINUTES}-minute buffer you need ${nextPlaceReach.requiredMinutes} minutes but have ${nextPlaceReach.budgetMinutes} — ${nextPlaceReach.shortfallMinutes} short. Nothing can fit: change how you travel, shorten the stay, or move the appointment later.`,
+                      )
+                    : tr(
+                        language,
+                        `${nextPlace.title}까지 직선 ${(nextPlaceReach.meters / 1000).toFixed(1)}km · ${travelModeNoun(language, travelMode)} 최소 ${nextPlaceReach.minTravelMinutes}분`,
+                        `${nextPlace.title} is ${(nextPlaceReach.meters / 1000).toFixed(1)}km away · at least ${nextPlaceReach.minTravelMinutes} minutes`,
+                      )}
+                </p>
+              )}
+            </>
           ) : (
             <>
               <div className={styles.searchRow}>
@@ -1019,10 +1281,146 @@ export default function DiscoverWindowPanel({
             result={result}
             referenceTime={submittedReferenceTime}
             onPlanFromPlace={onPlanFromPlace}
+            onApplyRemedy={applyRemedy}
           />
         )}
       </section>
     </div>
+  );
+}
+
+/* 조건을 바꾸면 갈 수 있는 곳과, 지금은 문을 닫은 곳.
+
+   이 두 목록은 **추천이 아니다.** 엔진이 후보로 평가하고 탈락시킨 실제 장소이며,
+   각 항목에 탈락 사유가 그대로 붙는다. 그래서 "확인하지 않은 것을 확인한 척한다"는
+   금지선을 넘지 않는다 — 오히려 반대쪽이다. 실측에서 1순위 탈락안이 "안전여유가
+   1분 부족, 체류 60→30분이면 통과"였는데, 그것을 알면서 "찾지 못했습니다"라고만
+   말하는 것이 덜 정직하다.
+
+   시각적으로도 검증된 카드와 섞이지 않게 별도 섹션에 둔다. */
+function AlternativeTiers({
+  language,
+  alternatives,
+  onApplyRemedy,
+}: {
+  language: Language;
+  alternatives?: RecoveryResponse["alternatives"];
+  onApplyRemedy?: (remedy: { kind: string; value?: string | number }) => void;
+}) {
+  const nearMisses = alternatives?.nearMisses ?? [];
+  const closedNow = alternatives?.closedNow ?? [];
+  if (!nearMisses.length && !closedNow.length) return null;
+
+  /* 탈락안의 완화 조건을 화면 입력으로 옮긴다. 서버는 "머무는 시간 60분 → 30분"
+     처럼 목표값을 주므로 그대로 넘긴다. */
+  const remedyFor = (relaxation: {
+    constraint: string;
+    requiredLimit: number;
+  }) =>
+    relaxation.constraint === "minimum_stay"
+      ? { kind: "stay_minutes", value: relaxation.requiredLimit }
+      : relaxation.constraint === "available_time"
+        ? { kind: "window_minutes", value: relaxation.requiredLimit }
+        : undefined;
+
+  return (
+    <>
+      {nearMisses.length > 0 && (
+        <section className={styles.rejectionPanel}>
+          <strong>
+            {tr(
+              language,
+              "조건을 바꾸면 갈 수 있는 곳",
+              "Places that open up if you change one thing",
+            )}
+          </strong>
+          <p className={styles.footnote}>
+            {tr(
+              language,
+              "아래는 추천이 아닙니다. 실제로 확인했지만 시간이 모자라 제외한 곳이며, 얼마나 모자랐는지 그대로 적었습니다.",
+              "These are not recommendations. We checked them and left them out because the time did not fit — the exact shortfall is shown.",
+            )}
+          </p>
+          <ul>
+            {nearMisses.map((entry) => {
+              const remedy = entry.requiredRelaxation
+                ? remedyFor(entry.requiredRelaxation)
+                : undefined;
+              return (
+                <li key={entry.contentId}>
+                  <span>
+                    <strong>{entry.title}</strong>
+                    {typeof entry.distanceMeters === "number" && (
+                      <small>
+                        {tr(
+                          language,
+                          ` · ${Math.round(entry.distanceMeters)}m`,
+                          ` · ${Math.round(entry.distanceMeters)}m`,
+                        )}
+                      </small>
+                    )}
+                    <small>
+                      {sanitizeTravelerText(entry.reason, language)}
+                    </small>
+                    {entry.verificationDepth === "pre_filter" && (
+                      <small className={styles.detailNote}>
+                        {tr(
+                          language,
+                          "실제 경로는 조회하지 않고 직선거리로만 판단한 곳입니다.",
+                          "Judged from straight-line distance only; no real route was requested.",
+                        )}
+                      </small>
+                    )}
+                  </span>
+                  {remedy && (
+                    <button
+                      type="button"
+                      className={styles.primaryGhost}
+                      onClick={() => onApplyRemedy?.(remedy)}
+                    >
+                      {language === "en"
+                        ? "Apply and search again"
+                        : `${entry.requiredRelaxation?.description} 적용`}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {closedNow.length > 0 && (
+        <section className={styles.rejectionPanel}>
+          <strong>
+            {tr(
+              language,
+              "지금은 문을 닫은 곳",
+              "Closed at this time",
+            )}
+          </strong>
+          <p className={styles.footnote}>
+            {tr(
+              language,
+              "가까이 있지만 조회 기준 시각에는 공식 운영정보상 운영하지 않습니다. 다른 시각으로 조회하면 결과가 달라질 수 있습니다.",
+              "Nearby, but official data says they are not open at the time you searched. Another time may change this.",
+            )}
+          </p>
+          <ul>
+            {closedNow.map((entry) => (
+              <li key={entry.contentId}>
+                <span>
+                  <strong>{entry.title}</strong>
+                  {typeof entry.distanceMeters === "number" && (
+                    <small>{` · ${Math.round(entry.distanceMeters)}m`}</small>
+                  )}
+                  <small>{sanitizeTravelerText(entry.reason, language)}</small>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
   );
 }
 
@@ -1031,11 +1429,16 @@ function DiscoverResults({
   result,
   referenceTime,
   onPlanFromPlace,
+  onApplyRemedy,
 }: {
   language: Language;
   result: RecoveryResponse;
   referenceTime: { mode: ReferenceTimeMode; iso: string } | null;
   onPlanFromPlace?: Props["onPlanFromPlace"];
+  onApplyRemedy?: (remedy: {
+    kind: string;
+    value?: string | number;
+  }) => void;
 }) {
   /* 여행 복구 화면에는 있던 정렬이 이쪽에는 없었다. 같은 대안 목록인데 한쪽
      에서만 "가까운 순"으로 볼 수 있으면 여행자는 화면마다 규칙을 새로
@@ -1064,9 +1467,63 @@ function DiscoverResults({
     </p>
   ) : null;
   if (!result.options.length) {
+    const feasibility = result.inputFeasibility;
     return (
       <div className={styles.noResult} role="status">
         {referenceTimeNotice}
+        {/* 요청 자체가 불가능했던 경우에는 헤드라인이 달라야 한다. "찾지
+            못했습니다"는 우리가 찾아봤다는 뜻이고, 이 경우엔 찾을 것이
+            없었다는 사실과 무엇을 바꾸면 되는지가 답이다. */}
+        {feasibility ? (
+          <>
+            <strong>
+              {tr(
+                language,
+                "지금 조건으로는 어떤 곳도 들어갈 수 없습니다.",
+                "No place can fit these conditions.",
+              )}
+            </strong>
+            {(result.warnings ?? [])
+              .filter((warning) => /부족합니다|남지 않습니다/.test(warning))
+              .map((warning, index) => (
+                <p key={index}>{sanitizeTravelerText(warning, language)}</p>
+              ))}
+            {(feasibility.remedies?.length ?? 0) > 0 && (
+              <section
+                className={styles.counterfactual}
+                aria-labelledby="discover-remedies"
+              >
+                <strong id="discover-remedies">
+                  {tr(
+                    language,
+                    "이 중 하나만 바꾸면 바로 찾아 드립니다",
+                    "Change any one of these and we search again",
+                  )}
+                </strong>
+                <div className={styles.originActions}>
+                  {feasibility.remedies?.map((remedy) => (
+                    <button
+                      key={`${remedy.kind}-${String(remedy.value ?? "")}`}
+                      type="button"
+                      className={styles.primaryGhost}
+                      onClick={() => onApplyRemedy?.(remedy)}
+                    >
+                      {language === "en" ? remedy.labelEn : remedy.label}
+                    </button>
+                  ))}
+                </div>
+                <p className={styles.footnote}>
+                  {tr(
+                    language,
+                    "직선거리와 각 이동수단의 최고 속도로만 계산한 판정이라, 어떤 경로로도 이보다 빠를 수 없습니다. 그래서 공식 관광정보는 조회하지 않았습니다.",
+                    "This verdict uses straight-line distance at each mode's top speed, so no real route can beat it. We did not query official tourism data.",
+                  )}
+                </p>
+              </section>
+            )}
+          </>
+        ) : (
+        <>
         <strong>
           {tr(
             language,
@@ -1124,6 +1581,15 @@ function DiscoverResults({
             <p>{counterfactualGuidance(result.counterfactual, language)}</p>
           </section>
         )}
+        </>
+        )}
+        {/* 엔진이 이미 계산해 두고 버리던 두 부류. 추천이 아니라 **탈락한
+            후보를 탈락한 상태로** 보여 주는 자리다. */}
+        <AlternativeTiers
+          language={language}
+          alternatives={result.alternatives}
+          onApplyRemedy={onApplyRemedy}
+        />
         <p>
           {tr(
             language,
@@ -1289,6 +1755,13 @@ function DiscoverResults({
           <p>{counterfactualGuidance(result.counterfactual, language)}</p>
         </section>
       )}
+      {/* 결과가 있어도 보여 준다. "17곳 찾았고, 조건을 바꾸면 여섯 곳이 더
+          열린다"는 것은 결과가 0곳일 때만 쓸모 있는 정보가 아니다. */}
+      <AlternativeTiers
+        language={language}
+        alternatives={result.alternatives}
+        onApplyRemedy={onApplyRemedy}
+      />
       {(result.warnings ?? []).map((warning, index) => (
         <p key={index} className={styles.warning}>
           {sanitizeTravelerText(warning, language)}
@@ -1438,6 +1911,19 @@ function DiscoverOptionCard({
                 `${window.appliedStayMinutes}분 머물기`,
                 `stay ${window.appliedStayMinutes} min`,
               )}
+              {/* 엔진이 창에 맞추려고 체류를 줄인 경우. 줄인 값만 보여 주면
+                  여행자는 자기가 고른 시간이 그대로 반영된 줄 안다. 요청값과
+                  다르다는 사실을 같은 자리에서 말한다. */}
+              {typeof window.plannedStayMinutes === "number" &&
+                window.appliedStayMinutes < window.plannedStayMinutes && (
+                  <small className={styles.detailNote}>
+                    {tr(
+                      language,
+                      `요청 ${window.plannedStayMinutes}분에서 ${window.plannedStayMinutes - window.appliedStayMinutes}분 줄여 남은 시간에 맞췄습니다`,
+                      `shortened by ${window.plannedStayMinutes - window.appliedStayMinutes} min from the ${window.plannedStayMinutes} you asked for, to fit your window`,
+                    )}
+                  </small>
+                )}
             </strong>
           </li>
           <li>

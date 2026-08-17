@@ -192,23 +192,17 @@ export function resolveRecoveryReferenceTime(
             ...input.openWindow,
             departureAt: at,
             availableUntil: new Date(expectedOpenWindowEndMs).toISOString(),
-            ...(input.openWindow.nextPlace
-              ? {
-                  nextPlace: {
-                    ...input.openWindow.nextPlace,
-                    /* The current-time client builds both values from the
-                       same local instant. Shift that matching value with the
-                       canonical end; preserve a genuinely later appointment. */
-                    arriveBy:
-                      Math.abs(
-                        Date.parse(input.openWindow.nextPlace.arriveBy) -
-                          submittedOpenWindowEndMs,
-                      ) <= REFERENCE_TIME_PAST_TOLERANCE_MS
-                        ? new Date(expectedOpenWindowEndMs).toISOString()
-                        : input.openWindow.nextPlace.arriveBy,
-                  },
-                }
-              : {}),
+            /* `arriveBy`는 **서버 시계로 옮기지 않는다.** 이 값은 이제 여행자가
+               적은 실제 약속 시각이다. 15시 약속은 요청이 몇 밀리초 뒤에
+               도착했든 15시다.
+
+               예전에는 이 값을 정규화된 창의 끝으로 끌어당겼다. 그때는 화면이
+               `arriveBy`와 `availableUntil`을 같은 순간에서 만들어 보냈으므로
+               둘을 함께 옮기는 것이 맞았지만, 그 결합 자체가 "여행자가 말한 적
+               없는 마감"의 출처였다. 약속 시각을 직접 받는 지금은 그대로 두는
+               것이 맞고, 값이 없으면 다음 장소는 방향 힌트로만 쓰인다.
+               `availableUntil`은 "지금부터 N분"이라는 상대값에서 나오므로
+               계속 서버 시계에 맞춘다. */
           },
         }
       : {}),

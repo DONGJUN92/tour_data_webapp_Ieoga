@@ -92,6 +92,30 @@ test("security headers deny ordinary framing and allow only the configured widge
   expect(demo.headers()["content-security-policy"]).toContain("frame-src 'self'");
 });
 
+/* 임베드 화면은 검색 결과에 뜨면 안 된다. 위젯은 파트너 사이트 안에서만
+   의미가 있고, 데모는 가상의 숙박 사업자를 쓴 심사용 모사 화면이라 색인되면
+   그 가상 브랜드가 실재하는 것처럼 검색에 남는다.
+
+   이 시험이 있어야 하는 이유가 하나 더 있다. Lighthouse의 SEO 점수는
+   `is-crawlable`이 3분의 1을 차지해서, 색인 거부를 선언한 페이지는 다른 항목이
+   모두 만점이어도 0.66이 된다. 데스크톱 품질 게이트는 그 때문에 계속 빨간불
+   이었고, 이제 임베드 경로에서만 그 항목을 끈다. 게이트에 구멍을 내는 대신
+   "색인을 거부한다"를 여기서 적극적으로 보증한다 — 선언이 사라지면 이 시험이
+   먼저 깨진다. */
+for (const route of ["/embed/demo", "/embed/recover"] as const) {
+  test(`${route}는 색인을 거부한다고 선언한다`, async ({ request }) => {
+    const response = await request.get(route);
+    expect(response.ok()).toBe(true);
+    const html = await response.text();
+    const robots = html.match(
+      /<meta[^>]+name=["']robots["'][^>]*content=["']([^"']+)["']/i,
+    );
+    expect(robots, `${route}에 robots 메타가 없다`).not.toBeNull();
+    expect(robots?.[1].toLowerCase()).toContain("noindex");
+    expect(robots?.[1].toLowerCase()).toContain("nofollow");
+  });
+}
+
 test("a separately hosted partner can render the allowlisted widget", async ({ page }) => {
   await page.goto(`http://127.0.0.1:${PARTNER_PORT}`, {
     waitUntil: "domcontentloaded",

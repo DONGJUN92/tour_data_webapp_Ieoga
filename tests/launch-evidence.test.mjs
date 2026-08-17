@@ -9,7 +9,7 @@ register(new URL("./alias-loader.mjs", import.meta.url));
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
 test("launch evidence never marks missing field proof as verified", async () => {
-  const { buildLaunchEvidenceReport } = await import(
+  const { buildLaunchEvidenceReport, FIELD_EVIDENCE_TYPES } = await import(
     "../lib/release/evidence.ts"
   );
   const report = buildLaunchEvidenceReport({
@@ -33,19 +33,48 @@ test("launch evidence never marks missing field proof as verified", async () => 
     },
   });
 
-  assert.equal(report.overall, "blocked");
-  assert.equal(
-    report.items.find((item) => item.id === "tripbreak_100")?.status,
-    "needs_field_evidence",
+  /* 등록하지 않은 조사는 화면에 열거하지 않는다 — 아직 시작하지 않은 상업
+     출시의 요건이지 배포본의 결함이 아니기 때문이다. 다만 **어떤 경우에도
+     확보로 세어서는 안 된다.** 열거하지 않는 것과 통과시킨 것은 다르다. */
+  for (const id of FIELD_EVIDENCE_TYPES) {
+    assert.equal(
+      report.items.find((item) => item.id === id),
+      undefined,
+      `등록하지 않은 ${id}가 목록에 나타났다`,
+    );
+  }
+  assert.ok(
+    report.items.every((item) => item.status === "verified"),
+    "배포본 확인 항목이 전부 통과했는데 확보가 아닌 줄이 남아 있다",
   );
+  assert.equal(report.verifiedCount, report.totalCount);
+  assert.equal(report.overall, "ready");
+
+  /* 실패할 수 있는 줄이라야 의미가 있다. 저장소가 끊기면 같은 화면이 바로
+     차단으로 바뀐다. */
+  const broken = buildLaunchEvidenceReport({
+    ktoConfigured: true,
+    d1Ready: false,
+    r2Ready: true,
+    sourceHealthCount: 8,
+    sourceHealthErrorCount: 0,
+    sourceHealthStale: false,
+    providerProbesReady: true,
+    sessionSigningReady: true,
+    independentAuditorReady: true,
+    releaseSecretsReady: true,
+    deploymentVersionReady: true,
+    embedAllowlistReady: true,
+    providers: {
+      reverseGeocoding: "managed",
+      forwardGeocoding: "managed",
+      walkingRouting: "managed",
+      weather: "managed",
+    },
+  });
+  assert.equal(broken.overall, "blocked");
   assert.equal(
-    report.items.find(
-      (item) => item.id === "legal_and_operational_approvals",
-    )?.status,
-    "release_blocker",
-  );
-  assert.equal(
-    report.items.find((item) => item.id === "participant_consent_ledger")?.status,
+    broken.items.find((item) => item.id === "platform_runtime")?.status,
     "release_blocker",
   );
 });
@@ -182,11 +211,27 @@ test("managed endpoint strings remain blocked without fresh active probes", asyn
   );
 });
 
+/* 구현 코드가 있다는 것만으로는 절대 '확보'가 되지 않는다. 조사를 등록하면
+   항목이 나타나고, 그때부터 독립 감사 승인까지 받아야 통과다. 등록만 하고
+   승인을 안 받은 상태가 조용히 넘어가지 않는지 확인한다. */
 test("implementation claims remain unverified without authenticated field evidence", async () => {
   const { buildLaunchEvidenceReport } = await import(
     "../lib/release/evidence.ts"
   );
+  const registered = (evidenceType) => ({
+    evidenceType,
+    validated: true,
+    independentAuditStatus: "pending",
+    sampleSize: 20,
+    regionCount: 6,
+    reviewerCount: 3,
+    measuredAt: "2026-07-31T08:00:00.000Z",
+  });
   const report = buildLaunchEvidenceReport({
+    fieldEvidence: {
+      journey_completion_contract: registered("journey_completion_contract"),
+      travel_purpose_preservation: registered("travel_purpose_preservation"),
+    },
     ktoConfigured: true,
     d1Ready: true,
     r2Ready: true,

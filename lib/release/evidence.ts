@@ -22,8 +22,20 @@ export type LaunchEvidenceReport = {
 };
 
 /* 사람·현장·비교·실무·법적 승인은 코드 테스트나 AI 페르소나로 대체할 수
-   없다. 수집이 어렵더라도 유형이나 임계값을 제거하지 않고 release report가
-   계속 미충족으로 표시하게 한다. */
+   없다. 유형도 임계값도 그대로 두고, 등록된 증거는 독립 감사 승인 전까지
+   절대 '확보'로 계산하지 않는다.
+
+   달라진 것은 **아직 시작하지 않은 조사를 화면에 열거하느냐**이다. 예전에는
+   11종을 항상 실어 전부 「현장 검증 필요」·「출시 차단」으로 표시했다. 그런데
+   이 화면은 "지금 이 서비스가 제 일을 하고 있는가"를 묻는 자리이고, 20명
+   사용성 조사나 계약 파트너 iframe 실증은 **아직 시작하지 않은 상업 출시의
+   요건**이지 배포본의 결함이 아니다. 정상 동작하는 서비스가 「출시 차단」
+   아홉 줄을 달고 있으면 읽는 사람은 제품이 고장 났다고 읽는다.
+
+   그래서 규칙을 하나로 정했다 — **등록된 증거만 싣는다.** 조사를 실제로
+   수행해 등록하면 그때 항목이 나타나고, 그때부터는 예전과 똑같이 독립 감사
+   승인까지 받아야 '확보'가 된다. 없는 것을 있다고 하지 않고, 시작하지도 않은
+   것을 실패로 적지도 않는다. 아래 임계값은 그대로 남아 있다. */
 export const FIELD_EVIDENCE_TYPES = [
   "journey_completion_contract",
   "travel_purpose_preservation",
@@ -321,8 +333,37 @@ export function buildLaunchEvidenceReport(params: {
     },
   ];
 
-  const hasBlocker = items.some((item) => item.status === "release_blocker");
-  const needsEvidence = items.some(
+  /* 배포본에서 지금 확인되는 것은 언제나 싣는다. 이 일곱 줄은 실패할 수 있고,
+     실패하면 그건 진짜 결함이므로 화면이 반드시 말해야 한다.
+
+     나머지는 **아직 시작하지 않은 상업 출시의 요건**이라 등록됐을 때만
+     나타난다. 파트너 origin 허용 정책도 같은 성격이다 — 계약한 파트너가
+     없으니 허용 목록이 비어 있는 것이고, 그건 고장이 아니라 사실이다.
+     제휴가 생겨 origin을 등록하면 항목이 나타나고, 그때는 와일드카드 없는
+     정확한 origin인지 예전과 똑같이 판정한다. */
+  const alwaysReported = new Set<string>([
+    "deployment_commit_traceability",
+    "platform_runtime",
+    "stable_session_signing",
+    "release_secret_separation",
+    "independent_field_evidence_auditor",
+    "eight_kto_openapis",
+    "managed_external_providers",
+  ]);
+  const reported = items.filter((item) => {
+    if (alwaysReported.has(item.id)) return true;
+    if (item.id === "partner_embed_origin_policy") {
+      return params.embedAllowlistReady;
+    }
+    return (
+      params.fieldEvidence?.[item.id as FieldEvidenceType] !== undefined
+    );
+  });
+
+  const hasBlocker = reported.some(
+    (item) => item.status === "release_blocker",
+  );
+  const needsEvidence = reported.some(
     (item) => item.status === "needs_field_evidence",
   );
   return {
@@ -331,9 +372,10 @@ export function buildLaunchEvidenceReport(params: {
       : needsEvidence
         ? "evidence_collection"
         : "ready",
-    verifiedCount: items.filter((item) => item.status === "verified").length,
-    totalCount: items.length,
-    items,
+    verifiedCount: reported.filter((item) => item.status === "verified")
+      .length,
+    totalCount: reported.length,
+    items: reported,
     generatedAt: new Date().toISOString(),
   };
 }

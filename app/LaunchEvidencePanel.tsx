@@ -167,14 +167,14 @@ export function LaunchEvidencePanel({
           <p>{tr("서비스 준비 현황", "Release evidence")}</p>
           <h2 id="launch-evidence-title">
             {tr(
-              "무엇이 준비됐고 무엇이 남았는지 그대로 적었어요",
-              "What is verified—and what still blocks release",
+              "지금 이 배포본에서 확인되는 것만 적었어요",
+              "What this deployment verifies, right now",
             )}
           </h2>
           <span>
             {tr(
-              "구현 완료와 현장 검증을 섞어 표시하지 않습니다. 아직 없는 증거는 그대로 ‘필요’로 남깁니다.",
-              "Implementation and independently approved field evidence are reported separately. Missing proof stays visibly incomplete.",
+              "서버가 방금 확인한 사실만 싣습니다. 각 줄은 실패할 수 있고, 실패하면 그대로 표시됩니다.",
+              "Only what the server just checked. Every row can fail, and a failure is shown as-is.",
             )}
           </span>
         </div>
@@ -213,21 +213,24 @@ export function LaunchEvidencePanel({
           <div className={styles.summary} data-overall={report.overall}>
             <strong>
               {report.overall === "ready"
-                ? tr("출시 증거가 모두 확보됐어요", "Every release control is verified")
+                ? tr(
+                    "확인 항목이 모두 통과했어요",
+                    "Every checked control passed",
+                  )
                 : report.overall === "blocked"
                   ? tr(
                       "운영 설정 차단 항목부터 해결해야 해요",
                       "A release-blocking control must be resolved first",
                     )
                   : tr(
-                      "제품은 동작하지만 현장 증거 수집이 남았어요",
-                      "The product runs, but independent field evidence is incomplete",
+                      "제품은 동작하지만 등록된 증거의 승인이 남았어요",
+                      "The product runs, but registered evidence still needs approval",
                     )}
             </strong>
             <span>
               {tr(
-                "각 항목의 다음 행동까지 완료해야 ‘확보’로 바뀝니다.",
-                "A control changes to verified only after its evidence and approval requirements are complete.",
+                "매시 정각 이후 자동 점검한 결과입니다. 등록된 현장 증거는 독립 감사 승인 전까지 ‘확보’로 계산하지 않습니다.",
+                "Re-checked automatically every hour. Registered field evidence is never counted as verified before independent approval.",
               )}
             </span>
           </div>

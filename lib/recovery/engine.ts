@@ -4140,8 +4140,8 @@ export async function recoverTrip(
         ...scoreCandidate(withAccessibility, input),
       };
     })
-    .map((candidate) => {
-      if (input.audience === "general") return candidate;
+    .flatMap((candidate) => {
+      if (input.audience === "general") return [candidate];
 
       /* 앞 단계는 "주변 무장애 목록에 이 곳이 있는가"만 보고 공백을 붙인다.
          그 목록에 없더라도 `detailWithTour2`가 필수 동선을 확인해 주는 경우가
@@ -4149,35 +4149,41 @@ export async function recoverTrip(
          남았다. 그러면 유아차·휠체어·고령자를 고른 여행자는 접근성이 실제로
          확인된 후보조차 적용할 수 없다. 상세 조회 결과가 최종 판정이다. */
       if (candidate.accessibility.status === "verified") {
-        return {
-          ...candidate,
-          evidenceGaps: candidate.evidenceGaps.filter(
-            (gap) => gap.code !== "ACCESSIBILITY_UNVERIFIED",
-          ),
-        };
+        return [
+          {
+            ...candidate,
+            evidenceGaps: candidate.evidenceGaps.filter(
+              (gap) => gap.code !== "ACCESSIBILITY_UNVERIFIED",
+            ),
+          },
+        ];
       }
 
       /* Same three-tier rule as the earlier checks: a detail lookup that came
          back without accessibility fields records a gap, it does not delete
-         the candidate. */
+         the candidate. 확인하지 못한 사실을 숨기지 않고 그대로 보여 준 뒤,
+         적용만 막는다 — 화면에서 지워 버리면 여행자는 그런 곳이 있었다는 것도,
+         왜 쓸 수 없는지도 알지 못한다. */
       if (
         !candidate.evidenceGaps.some(
           (gap) => gap.code === "ACCESSIBILITY_UNVERIFIED",
         )
       ) {
-        return {
-          ...candidate,
-          evidenceGaps: [
-            ...candidate.evidenceGaps,
-            {
-              code: "ACCESSIBILITY_UNVERIFIED" as const,
-              note: candidate.accessibility.note,
-              noteEn: candidate.accessibility.noteEn,
-            },
-          ],
-        };
+        return [
+          {
+            ...candidate,
+            evidenceGaps: [
+              ...candidate.evidenceGaps,
+              {
+                code: "ACCESSIBILITY_UNVERIFIED" as const,
+                note: candidate.accessibility.note,
+                noteEn: candidate.accessibility.noteEn,
+              },
+            ],
+          },
+        ];
       }
-      return candidate;
+      return [candidate];
     })
     /* Fully confirmed candidates are verified and offered first; those with a
        gap are only reached when there are not enough confirmed ones. */

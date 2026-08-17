@@ -12,6 +12,7 @@ import {
   PROVIDER_PROBE_STALE_AFTER_MS,
 } from "@/lib/provider-readiness";
 import { deploymentVersionStatus } from "@/lib/release/version";
+import { RECOVERY_RESPONSE_BUDGET_MS } from "@/lib/deadline";
 
 export async function GET() {
   const providers = externalProviderStatus();
@@ -48,7 +49,7 @@ export async function GET() {
         exactLocationRetention: "none",
         currentOriginRetention: "none",
         savedItineraryPlaceRetention: "30_days_or_session_delete",
-        responseBudgetMilliseconds: 20_000,
+        responseBudgetMilliseconds: RECOVERY_RESPONSE_BUDGET_MS,
         continuityPath:
           "current_origin_to_replacement_to_every_original_waypoint_to_next_fixed_appointment",
         counterfactual: {

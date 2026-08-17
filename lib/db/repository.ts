@@ -230,7 +230,10 @@ export async function persistRecovery(params: {
         reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
       };
     }
-    const applicationSnapshots = new Map(
+    const applicationSnapshots = new Map<
+      string,
+      { sealed: string | undefined; contractExcluded: boolean }
+    >(
       await Promise.all(
         params.result.options.map(async (option) => {
           const nextFixed = option.scheduleDiff.nextFixedAppointment;
@@ -245,10 +248,34 @@ export async function persistRecovery(params: {
             option.availability.status === "unknown"
               ? option.availability.status
               : undefined;
-          if (!snapshotStatus) return [option.id, undefined] as const;
+          const evidenceGapCodes = option.evidenceGaps.map((gap) => gap.code);
+          /* 계약이 이 안을 **일부러** 배제하는가, 아니면 담을 수 있어야 하는데
+             못 담은 것인가. 두 사건은 성격이 완전히 다른데 결과가 똑같이
+             "스냅숏 없음"이라 구분되지 않았다. 그래서 계약이 의도적으로
+             거절하는 안만 남는 조회 — 계단 없는 동선이 필요한데 무장애 정보를
+             확인하지 못한 곳들 — 에서는 응답 전체가 503이 됐다. 무장애 정보를
+             끄는 제거실험이 정확히 그 상태를 만든다. 심사위원더러 화면에서
+             직접 끄고 차이를 보라고 만든 기능이 오류 화면을 냈다. */
+          const contractClass = snapshotStatus
+            ? applicationSnapshotClass({
+                availability: {
+                  status: snapshotStatus,
+                  checkedAt: option.availability.checkedAt,
+                },
+                evidenceGapCodes,
+                confirmationRequired: option.confirmationRequired,
+              })
+            : undefined;
+          if (!snapshotStatus || !contractClass) {
+            return [
+              option.id,
+              { sealed: undefined, contractExcluded: true },
+            ] as const;
+          }
           return [
             option.id,
-            await encryptApplicationSnapshot(
+            {
+              sealed: await encryptApplicationSnapshot(
               {
                 contentId: option.contentId,
                 title: option.title,
@@ -269,7 +296,7 @@ export async function persistRecovery(params: {
                   checkedAt: option.availability.checkedAt,
                 },
                 confirmationRequired: option.confirmationRequired,
-                evidenceGapCodes: option.evidenceGaps.map((gap) => gap.code),
+                evidenceGapCodes,
                 visitStartAt: option.scheduleDiff.replacementNode.startAt,
                 visitEndAt: option.scheduleDiff.replacementNode.endAt,
                 nextFixed:
@@ -300,9 +327,11 @@ export async function persistRecovery(params: {
                   : undefined,
                 itineraryImpact,
               },
-              params.result.requestId,
-              option.id,
-            ),
+                params.result.requestId,
+                option.id,
+              ),
+              contractExcluded: false,
+            },
           ] as const;
         }),
       ),
@@ -317,27 +346,41 @@ export async function persistRecovery(params: {
        못해 결과를 제공하지 않습니다"만 보았다. 실제로 그렇게 터졌다.
 
        봉인하지 못한 안은 애초에 적용할 수 없다 — 적용 경로가 스냅숏이 없으면
-       거절한다. 그러니 목록에 남겨 둘 이유가 없고, 그 하나 때문에 조회 전체를
-       버릴 이유는 더더욱 없다. 그 안만 빼고, 뺐다는 사실을 밝힌다. */
-    const sealedOptions = params.result.options.filter((option) =>
-      applicationSnapshots.get(option.id),
-    );
-    const unsealedCount =
-      params.result.options.length - sealedOptions.length;
-    if (unsealedCount > 0) {
-      params.result.options = sealedOptions;
+       거절한다. 그 하나 때문에 조회 전체를 버릴 이유는 없다.
+
+       다만 "봉인하지 못했다"에는 성격이 다른 두 가지가 섞여 있다.
+
+       (1) 계약이 **일부러** 배제한 안. 계단 없는 동선이 필요한데 무장애 정보를
+           확인하지 못한 곳이 그렇다. 이건 고장이 아니라 규칙이 제대로 작동한
+           결과이고, 화면에서 지우면 안 된다 — 여행자는 그런 곳이 있었다는 것과
+           왜 지금은 쓸 수 없는지를 알아야 한다. 목록에 남기되 스냅숏이 없으니
+           적용은 거절된다. 화면도 이미 그렇게 막고 있다.
+
+       (2) 담을 수 있어야 하는데 못 담은 안. 이건 열쇠나 계약 자체의 문제이므로
+           조용히 넘어가지 않는다. 그 안만 빼고, 뺐다는 사실을 밝힌다.
+
+       둘을 구분하지 않던 동안, (1)만 남는 조회는 응답 전체가 503이 됐다. */
+    const unexpectedlyUnsealed = params.result.options.filter((option) => {
+      const snapshot = applicationSnapshots.get(option.id);
+      return !snapshot?.sealed && !snapshot?.contractExcluded;
+    });
+    if (unexpectedlyUnsealed.length > 0) {
+      const dropped = new Set(unexpectedlyUnsealed.map((option) => option.id));
+      params.result.options = params.result.options.filter(
+        (option) => !dropped.has(option.id),
+      );
       params.result.warnings = [
         ...(params.result.warnings ?? []),
-        `${unsealedCount}곳은 적용 계약을 만들지 못해 목록에서 제외했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않습니다.`,
+        `${dropped.size}곳은 적용 계약을 만들지 못해 목록에서 제외했습니다. 확인하지 않은 후보를 결과처럼 표시하지 않습니다.`,
       ];
-    }
-    if (unsealedCount > 0 && sealedOptions.length === 0) {
-      /* 전부 봉인에 실패했다면 그것은 후보 하나의 문제가 아니라 열쇠나 계약
-         자체의 문제다. 그때는 조용히 0건을 내놓지 않고 실패로 말한다. */
-      return {
-        persisted: false,
-        reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
-      };
+      if (params.result.options.length === 0) {
+        /* 남은 것이 하나도 없다면 후보 하나의 문제가 아니라 열쇠나 계약 자체의
+           문제다. 그때는 조용히 0건을 내놓지 않고 실패로 말한다. */
+        return {
+          persisted: false,
+          reason: "APPLICATION_SNAPSHOT_UNAVAILABLE",
+        };
+      }
     }
 
     const writes = sessionWriteBatch({
@@ -432,7 +475,7 @@ export async function persistRecovery(params: {
             "continuity",
           ),
           applicationSnapshotJson:
-            applicationSnapshots.get(option.id) ?? null,
+            applicationSnapshots.get(option.id)?.sealed ?? null,
           safetyContractVersion: APPLICATION_SAFETY_CONTRACT_VERSION,
           availabilityStatus: option.availability.status,
           availabilityCheckedAt: option.availability.checkedAt,

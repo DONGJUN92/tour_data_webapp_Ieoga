@@ -683,8 +683,15 @@ test("recover route enforces one deadline from preflight through persistence", a
      persistence step — not that it holds a particular number. Pinning the
      literal made this fail when the budget was retuned against measured
      upstream latency, which is a legitimate change, so the shape is asserted
-     instead: a single declared constant, reused rather than duplicated. */
-  assert.match(source, /const RECOVERY_RESPONSE_BUDGET_MS = \d[\d_]*;/);
+     instead: a single declared constant, reused rather than duplicated.
+     그 "한 곳"은 이제 lib/deadline.ts다. 라우트가 값을 직접 들고 있던 동안
+     /api/v1/capabilities가 옛 숫자를 공개 계약으로 알리고 있었다 — 선언이
+     하나여야 한다는 요구는 파일 안이 아니라 저장소 전체에 걸린다. */
+  assert.match(
+    source,
+    /import \{[\s\S]{0,200}RECOVERY_RESPONSE_BUDGET_MS,[\s\S]{0,200}\} from "@\/lib\/deadline";/,
+  );
+  assert.doesNotMatch(source, /const RECOVERY_RESPONSE_BUDGET_MS\s*=/);
   assert.match(source, /const PERSISTENCE_COMMIT_RESERVE_MS = \d[\d_]*;/);
   assert.match(source, /deadlineAt = Date\.now\(\) \+ RECOVERY_RESPONSE_BUDGET_MS/);
   assert.match(
@@ -703,6 +710,33 @@ test("recover route enforces one deadline from preflight through persistence", a
   assert.match(source, /status:\s*persistenceStatus/);
   assert.match(source, /persistenceStatus[\s\S]{0,100}\? "unknown"/);
   assert.doesNotMatch(source, /저장되지 않은 후보/);
+});
+
+test("공개 계약이 알리는 응답 예산은 실제로 집행되는 예산과 같은 값이다", async () => {
+  /* /api/v1/capabilities는 파트너와 심사자가 읽는 기계 판독 계약이다. 이 값이
+     라우트가 실제로 세우는 마감과 다르면 계약이 거짓말을 한다. 실제로 예산을
+     12초에서 25초로 넓혔을 때 capabilities에 박아 둔 20_000이 남아, 계약은
+     20초라고 말하고 라우트는 25초를 집행했다. 숫자를 고정하지 않고 "같은
+     상수를 가져다 쓴다"를 검사한다. */
+  const capabilities = await readFile(
+    `${ROOT}/app/api/v1/capabilities/route.ts`,
+    "utf8",
+  );
+  assert.match(
+    capabilities,
+    /import \{ RECOVERY_RESPONSE_BUDGET_MS \} from "@\/lib\/deadline";/,
+  );
+  assert.match(
+    capabilities,
+    /responseBudgetMilliseconds:\s*RECOVERY_RESPONSE_BUDGET_MS,/,
+  );
+  assert.doesNotMatch(capabilities, /responseBudgetMilliseconds:\s*\d/);
+
+  const shared = await readFile(`${ROOT}/lib/deadline.ts`, "utf8");
+  assert.match(
+    shared,
+    /export const RECOVERY_RESPONSE_BUDGET_MS = \d[\d_]*;/,
+  );
 });
 
 test("shared deadline helper resolves fast work and rejects stalled preflight work", async () => {

@@ -71,6 +71,17 @@ export async function GET() {
     .filter(([, mode]) => mode === "public_shared")
     .map(([provider]) => provider);
   const usesSharedPublicProvider = sharedPublicProviders.length > 0;
+  /* 이 판정은 "지금 이 서비스가 제 일을 하고 있는가"만 답한다. 그래서 있어야
+     할 것이 없는 항목(서명키·감사자·시크릿 위상·배포 버전)만 degraded로 끌어
+     내린다.
+
+     embedPolicy는 여기서 뺐다. 허용 origin이 비어 있는 것은 결함이 아니라
+     제휴처가 아직 없다는 사실이고, 위젯과 파트너 API는 그 값과 무관하게
+     동작한다. 그런데도 degraded로 세던 탓에, 제휴처가 없다는 이유만으로 공사
+     API 8종과 외부 제공자 4종이 전부 정상인 배포본이 「일부 제한」으로
+     표시됐다. 파트너 임베드를 정식 출시할 준비가 됐는지는 성격이 다른 질문
+     이므로 /api/v1/release/evidence가 계속 release_blocker로 판정한다. 아래
+     응답에는 embedPolicy를 그대로 실어 보내므로 감춰지는 사실은 없다. */
   const overall = !runtimeReady
     ? "unavailable"
     : sources.length === 0
@@ -82,8 +93,7 @@ export async function GET() {
           !sessionSigning.releaseReady ||
           !independentAuditor.releaseReady ||
           !releaseSecrets.releaseReady ||
-          !deploymentVersion.releaseReady ||
-          !embedPolicy.releaseReady
+          !deploymentVersion.releaseReady
         ? "degraded"
         : "ready";
 

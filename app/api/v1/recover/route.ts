@@ -7,6 +7,7 @@ import {
 import {
   beforeDeadline,
   DeadlineExceededError,
+  RECOVERY_RESPONSE_BUDGET_MS,
 } from "@/lib/deadline";
 import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import {
@@ -39,8 +40,9 @@ export const dynamic = "force-dynamic";
 /* 25초로 넓혔다. 검증 풀을 18곳에서 36곳으로 키운 만큼, 예전 예산이면 늘어난
    후보가 검증되기 전에 마감이 먼저 온다 — 후보만 늘리고 예산을 그대로 두면
    "응답 시간 예산 안에서 N곳만 검증했습니다" 경고가 대신 늘어난다. 정상 요청은
-   여전히 3~5초에 끝나고, 이 수치는 꼬리에서만 의미가 있다. */
-const RECOVERY_RESPONSE_BUDGET_MS = 25_000;
+   여전히 3~5초에 끝나고, 이 수치는 꼬리에서만 의미가 있다.
+   값 자체는 lib/deadline.ts에 있다 — /api/v1/capabilities가 같은 값을 공개
+   계약으로 알리므로 두 곳이 갈라지면 계약이 거짓이 된다. */
 const PERSISTENCE_COMMIT_RESERVE_MS = 2_000;
 const MAX_OPEN_WINDOW_MINUTES = 1_440;
 

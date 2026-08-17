@@ -122,13 +122,25 @@ test("봉인하지 못한 안은 그 안만 빠지고 응답은 살아남는다"
     new URL("../lib/db/repository.ts", import.meta.url),
     "utf8",
   );
-  assert.match(repository, /const sealedOptions = params\.result\.options\.filter/);
-  assert.match(repository, /params\.result\.options = sealedOptions/);
-  assert.match(repository, /적용 계약을 만들지 못해 목록에서 제외했습니다/);
-  /* 전부 실패한 경우에만 요청 자체를 실패로 돌린다. */
+  /* "봉인하지 못했다"에는 성격이 다른 두 가지가 섞여 있고, 목록에서 빼는 것은
+     그중 하나뿐이다 — 계약이 담을 수 있어야 하는데 못 담은 안. 계약이 일부러
+     배제하는 안(계단 없는 동선이 필요한데 무장애 정보를 확인하지 못한 곳)은
+     규칙이 제대로 작동한 결과이므로 목록에 남는다. 둘을 구분하지 않던 동안,
+     후자만 남는 조회는 응답 전체가 503이 됐다. */
+  assert.match(repository, /contractExcluded/);
   assert.match(
     repository,
-    /if \(unsealedCount > 0 && sealedOptions\.length === 0\)/,
+    /const unexpectedlyUnsealed = params\.result\.options\.filter/,
+  );
+  assert.match(
+    repository,
+    /return !snapshot\?\.sealed && !snapshot\?\.contractExcluded;/,
+  );
+  assert.match(repository, /적용 계약을 만들지 못해 목록에서 제외했습니다/);
+  /* 그렇게 빼고 나서 남은 것이 하나도 없을 때만 요청 자체를 실패로 돌린다. */
+  assert.match(
+    repository,
+    /if \(params\.result\.options\.length === 0\) \{[\s\S]{0,400}reason: "APPLICATION_SNAPSHOT_UNAVAILABLE"/,
   );
   /* 값을 눌러 넣는 캐스트가 되살아나면 같은 장애가 다시 난다. */
   assert.ok(

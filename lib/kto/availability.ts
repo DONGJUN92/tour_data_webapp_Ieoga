@@ -38,6 +38,17 @@ export type AvailabilityEvidence = {
   note: string;
   /* 같은 설명의 영어 표기. 영어 화면에서 운영 판정만 한국어로 남지 않게 한다. */
   noteEn?: string;
+  /* 이 판정의 **원문을 어디서 얻었는가.** 판정 자체는 어느 쪽이든 이번 요청의
+     실제 체류 구간에 다시 대조해서 나온 것이지만, 원문이 이번 호출에서 온 것인지
+     로컬 사본에서 온 것인지는 다른 사실이다. 여행자에게도, 원장을 읽는 사람에게도
+     그 차이를 숨기지 않는다.
+
+     사본을 쓰는 경우에도 공사가 알린 콘텐츠 수정 시각(`sourceModifiedAt`)이
+     지금과 같을 때만 쓴다 — 즉 지금 다시 불러도 같은 응답이 온다는 뜻이다. */
+  evidenceSource?: "live" | "snapshot";
+  /* 사본을 쓴 경우, 그 원문을 받아 둔 시각과 대조에 쓴 공사의 수정 시각. */
+  sourceFetchedAt?: string;
+  sourceModifiedAt?: string;
   audit: KtoAudit;
 };
 

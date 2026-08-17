@@ -683,3 +683,70 @@ export const partnerUsageDaily = sqliteTable(
     ),
   ],
 );
+
+/* 한국관광공사 상세 운영정보(`detailIntro2`) 원문의 로컬 사본.
+
+   **판정이 아니라 원문을 저장한다.** 저장된 값은 매 요청마다
+   `evaluateAvailabilityItem`으로 그 요청의 실제 체류 구간에 다시 대조된다. 그래서
+   "09:00~18:00"을 저장해 두었더라도 밤 10시 20분 요청에서는 여전히
+   `confirmed_closed`가 나온다. 판정 결과를 저장하면 그 순간 캐시가 거짓말을 하기
+   시작한다.
+
+   신선도는 시간이 아니라 **공사가 알려 주는 변경 시각**으로 판정한다. 후보 탐색
+   응답(`locationBasedList2`)에는 각 콘텐츠의 `modifiedtime`이 들어 있고, 그 값이
+   저장 당시와 같다면 지금 다시 호출해도 같은 응답이 온다는 뜻이다. HTTP의 ETag와
+   같은 성질이고, "며칠 지났으니 아마 괜찮다"는 추측과는 다르다. 값이 다르면 그
+   즉시 무효로 보고 실시간으로 다시 부른다.
+
+   `expiresAt`은 그 위에 얹는 상한이다. `modifiedtime`이 운영시간 변경을 반드시
+   반영한다고 보장할 수는 없으므로, 일치하더라도 일정 기간이 지나면 다시 부른다.
+
+   이 표를 두는 이유는 호출 예산이다. Cloudflare 무료 플랜은 요청당 **외부** 호출을
+   50건으로 막지만 D1·R2 같은 내부 서비스는 1,000건까지 허용한다. 후보 한 곳을
+   검증하는 데 드는 외부 호출이 운영정보 1건 + 경로 1건이었는데, 운영정보를 이
+   표에서 읽으면 같은 예산으로 검증할 수 있는 후보 수가 두 배가 된다. */
+export const placeHoursSnapshots = sqliteTable(
+  "place_hours_snapshots",
+  {
+    contentId: text("content_id").primaryKey(),
+    contentTypeId: text("content_type_id").notNull(),
+    /* 저장 당시 공사가 알린 콘텐츠 수정 시각. 신선도 판정의 기준값이다. */
+    sourceModifiedAt: text("source_modified_at").notNull(),
+    /* `detailIntro2` 항목 원문(JSON). 판정하지 않은 그대로를 담는다. */
+    payload: text("payload").notNull(),
+    fetchedAt: text("fetched_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    /* 만료된 행을 지우는 정리 작업용. */
+    index("place_hours_snapshots_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+/* 실제 경로 조회 결과의 로컬 사본.
+
+   출발지 좌표를 그대로 키로 쓰면 GPS가 1m만 흔들려도 사본을 쓸 수 없다. 그래서
+   출발지를 약 150m 격자로 양자화해 키로 삼는다. 그 정도 거리에서 같은 목적지까지의
+   보행 시간 차이는 경로 제공자의 표시 단위(분)보다 작다.
+
+   도보·자전거는 시간과 무관한 값이다 — 이미 `lib/mobility/routing.ts`가 그렇게
+   판단해 `${mode}:static:` 키로 캐시하고 있다. 자동차·대중교통은 교통 상황과
+   시간표에 달려 있으므로 훨씬 짧은 상한을 쓴다. 어느 쪽이든 측정 시각
+   (`calculatedAt`)이 근거와 함께 화면까지 전달되므로, 여행자는 이 숫자가 언제
+   측정된 것인지 볼 수 있다. */
+export const routeSnapshots = sqliteTable(
+  "route_snapshots",
+  {
+    /* `${mode}:${originCell}:${destinationKey}` */
+    id: text("id").primaryKey(),
+    mode: text("mode").notNull(),
+    /* 양자화한 출발지 격자 좌표. 사람이 읽고 검산할 수 있게 문자열로 둔다. */
+    originCell: text("origin_cell").notNull(),
+    destinationKey: text("destination_key").notNull(),
+    /* `WalkingRouteEvidence` 원문(JSON). 여기서도 판정이 아니라 근거를 담는다. */
+    payload: text("payload").notNull(),
+    calculatedAt: text("calculated_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [index("route_snapshots_expiry_idx").on(table.expiresAt)],
+);

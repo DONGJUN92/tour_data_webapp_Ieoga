@@ -19,6 +19,20 @@ import {
   type AvailabilityEvidence,
 } from "@/lib/kto/availability";
 import {
+  readHoursSnapshots,
+  writeHoursSnapshots,
+  type HoursSnapshotHit,
+  type HoursSnapshotWrite,
+} from "@/lib/kto/hours-snapshot";
+import {
+  isCacheableRouteMode,
+  readRouteSnapshots,
+  routeSnapshotKey,
+  writeRouteSnapshots,
+  type RouteSnapshotMode,
+  type RouteSnapshotWrite,
+} from "@/lib/mobility/route-snapshot";
+import {
   KtoError,
   type KtoAudit,
   type KtoCallResult,
@@ -2405,6 +2419,16 @@ async function enrichForContinuity(params: {
   weatherEvidence?: Awaited<ReturnType<typeof getWeatherEvidence>>;
   signal?: AbortSignal;
   meter?: SubrequestMeter;
+  /* 이번 요청이 미리 읽어 둔 운영정보 사본. 있으면 외부 호출을 쓰지 않는다. */
+  hoursSnapshots?: Map<string, HoursSnapshotHit>;
+  /* 실시간으로 받아 온 원문을 여기에 모아 응답 뒤에 한 번에 저장한다. */
+  snapshotWrites: HoursSnapshotWrite[];
+  /* 사본으로 처리한 후보 수. 경고문에서 밝힌다. */
+  snapshotHits: { count: number };
+  /* 경로 사본. 도보·자전거에서만 채워진다. */
+  routeSnapshots?: Map<string, WalkingRouteEvidence>;
+  routeSnapshotWrites: RouteSnapshotWrite[];
+  routeSnapshotHits: { count: number };
 }): Promise<WorkingCandidate | null> {
   const {
     candidate,
@@ -2415,7 +2439,22 @@ async function enrichForContinuity(params: {
     weatherEvidence,
     signal,
     meter,
+    hoursSnapshots,
+    snapshotWrites,
+    snapshotHits,
+    routeSnapshots,
+    routeSnapshotWrites,
+    routeSnapshotHits,
   } = params;
+  /* 사본에서 온 원문인지, 이번 호출에서 온 것인지. 아래 판정에 그대로 실어
+     화면과 원장이 같은 사실을 말하게 한다. */
+  let snapshotProvenance:
+    | {
+        evidenceSource: "snapshot";
+        sourceFetchedAt: string;
+        sourceModifiedAt: string;
+      }
+    | undefined;
   const minimumStay = input.minimumStayMinutes ?? 30;
   const safetyBuffer = input.safetyBufferMinutes ?? 15;
 
@@ -2438,6 +2477,54 @@ async function enrichForContinuity(params: {
     | Awaited<ReturnType<typeof fetchAvailabilitySource>>
     | undefined;
   if (context && candidate.contentTypeId) {
+    /* 로컬 사본이 있으면 외부 호출을 쓰지 않는다.
+
+       사본은 공사가 알린 콘텐츠 수정 시각이 지금과 같을 때만 쓰이므로, 지금 다시
+       불러도 같은 원문이 온다. 판정은 어느 쪽이든 아래에서 이번 요청의 실제 체류
+       구간에 다시 대조하므로, 사본을 쓴다고 해서 판정이 느슨해지지 않는다.
+
+       이것이 후보당 외부 호출을 둘에서 하나로 줄인다 — 같은 50건 예산으로 볼 수
+       있는 후보가 두 배가 된다는 뜻이다. */
+    const snapshot = hoursSnapshots?.get(candidate.contentId);
+    if (snapshot) {
+      snapshotHits.count += 1;
+      availabilitySource = {
+        ok: true,
+        item: snapshot.item,
+        audit: {
+          apiName: "KorService2",
+          operation: "detailIntro2",
+          status: "live",
+          latencyMs: 0,
+          resultCount: 1,
+          totalCount: 1,
+          fieldsUsed: ["usetime", "restdate", "infocenter"],
+          /* 바깥으로 나가지 않았다. 원장이 이 사실을 그대로 말해야 예산 계량기도
+             화면의 출처 표기도 거짓이 되지 않는다. */
+          upstreamCalls: 0,
+          errorCode: "SERVED_FROM_SNAPSHOT",
+        },
+      };
+      snapshotProvenance = {
+        evidenceSource: "snapshot",
+        sourceFetchedAt: snapshot.fetchedAt,
+        sourceModifiedAt: snapshot.sourceModifiedAt,
+      };
+      sourceLedger.push(availabilitySource.audit);
+      if (closedForWholeDate(snapshot.item, context.occurredAt)) {
+        rejected.push({
+          contentId: candidate.contentId,
+          title: candidate.title,
+          reasonCode: "OFFICIALLY_CLOSED",
+          reason:
+            "공식 운영정보상 그날은 휴무이거나 행사 기간이 아니어서 제외했습니다.",
+          distanceMeters: candidate.distanceMeters,
+          changedNodeCount: context.changeKind === "insert" ? 0 : 1,
+          verificationDepth: "pre_filter",
+        });
+        return null;
+      }
+    } else {
     /* 예산을 확보하지 못하면 아무것도 부르지 않고 물러난다. 탈락으로 세지도
        않는다 — 이 후보는 조건을 못 맞춘 것이 아니라 아직 보지 못한 것이다. */
     if (!reserveSubrequests(meter, 1)) return null;
@@ -2450,6 +2537,14 @@ async function enrichForContinuity(params: {
         { signal },
       );
       if (availabilitySource.ok) {
+        /* 이번에 실제로 받아 온 원문은 사본으로 남긴다. 추가 호출이 없다 —
+           사람이 많이 가는 지역부터 저절로 더워진다. */
+        snapshotWrites.push({
+          contentId: candidate.contentId,
+          contentTypeId: candidate.contentTypeId,
+          sourceModifiedAt: candidate.modifiedAt,
+          item: availabilitySource.item,
+        });
         sourceLedger.push(availabilitySource.audit);
         if (
           closedForWholeDate(availabilitySource.item, context.occurredAt)
@@ -2492,6 +2587,7 @@ async function enrichForContinuity(params: {
         "한국관광공사 상세 운영정보 호출에 실패해 운영 여부를 확정하지 못했습니다.",
       );
     }
+    }
   }
 
   if (context) {
@@ -2506,11 +2602,30 @@ async function enrichForContinuity(params: {
     const requiresOriginReturn = Boolean(
       context.openWindow && !context.nextFixed,
     );
+    /* 가는 경로의 로컬 사본이 있으면 외부 호출을 쓰지 않는다.
+
+       도보·자전거만 저장한다 — 그 근거는 `routing.ts`가 이미 두 수단의 캐시 키를
+       `static`으로 잡아 둔 판단이다. 자동차·대중교통은 시각에 따라 값이 달라지므로
+       저장하지 않는다. 측정 시각은 근거에 그대로 실려 화면까지 간다. */
+    const routeKeyParts =
+      isCacheableRouteMode(input.travelMode) && !requiresOriginReturn
+        ? routeSnapshotKey(routePoints, input.travelMode)
+        : undefined;
+    const cachedRoute = routeKeyParts
+      ? routeSnapshots?.get(routeKeyParts.id)
+      : undefined;
+
     /* 가는 경로와, 되짚어 쓸 수 없는 수단이면 복귀 경로까지 한 번에 확보한다.
        가는 경로만 부르고 복귀에서 예산이 떨어지면 그 후보는 반쪽만 검증된 채
        버려지고, 이미 쓴 호출도 되돌릴 수 없다. */
-    if (!reserveSubrequests(meter, meter?.routeCost ?? 1)) return null;
-    const route = await getRoute(routePoints, {
+    if (
+      !cachedRoute &&
+      !reserveSubrequests(meter, meter?.routeCost ?? 1)
+    ) {
+      return null;
+    }
+    if (cachedRoute) routeSnapshotHits.count += 1;
+    const route = cachedRoute ?? await getRoute(routePoints, {
       signal,
       mode: input.travelMode,
       departureAt: context.occurredAt.toISOString(),
@@ -2530,6 +2645,15 @@ async function enrichForContinuity(params: {
         changedNodeCount: 1,
       });
       return null;
+    }
+    /* 실시간으로 얻은 경로만 사본으로 남긴다. 사본에서 온 것을 다시 저장하면
+       만료 시각만 늘어나 "7일 상한"이 사실상 무한이 된다. */
+    if (routeKeyParts && !cachedRoute) {
+      routeSnapshotWrites.push({
+        ...routeKeyParts,
+        mode: input.travelMode as RouteSnapshotMode,
+        value: route,
+      });
     }
     /* 보행 복귀는 가는 경로를 되짚어 쓴다. 추정이 아니라 실측이다 — 서울·대전·
        부산의 6개 구간을 양방향으로 조회했을 때 TMAP 보행 경로는 12분짜리부터
@@ -2687,14 +2811,17 @@ async function enrichForContinuity(params: {
     /* 이제 실제 도착·출발 시각이 확정됐으므로 같은 원문을 시간 구간까지 대조해
        다시 판정한다. 원문은 위에서 이미 받았으므로 호출은 추가되지 않는다. */
     if (availabilitySource?.ok) {
-      availability = publicAvailability(
-        evaluateAvailabilityItem(
+      availability = publicAvailability({
+        ...evaluateAvailabilityItem(
           availabilitySource.item,
           availabilitySource.audit,
           new Date(scheduleDiff.replacementNode.startAt),
           new Date(scheduleDiff.replacementNode.endAt),
         ),
-      );
+        /* 판정은 이번 요청의 체류 구간으로 다시 한 것이고, 원문의 출처는 별개
+           사실이다. 둘을 함께 싣는다. */
+        ...(snapshotProvenance ?? { evidenceSource: "live" as const }),
+      });
     } else if (availabilitySource && !availabilitySource.ok) {
       availability = publicAvailability(availabilitySource.evidence);
     }
@@ -4006,6 +4133,14 @@ export async function recoverTrip(
       ];
   const sourceLedger: KtoAudit[] = [];
   const rejected: RejectedCandidate[] = [];
+  /* 이번 요청이 실시간으로 받아 온 운영정보 원문. 응답을 다 만든 뒤 한 번에
+     저장한다 — 추가 외부 호출이 없으므로 예산에 영향이 없다. */
+  const snapshotWrites: HoursSnapshotWrite[] = [];
+  /* 사본으로 처리한 후보 수. 검증 단계 안에서 늘어나지만 경고문은 그 밖에서
+     쓰므로 여기에 둔다. */
+  const snapshotUsage = { count: 0 };
+  const routeSnapshotWrites: RouteSnapshotWrite[] = [];
+  const routeSnapshotUsage = { count: 0 };
 
   /* 후보를 보기 **전에** 여행자가 준 조건끼리 모순이 없는지 확인한다.
 
@@ -5012,6 +5147,55 @@ export async function recoverTrip(
       );
     }
 
+    /* 검증할 후보들의 운영정보 사본을 **한 번의 질의로** 읽는다. 후보마다 따로
+       읽으면 D1 왕복이 응답 시간에 쌓이고 무료 플랜의 CPU 상한에서도 불리하다.
+
+       D1은 내부 서비스이므로 이 질의는 외부 50건 예산이 아니라 내부 1,000건
+       예산을 쓴다. 그것이 이 구조 전체의 요점이다. */
+    const hoursSnapshots = await readHoursSnapshots(
+      shortlist.map((candidate) => ({
+        contentId: candidate.contentId,
+        contentTypeId: candidate.contentTypeId,
+        sourceModifiedAt: candidate.modifiedAt,
+      })),
+    );
+    /* 경로 사본도 한 번의 질의로 읽는다. 키는 후보 지점까지 확정되므로 검증
+       목록이 정해진 이 자리에서 미리 만들 수 있다. */
+    const requiresOriginReturnForAll = Boolean(
+      context?.openWindow && !context.nextFixed,
+    );
+    const routeKeyByContentId = new Map<
+      string,
+      ReturnType<typeof routeSnapshotKey>
+    >();
+    if (
+      context &&
+      isCacheableRouteMode(input.travelMode) &&
+      !requiresOriginReturnForAll
+    ) {
+      for (const candidate of shortlist) {
+        routeKeyByContentId.set(
+          candidate.contentId,
+          routeSnapshotKey(
+            [
+              input.origin,
+              { latitude: candidate.latitude, longitude: candidate.longitude },
+              ...context.continuityNodes.map((node) => ({
+                latitude: node.location!.latitude,
+                longitude: node.location!.longitude,
+              })),
+            ],
+            input.travelMode as RouteSnapshotMode,
+          ),
+        );
+      }
+    }
+    const routeSnapshotCache = await readRouteSnapshots(
+      [...routeKeyByContentId.values()]
+        .map((parts) => parts?.id)
+        .filter((id): id is string => Boolean(id)),
+    );
+
     let attemptedCandidates = 0;
     /* 예산이 부족해 **아무 호출도 하지 못하고** 물러난 후보. 탈락이 아니므로
        `rejected`에 넣지 않지만, 세어서 밝힌다.
@@ -5039,7 +5223,36 @@ export async function recoverTrip(
          전에 배치의 모든 후보가 운영정보 예산을 선점한다. 남은 예산이 경로 한
          건뿐인데 여섯 곳을 시작하면, 여섯 곳 모두 운영정보를 실제로 조회한 뒤
          경로를 얻지 못해 버려진다 — 조회는 나갔고 결과는 없다. */
-      const perCandidate = 1 + meter.routeCost;
+      /* 사본이 있는 후보는 운영정보 호출을 쓰지 않는다. 다음 묶음에서 사본이
+         있는 비율을 그대로 반영해 수용량을 계산한다 — 1을 항상 더하면 사본이
+         더워진 지역에서 실제로 감당할 수 있는 후보를 스스로 줄이게 된다. */
+      const lookahead = shortlist.slice(
+        offset,
+        offset + CONTINUITY_VERIFICATION_BATCH_SIZE,
+      );
+      const cachedHours = lookahead.filter((candidate) =>
+        hoursSnapshots.has(candidate.contentId),
+      ).length;
+      const cachedRoutes = lookahead.filter((candidate) => {
+        const key = routeKeyByContentId.get(candidate.contentId);
+        return key ? routeSnapshotCache.has(key.id) : false;
+      }).length;
+      const averageAvailabilityCost =
+        lookahead.length > 0
+          ? (lookahead.length - cachedHours) / lookahead.length
+          : 1;
+      const averageRouteCost =
+        lookahead.length > 0
+          ? (meter.routeCost * (lookahead.length - cachedRoutes)) /
+            lookahead.length
+          : meter.routeCost;
+      /* 사본이 전부 있으면 이 후보들은 외부 호출을 하나도 쓰지 않는다. 그래도
+         1로 내림해 수용량이 무한이 되지 않게 한다 — 시간 예산과 결과 상한이
+         여전히 작동해야 한다. */
+      const perCandidate = Math.max(
+        1,
+        Math.ceil(averageAvailabilityCost + averageRouteCost),
+      );
       const affordable = Math.floor(
         (meter.budget - meter.spent) / perCandidate,
       );
@@ -5068,6 +5281,12 @@ export async function recoverTrip(
               gridWeather.get(gridKey(candidate)) ?? weatherEvidence,
             signal: execution.signal,
             meter,
+            hoursSnapshots,
+            snapshotWrites,
+            snapshotHits: snapshotUsage,
+            routeSnapshots: routeSnapshotCache,
+            routeSnapshotWrites,
+            routeSnapshotHits: routeSnapshotUsage,
           }),
         ),
       );
@@ -5102,10 +5321,27 @@ export async function recoverTrip(
     }
   }
 
+  /* 이번에 실시간으로 받아 온 원문을 사본으로 남긴다. 추가 외부 호출이 없고,
+     실패해도 이 응답은 이미 실시간 근거로 완성되어 있다. */
+  await writeHoursSnapshots(snapshotWrites);
+  await writeRouteSnapshots(routeSnapshotWrites);
+
   const options = pickOptions(continuityCandidates, requestId, input).slice(
     0,
     CONTINUITY_RESULT_LIMIT,
   );
+  /* 사본을 쓴 사실을 밝힌다. 몇 곳이 사본이었고 그 사본이 어떤 기준으로 최신인지
+     말하지 않으면, 화면은 모든 판정이 방금 조회한 것이라고 읽히게 된다. */
+  if (routeSnapshotUsage.count > 0) {
+    warnings.push(
+      `후보 ${routeSnapshotUsage.count.toLocaleString("ko-KR")}곳의 이동 경로는 같은 출발 구역에서 이미 측정해 둔 실제 ${travelModeLabel(input.travelMode)} 경로를 사용했습니다. ${travelModeLabel(input.travelMode)} 경로는 시각에 따라 달라지지 않으며, 각 카드의 근거에 그 경로를 측정한 시각이 그대로 적혀 있습니다.`,
+    );
+  }
+  if (snapshotUsage.count > 0) {
+    warnings.push(
+      `후보 ${snapshotUsage.count.toLocaleString("ko-KR")}곳의 운영시간은 이미 받아 둔 공식 원문으로 판정했습니다. 공사가 알린 콘텐츠 수정 시각이 지금과 같은 경우에만 사용하므로 지금 다시 조회해도 같은 내용이며, 판정 자체는 이번 요청의 체류 시간에 다시 대조했습니다. 그렇게 아낀 조회로 더 많은 후보를 확인했습니다.`,
+    );
+  }
   const hasSourceFailure = sourceLedger.some(
     (audit) => audit.status === "error",
   );

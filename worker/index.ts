@@ -4,6 +4,8 @@ import handler from "vinext/server/app-router-entry";
 import { refreshKtoHealth } from "../lib/kto/health-refresh";
 import { runPolicySync } from "../lib/sync/policy-sync";
 import { refreshProviderProbes } from "../lib/provider-readiness";
+import { purgeExpiredHoursSnapshots } from "../lib/kto/hours-snapshot";
+import { purgeExpiredRouteSnapshots } from "../lib/mobility/route-snapshot";
 import { parseEmbedAllowedOrigins } from "../lib/embed-policy";
 
 interface Env {
@@ -168,6 +170,19 @@ const worker = {
         () => undefined,
         () => undefined,
       ),
+    );
+    /* 만료된 로컬 사본 정리.
+
+       운영정보·경로 사본은 요청 경로에서 스스로 채워지지만(실시간으로 이미 받아
+       온 응답을 남기므로 추가 외부 호출이 없다) 지우는 쪽은 아무도 하지 않는다.
+       두 정리 작업 모두 D1 삭제 한 건이라 외부 호출을 쓰지 않고, 실패해도
+       사본은 읽는 쪽에서 만료 시각을 다시 확인하므로 낡은 값이 새어 나가지
+       않는다 — 정리는 저장 용량을 위한 것이다. */
+    ctx.waitUntil(
+      Promise.allSettled([
+        purgeExpiredHoursSnapshots(),
+        purgeExpiredRouteSnapshots(),
+      ]).then(() => undefined),
     );
   },
 };

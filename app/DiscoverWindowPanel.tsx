@@ -26,6 +26,7 @@ import {
   optimisticTravelMinutes,
 } from "@/lib/geo";
 import { withParticle } from "@/lib/text/korean";
+import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
 import {
   AUDIENCES,
   AUDIENCES_EN,
@@ -337,6 +338,13 @@ export default function DiscoverWindowPanel({
      탈락한다. 모르면 모르는 채로 두는 것이 맞다. */
   const [nextPlaceArriveLocal, setNextPlaceArriveLocal] = useState("");
   const [nextPlaceArriveError, setNextPlaceArriveError] = useState("");
+  /* 미리 고른 관광 분류. 비어 있으면 전체를 본다.
+
+     결과를 받은 뒤 걸러내는 필터는 이미 아래에 있지만, 그것은 원하지 않는 분류에도
+     운영시간·경로 조회를 다 쓴 뒤 화면에서 지우는 것이다. 여기서 고르면 서버가
+     조회 **전에** 걸러내므로 같은 예산이 고른 분류에만 쓰인다. 실측에서 명동 주간
+     전체 조회는 식당이 2곳이었는데, 식당만 골라 보내면 15곳이 나왔다. */
+  const [wantedCategories, setWantedCategories] = useState<string[]>([]);
   const [nextPlaceResults, setNextPlaceResults] = useState<PlaceSearchResult[]>(
     [],
   );
@@ -678,6 +686,10 @@ export default function DiscoverWindowPanel({
             STAY_FLOOR_MINUTES,
             plannedStayMinutes,
           ),
+          /* 고른 분류만 보낸다. 하나도 고르지 않았으면 필드를 넣지 않아 전체를 본다. */
+          tourismCategories: wantedCategories.length
+            ? wantedCategories
+            : undefined,
           analyticsConsent,
           openWindow: {
             departureAt: requestDepartureAtIso,
@@ -1201,6 +1213,80 @@ export default function DiscoverWindowPanel({
               ))}
             </select>
           </label>
+          {/* 보고 싶은 분류를 미리 고르는 자리.
+
+              결과를 받은 뒤 걸러내는 필터는 아래에 그대로 있다. 이쪽은 조회 **전**
+              이라 성격이 다르다 — 고른 분류에만 조회를 쓰므로 그 분류에서 더 많은
+              곳을 확인한다. 그래서 안내 문구도 "걸러 본다"가 아니라 "더 많이
+              찾는다"로 적는다. */}
+          <div className={styles.selectField}>
+            <span>
+              {tr(
+                language,
+                "보고 싶은 종류 (선택)",
+                "What you want to see (optional)",
+              )}
+            </span>
+            <div
+              className={styles.chips}
+              role="group"
+              aria-label={tr(
+                language,
+                "보고 싶은 관광 종류",
+                "Tourism categories you want",
+              )}
+            >
+              <button
+                type="button"
+                className={
+                  wantedCategories.length === 0
+                    ? styles.chipActive
+                    : styles.chip
+                }
+                aria-pressed={wantedCategories.length === 0}
+                onClick={() => {
+                  setWantedCategories([]);
+                  invalidateReferenceResult();
+                }}
+              >
+                {tr(language, "전체", "All")}
+              </button>
+              {KTO_TOURISM_CATEGORIES.map((item) => {
+                const on = wantedCategories.includes(item.code);
+                return (
+                  <button
+                    key={item.code}
+                    type="button"
+                    className={on ? styles.chipActive : styles.chip}
+                    aria-pressed={on}
+                    onClick={() => {
+                      setWantedCategories((current) =>
+                        current.includes(item.code)
+                          ? current.filter((code) => code !== item.code)
+                          : [...current, item.code],
+                      );
+                      invalidateReferenceResult();
+                    }}
+                  >
+                    {language === "en" ? item.labelEn : item.labelKo}
+                  </button>
+                );
+              })}
+            </div>
+            <p className={styles.derived}>
+              {wantedCategories.length === 0
+                ? tr(
+                    language,
+                    "고르지 않으면 모든 종류를 함께 찾습니다.",
+                    "Leave it empty to search every category together.",
+                  )
+                : tr(
+                    language,
+                    "고른 종류에만 조회를 써서 그 종류에서 더 많은 곳을 확인합니다.",
+                    "We spend the lookups only on these, so you get more places within them.",
+                  )}
+            </p>
+          </div>
           <label className={styles.checkField}>
             <input
               type="checkbox"

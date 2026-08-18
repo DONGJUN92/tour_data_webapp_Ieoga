@@ -6722,6 +6722,41 @@ body .hero-promise {
   font-style: normal;
 }
 
+/* 직접 입력에서 고른 장소. 검색 결과 목록을 접은 자리에 대신 들어가므로,
+   "골랐다"는 사실과 되돌릴 길이 같은 자리에 함께 있어야 한다. */
+.manual-picker-picked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--brand);
+  border-radius: var(--r-control);
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+}
+
+.manual-picker-picked strong {
+  font-size: 1rem;
+}
+
+.manual-picker-picked span {
+  flex: 1 1 auto;
+  font-size: 0.9rem;
+}
+
+.manual-picker-picked button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--brand);
+  border-radius: var(--r-control);
+  background: var(--paper);
+  color: var(--brand-deep);
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .manual-picker-area-fields {
   display: flex;
   flex-wrap: wrap;

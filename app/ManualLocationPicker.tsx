@@ -140,6 +140,15 @@ export function ManualLocationPicker({
 
   const [keyword, setKeyword] = useState("");
   const [results, setResults] = useState<ManualPlace[]>([]);
+  /* 고른 장소. 이 고르개를 **감싸는 화면이 언마운트하지 않는 경우**에도
+     "골랐다"는 사실이 화면에 남아야 한다.
+
+     예전에는 `onPick`만 부르고 이 컴포넌트의 상태를 그대로 두었다. 빈 시간
+     탭은 고르는 즉시 패널을 닫으니 문제가 없었지만, 일정 복구 탭은 패널을 계속
+     열어 두므로 검색 결과 여덟 줄이 그대로 남았다. 부모가 띄우는 확인 문구는
+     그 목록 **위**에 있어서 화면 밖으로 밀려나고, 여행자는 선택이 됐는지 알 수
+     없었다. 실제로 그 화면을 보고 "선택이 안 된다"는 보고가 왔다. */
+  const [picked, setPicked] = useState<ManualPlace | null>(null);
   const [searchState, setSearchState] = useState<
     "idle" | "loading" | "error" | "success"
   >("idle");
@@ -261,7 +270,7 @@ export function ManualLocationPicker({
       setAreaState("idle");
       /* 행정구역 코드는 검색 결과가 아니라 **사용자가 고른 값**을 쓴다. 검색은
          좌표를 얻는 수단일 뿐이고, 어느 구인지는 사용자가 이미 말했다. */
-      onPick({
+      choose({
         ...first,
         title: label,
         areaCode: regionCode,
@@ -278,6 +287,17 @@ export function ManualLocationPicker({
         ),
       );
     }
+  }
+
+  /* 고르는 동작을 한 곳으로 모은다. 검색 결과에서 고르든 시·군·구에서 고르든
+     같은 일이 일어나야 한다 — 목록을 접고, 고른 것을 보여 주고, 부모에게 알린다. */
+  function choose(place: ManualPlace) {
+    setPicked(place);
+    setResults([]);
+    setKeyword("");
+    setSearchState("idle");
+    setSearchError("");
+    onPick(place);
   }
 
   return (
@@ -351,7 +371,7 @@ export function ManualLocationPicker({
           <ul className="manual-picker-results">
             {results.map((place) => (
               <li key={`${place.title}-${place.latitude}-${place.longitude}`}>
-                <button type="button" onClick={() => onPick(place)}>
+                <button type="button" onClick={() => choose(place)}>
                   <strong lang={language === "en" ? "ko" : undefined}>
                     {place.title}
                   </strong>
@@ -371,7 +391,32 @@ export function ManualLocationPicker({
             ))}
           </ul>
         )}
-        {searchState === "success" && results.length === 0 && (
+        {picked && (
+          /* 고른 결과. `role="status"`로 두어 스크린리더도 선택이 됐다는 것을
+             듣는다. 다시 고를 길을 같은 자리에 둔다 — 목록을 접었으므로 이
+             버튼이 없으면 되돌릴 방법이 사라진다. */
+          <p className="manual-picker-picked" role="status">
+            <strong lang={language === "en" ? "ko" : undefined}>
+              {picked.title}
+            </strong>
+            <span>
+              {tr(
+                "이곳으로 선택했습니다.",
+                "Selected as your place.",
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setPicked(null);
+                setSearchState("idle");
+              }}
+            >
+              {tr("다시 고르기", "Choose another")}
+            </button>
+          </p>
+        )}
+        {!picked && searchState === "success" && results.length === 0 && (
           <p className="manual-picker-error" role="status">
             {tr(
               "검색 결과가 없습니다. 아래에서 시·군·구를 골라도 됩니다.",

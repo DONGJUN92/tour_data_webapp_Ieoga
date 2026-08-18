@@ -267,8 +267,28 @@ function travelTimeBudgetMinutes(
   const safetyBuffer = input.safetyBufferMinutes ?? 15;
   const window = context?.openWindow;
   if (!window) {
-    /* 등록 일정 교체와 구형 호출은 이동시간 한도를 직접 받는다. */
-    return Math.max(1, input.availableMinutes);
+    /* 일정 복구는 `availableMinutes`로 **다음 예약까지 남은 시간**을 받는다.
+       그 시간에는 대체 장소에 머무는 시간과 안전여유가 함께 들어가야 하므로,
+       이동에 쓸 수 있는 시간은 그만큼 적다.
+
+       예전에는 남은 시간을 그대로 이동 예산으로 썼다. 90분 뒤 예약이면 반경이
+       9.6km로 잡혀, 실제로는 갈 수 없는 먼 후보가 검증 풀을 채우고 운영시간·경로
+       조회를 쓴 뒤 `NEXT_FIXED_APPOINTMENT_AT_RISK`로 떨어졌다. 빈 시간 탭은 같은
+       계산을 이미 제대로 하고 있었는데 복구 탭만 달랐다 — 그래서 두 탭이 다른
+       알고리즘처럼 보였고, 후보가 적은 지역에서는 0건이 됐다.
+
+       체류는 자동 완화가 내려갈 수 있는 하한을 쓴다. 넉넉한 쪽으로 잡아야 줄이면
+       갈 수 있는 후보를 탐색 단계에서 잃지 않는다. */
+    const minimumStay = input.minimumStayMinutes ?? 30;
+    const safetyBuffer = input.safetyBufferMinutes ?? 15;
+    if (!context) {
+      /* 등록 일정도 빈 시간도 없는 구형 호출은 이 값을 이동시간 한도로 받는다. */
+      return Math.max(1, input.availableMinutes);
+    }
+    return Math.max(
+      1,
+      input.availableMinutes - minimumStay - safetyBuffer,
+    );
   }
   const windowMinutes = Math.max(
     0,
@@ -1369,26 +1389,30 @@ function preservesTravelPurpose(params: {
   if (!params.input.itinerary) return true;
   if (params.relatedRank !== undefined) return true;
 
-  /* A declared purpose is preserved strictly: a meal is replaced by a meal, a
-     night's stay by a night's stay, and a booked transfer is not replaced by
-     sightseeing at all. */
-  if (original.key === "meal") return replacement.key === "meal";
-  if (original.key === "stay") return replacement.key === "stay";
-  if (original.key === "transit") return false;
+  /* 목적은 **순위 조건이고 탈락 조건이 아니다.**
 
-  /* "visit" is both the generic case and the schema default, so it does not
-     evidence what the traveller was actually doing — in bridge recovery the
-     disrupted stop is synthesised from "I am here now" and is always this
-     type. Treating it as a hard constraint filtered out every restaurant and
-     shop, which is most of the official content in a dense area: measured
-     across ten scenarios it rejected 226 of 336 candidates, more than every
-     other constraint combined, and left the traveller with nothing.
+     예전에는 선언된 목적을 엄격하게 지켰다 — 식사는 식사로만, 숙박은 숙박으로만,
+     예약된 이동은 아예 대체하지 않았다(`return false`). 그런데 그 규칙이 후보를
+     **지워 버린다.** 여행자가 복구 탭에서 고르는 것은 "어느 일정이 틀어졌는가"이고,
+     식당을 고르면 공사 데이터에서 `contenttypeid=39`인 곳만 살아남는다. 반경 2km에
+     그런 곳이 몇 곳뿐인 지역에서는 그대로 0건이 되고, 이동 일정을 고르면 무조건
+     0건이었다. 실측에서 명동 요청의 탈락 24건이 전부 이 사유였다.
 
-     A meal or a shop is a legitimate way to spend a two-hour gap, especially
-     the rain case where indoor is the point. Accommodation is not — nobody
-     checks in to wait out a shower — so that stays excluded. Purpose still
-     ranks candidates; it just no longer eliminates them on an assumption. */
-  return replacement.key !== "stay";
+     같은 논리가 이미 `visit`에 적용돼 있었다. 위 주석이 그 근거를 적어 두었다 —
+     열 개 시나리오에서 336건 중 226건을 지웠고 여행자에게는 아무것도 남지 않았다.
+     목적이 `visit`일 때 그것이 틀렸다면, `meal`·`stay`·`transit`일 때도 틀렸다.
+     문제는 목적의 종류가 아니라 **목적을 탈락 조건으로 쓴 것**이다.
+
+     그리고 순위 쪽에는 이미 올바른 장치가 있다. `pickOptions`는 목적을 지키는
+     후보가 하나라도 있으면 그 안에서만 고르고, 하나도 없을 때에만 바뀐 후보를
+     제시한다(`purposePreserving` 풀과 그 폴백). 여기서 미리 지워 버리면 그 장치가
+     볼 것이 없어진다. 바뀐 사실은 `buildTravelPurposeProof`가
+     `changed_visit_category`로 증명서에 남기고 카드가 그것을 말한다.
+
+     즉 지금 하는 일은 하나다: 목적으로는 아무도 지우지 않는다. */
+  void original;
+  void replacement;
+  return true;
 }
 
 function buildTravelPurposeProof(params: {
@@ -1980,29 +2004,78 @@ function diversifyCandidatesByCategory(
      균등 라운드로빈이므로 다양성은 그 안에서 유지되고, 야간에 구조적으로 닫힌
      유형은 뒤로 밀린다. 후보를 버리지는 않으므로 앞 계층이 비면 그대로 흘러
      내려온다 — 최악의 경우가 오늘과 같은 결과라는 성질은 유지된다. */
-  const tiers = new Map<number, string[]>();
-  for (const code of buckets.keys()) {
-    const tier = options.nightFirst ? (NIGHT_VIABILITY[code] ?? 1) : 0;
-    const group = tiers.get(tier) ?? [];
-    group.push(code);
-    tiers.set(tier, group);
+  /* 분류 순회 **순서**만 야간 운영 가능성으로 정한다. 한 바퀴에서 모든 분류가
+     한 곳씩 나오는 구조는 그대로다.
+
+     앞서 계층으로 나눠 앞 계층을 다 쓴 뒤 넘어가게 해 봤는데, 그것이
+     **분류 편중을 만들었다.** tier 0(공원 + 신분류가 없는 관광지 = 거리·시장·
+     광장)이 대부분 도시에서 가장 큰 묶음이라, 야간 요청의 검증 풀 36칸이 그
+     두 분류로 다 채워졌다. 실측에서 대전역 22:11 결과 10곳이 전부 시장·거리·
+     광장·공원이었다. 이용자가 "공원만 거의 나온다"고 보고한 것이 이것이다.
+
+     얻은 것과 잃은 것을 견주면 답이 분명하다 — 계층 소진으로 얻은 것은 서울시청
+     한 곳에서 추천 +1이었고(대전역과 주간은 변화 없음), 잃은 것은 분류 균형
+     전체였다. 균형이 불변식이고 야간 우선순위는 그 안에서만 작동해야 한다. */
+  const order = [...buckets.keys()];
+  if (options.nightFirst) {
+    order.sort(
+      (a, b) => (NIGHT_VIABILITY[a] ?? 1) - (NIGHT_VIABILITY[b] ?? 1),
+    );
   }
 
   const diversified: WorkingCandidate[] = [];
-  for (const tier of [...tiers.keys()].sort((a, b) => a - b)) {
-    const order = tiers.get(tier) ?? [];
-    for (;;) {
-      let appended = false;
-      for (const code of order) {
-        const candidate = buckets.get(code)?.shift();
-        if (!candidate) continue;
-        diversified.push(candidate);
-        appended = true;
-      }
-      if (!appended) break;
+  while (diversified.length < candidates.length) {
+    let appended = false;
+    for (const code of order) {
+      const candidate = buckets.get(code)?.shift();
+      if (!candidate) continue;
+      diversified.push(candidate);
+      appended = true;
     }
+    if (!appended) break;
   }
   return diversified;
+}
+
+/* 표시 순서에서도 분류가 몰리지 않게 섞는다.
+
+   검증 풀이 균형을 잡아도 화면은 그렇지 않았다. `pickOptions`의 꼬리가 남은
+   후보를 **순수 총점순**으로 붙이기 때문이다. 같은 분류가 총점 상위를 차지하면
+   목록의 아래쪽 전체가 그 분류가 된다 — 여행자가 보는 것은 이 순서다.
+
+   분류 안의 총점순은 그대로 두고 분류 사이만 번갈아 놓는다. 후보를 버리지도,
+   판정을 바꾸지도 않는다. 순서만 바뀐다. */
+function interleaveByCategory(
+  candidates: WorkingCandidate[],
+): WorkingCandidate[] {
+  const buckets = new Map<string, WorkingCandidate[]>();
+  for (const candidate of candidates) {
+    const code = ktoTourismCategory(candidate.item).code;
+    const bucket = buckets.get(code) ?? [];
+    bucket.push(candidate);
+    buckets.set(code, bucket);
+  }
+  /* 큰 묶음부터 돌린다. 작은 묶음부터 돌리면 목록 앞쪽이 희귀 분류로 채워져
+     "가까운 순"으로 읽히지 않는다. 같은 크기면 총점이 높은 쪽이 먼저다. */
+  const order = [...buckets.entries()]
+    .sort(
+      (a, b) =>
+        b[1].length - a[1].length ||
+        (b[1][0]?.baseScore ?? 0) - (a[1][0]?.baseScore ?? 0),
+    )
+    .map(([code]) => code);
+  const mixed: WorkingCandidate[] = [];
+  while (mixed.length < candidates.length) {
+    let appended = false;
+    for (const code of order) {
+      const candidate = buckets.get(code)?.shift();
+      if (!candidate) continue;
+      mixed.push(candidate);
+      appended = true;
+    }
+    if (!appended) break;
+  }
+  return mixed;
 }
 
 async function accessibilityDetails(
@@ -3941,9 +4014,11 @@ function pickOptions(
      붙인다.** 예전에는 검증한 후보 중 세 장만 돌려주어 안전 조건을 통과한
      선택지를 숨겼다. 여행에 정답은 없으므로 위에는 조건을 가장 잘 맞춘 곳,
      아래에는 그 밖의 검증 완료 후보를 점수순으로 둔다. */
-  const remaining = [...pool]
-    .filter((candidate) => !used.has(candidate.contentId))
-    .sort((a, b) => b.baseScore - a.baseScore);
+  const remaining = interleaveByCategory(
+    [...pool]
+      .filter((candidate) => !used.has(candidate.contentId))
+      .sort((a, b) => b.baseScore - a.baseScore),
+  );
   for (const candidate of remaining) {
     used.add(candidate.contentId);
     selected.push({
@@ -4616,6 +4691,11 @@ export async function recoverTrip(
   );
   const indoorRequired = indoorRequirement(input);
   const travelGeoMode = geoTravelMode(input.travelMode);
+  /* 여행자가 고른 분류. 비어 있으면 전체를 본다. */
+  const selectedCategories = input.tourismCategories?.length
+    ? new Set<string>(input.tourismCategories)
+    : undefined;
+  let categoryFilteredOut = 0;
   const travelBudgetMinutes = travelTimeBudgetMinutes(input, context);
 
   const preliminary: WorkingCandidate[] = [];
@@ -4653,6 +4733,23 @@ export async function recoverTrip(
           : "이미 가려고 하는 다음 장소와 같은 곳이므로 제외했습니다.",
       });
       continue;
+    }
+
+    /* 여행자가 분류를 미리 골랐으면 **운영시간·경로를 부르기 전에** 걸러낸다.
+
+       화면에도 분류 필터가 있지만 그것은 응답을 받은 뒤 걸러내므로, 원하지 않는
+       분류에도 조회를 다 쓴 뒤 지우는 것이 된다. 요청당 외부 조회 50건과 공사
+       인증키의 일일 한도를 함께 생각하면 그 낭비는 곧 "원하는 분류에서 볼 수 있는
+       곳의 수"를 깎는다. 여기서 걸러내면 같은 예산이 고른 분류에만 쓰인다.
+
+       탈락으로 세지 않는다 — 여행자가 스스로 범위를 정한 것이고, 조건을 못 맞춘
+       것이 아니다. 대신 몇 곳이 범위 밖이었는지는 아래에서 밝힌다. */
+    if (selectedCategories) {
+      const categoryCode = ktoTourismCategory(item).code;
+      if (!selectedCategories.has(categoryCode)) {
+        categoryFilteredOut += 1;
+        continue;
+      }
     }
 
     const relatedRank = findRelatedMatch(relatedRanks, title, contentTypeId);
@@ -5332,6 +5429,13 @@ export async function recoverTrip(
   );
   /* 사본을 쓴 사실을 밝힌다. 몇 곳이 사본이었고 그 사본이 어떤 기준으로 최신인지
      말하지 않으면, 화면은 모든 판정이 방금 조회한 것이라고 읽히게 된다. */
+  /* 분류를 좁혀 조회를 아꼈다는 사실을 밝힌다. 몇 곳이 범위 밖이었는지 말하지
+     않으면 여행자는 그 지역에 그만큼밖에 없다고 읽는다. */
+  if (categoryFilteredOut > 0) {
+    warnings.push(
+      `고른 관광 분류에 맞지 않는 ${categoryFilteredOut.toLocaleString("ko-KR")}곳은 운영시간·경로를 조회하지 않고 제외했습니다. 그만큼 아낀 조회를 고른 분류의 후보를 더 확인하는 데 썼습니다. 분류 선택을 넓히면 다른 곳도 함께 봅니다.`,
+    );
+  }
   if (routeSnapshotUsage.count > 0) {
     warnings.push(
       `후보 ${routeSnapshotUsage.count.toLocaleString("ko-KR")}곳의 이동 경로는 같은 출발 구역에서 이미 측정해 둔 실제 ${travelModeLabel(input.travelMode)} 경로를 사용했습니다. ${travelModeLabel(input.travelMode)} 경로는 시각에 따라 달라지지 않으며, 각 카드의 근거에 그 경로를 측정한 시각이 그대로 적혀 있습니다.`,

@@ -632,6 +632,37 @@ export const recoveryRequestSchema = z
       )
       .max(3)
       .optional(),
+    /* 여행자가 미리 고른 관광 분류. 비어 있으면 전체를 본다.
+
+       왜 서버가 받아야 하는가: 화면에도 분류 필터가 있지만 그것은 **응답을 받은
+       뒤** 걸러낸다. 즉 원하지 않는 분류의 후보에도 운영시간·경로 조회를 이미
+       다 쓴 뒤에 화면에서 지운다. 요청당 외부 조회가 50건으로 막혀 있고 공사
+       인증키에도 일일 한도가 있는 상황에서, 그 낭비는 곧 "원하는 분류에서 볼 수
+       있는 곳의 수"를 깎는다.
+
+       여기서 받으면 후보 탐색 직후 — 운영시간·경로를 부르기 **전에** — 걸러내므로
+       같은 예산이 고른 분류에만 쓰인다. 분류를 좁힐수록 그 분류에서 더 많은
+       후보를 검증할 수 있다. */
+    tourismCategories: z
+      .array(
+        z.enum([
+          "PARK",
+          "HERITAGE",
+          "FOOD",
+          "CULTURE",
+          "NATURE",
+          "EXPERIENCE",
+          "EVENT",
+          "LEISURE",
+          "SHOPPING",
+          "ACCOMMODATION",
+          "COURSE",
+          "OTHER",
+        ]),
+      )
+      .min(1)
+      .max(12)
+      .optional(),
     itinerary: recoveryItinerarySchema.optional(),
     openWindow: openWindowSchema.optional(),
     analyticsConsent: z.boolean().optional().default(false),

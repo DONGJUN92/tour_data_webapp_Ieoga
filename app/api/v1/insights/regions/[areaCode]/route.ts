@@ -3,6 +3,7 @@ import { isKnownAdministrativeScope } from "@/lib/db/repository";
 import { allowDurableRequest } from "@/lib/durable-rate-limit";
 import { jsonResponse } from "@/lib/http";
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
+import { readRegionalGaps } from "@/lib/insights/regional-gaps";
 import { getRegionPack } from "@/lib/storage/region-packs";
 import {
   analysisDistrictCode,
@@ -113,6 +114,13 @@ export async function GET(
     }
   }
 
+  /* 이 지역에서 실제로 여행이 끊긴 이유. 기획안 6.5의 `감지된 공백`이다.
+     D1 한 번의 질의이고 외부 호출을 쓰지 않는다. */
+  const gapReport = await readRegionalGaps({
+    regionCode: normalizedAreaCode,
+    districtCode: normalizedDistrictCode,
+  });
+
   const pack = await getRegionPack({
     areaCode: normalizedAreaCode,
     districtCode: normalizedDistrictCode,
@@ -120,6 +128,7 @@ export async function GET(
   if (pack) {
     const response = jsonResponse({
       ...pack,
+      continuityGaps: gapReport,
       delivery: "versioned_region_pack",
       requestedScope: normalizedDistrictCode ? "district" : "region",
       deliveredScope: normalizedDistrictCode ? "district" : "region",
@@ -143,6 +152,7 @@ export async function GET(
     if (regionPack) {
       const response = jsonResponse({
         ...regionPack,
+        continuityGaps: gapReport,
         delivery: "versioned_region_pack",
         requestedScope: "district",
         deliveredScope: "region",
@@ -157,6 +167,28 @@ export async function GET(
       );
       return response;
     }
+  }
+
+  /* 공식 정책 지표는 아직 동기화되지 않았지만, **여행이 끊긴 이유**는 이어가가
+     스스로 쌓은 자료라 지역팩과 무관하게 존재할 수 있다. 그것까지 숨기면 담당자는
+     "이 지역은 볼 것이 없다"로 읽는다. 있는 것은 내려보내고, 없는 것은 없다고
+     말한다. */
+  if (gapReport.gaps.length > 0) {
+    const partial = jsonResponse({
+      scope: "nationwide",
+      areaCode: normalizedAreaCode,
+      districtCode: normalizedDistrictCode ?? null,
+      status: "continuity_only",
+      continuityGaps: gapReport,
+      metrics: [],
+      scopeNotice:
+        "이 지역의 공식 정책 지표는 아직 동기화되지 않았습니다. 아래는 이어가가 실제 추천 요청에서 집계한 여행 연속성 공백입니다.",
+    });
+    partial.headers.set(
+      "X-RateLimit-Remaining",
+      String(durableRate.remaining),
+    );
+    return partial;
   }
 
   const response = jsonResponse(

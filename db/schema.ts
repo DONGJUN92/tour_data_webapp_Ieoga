@@ -750,3 +750,50 @@ export const routeSnapshots = sqliteTable(
   },
   (table) => [index("route_snapshots_expiry_idx").on(table.expiresAt)],
 );
+
+/* 지역별 "여행이 끊긴 이유"의 익명 집계.
+
+   기획안 6.5는 `감지된 공백 → 자동 생성 미션 → 개선 확인` 루프를 약속한다 —
+   "운영시간 누락으로 반복 탈락", "우천·유모차 대안 0개", "야간 복구 불가"처럼
+   **실제 복구 실패에서** 미션이 나와야 한다. 그런데 지금까지 저장한 것은
+   `recovery_runs.rejected_count` 숫자 하나뿐이어서, 그 루프의 재료가 쌓이지
+   않고 있었다. 화면에 나오는 미션이 "정책 근거 데이터 완성도 점검"처럼 우리
+   파이프라인 점검 항목뿐이었던 이유다.
+
+   이 표는 사유별 건수만 담는다. 장소명도, 좌표도, 세션도 담지 않는다 — 엔진의
+   `rejectionSummary`가 이미 "counts only, no place names"로 설계돼 있고, 그
+   성질이 이 표를 지자체와 공유할 수 있게 만든다. 시군구·시각대·상황·대상만
+   함께 담아 "어느 지역에서, 언제, 어떤 여행자에게, 무엇이 막았는가"를 답한다. */
+export const regionalGapCounters = sqliteTable(
+  "regional_gap_counters",
+  {
+    id: text("id").primaryKey(),
+    regionCode: text("region_code").notNull(),
+    districtCode: text("district_code").notNull().default("_all"),
+    /* 탈락 사유 코드. 엔진의 `RejectionReasonCode`를 그대로 쓴다. */
+    reasonCode: text("reason_code").notNull(),
+    /* 낮과 밤을 가른다. "야간 복구 불가"는 기획안이 따로 든 공백이다. */
+    dayPart: text("day_part").notNull(),
+    /* 상황과 대상. "우천·유모차 대안 0개"를 답하려면 둘이 함께 필요하다. */
+    incident: text("incident").notNull(),
+    audience: text("audience").notNull(),
+    /* 이 조합으로 누적된 탈락 건수와, 그 조합이 관측된 요청 수. */
+    rejectionCount: integer("rejection_count").notNull().default(0),
+    observationCount: integer("observation_count").notNull().default(0),
+    /* 추천이 0곳이었던 요청 수. 공백의 심각도를 가른다. */
+    emptyResultCount: integer("empty_result_count").notNull().default(0),
+    firstSeenAt: text("first_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("regional_gap_scope_idx").on(
+      table.regionCode,
+      table.districtCode,
+      table.reasonCode,
+      table.dayPart,
+      table.incident,
+      table.audience,
+    ),
+    index("regional_gap_region_idx").on(table.regionCode, table.lastSeenAt),
+  ],
+);

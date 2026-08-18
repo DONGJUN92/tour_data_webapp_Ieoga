@@ -53,6 +53,16 @@ type Insight = {
   generatedAt?: string;
 };
 
+type ContinuityGap = {
+  reasonCode: string;
+  dayPart: "day" | "night";
+  rejectionCount: number;
+  observationCount: number;
+  emptyResultCount: number;
+  action: string;
+  verification: string;
+};
+
 type Mission = {
   id?: string;
   missionId?: string;
@@ -155,6 +165,23 @@ function formatCheckedAt(value?: string): string {
   }).format(date);
 }
 
+/* 탈락 사유 코드를 정책 담당자가 읽을 수 있는 말로. 여행자 화면의 문구와 다른
+   이유는 읽는 사람이 다르기 때문이다 — 여행자에게는 "지금 갈 수 없다"가 답이고,
+   담당자에게는 "무엇이 등록되지 않았다"가 답이다. */
+function reasonLabel(reasonCode: string): string {
+  const labels: Record<string, string> = {
+    OFFICIALLY_CLOSED: "그 시간에 문을 연 곳이 없음",
+    OPERATING_STATUS_UNVERIFIABLE: "공식 운영시간을 대조할 수 없음",
+    ACCESSIBILITY_UNVERIFIED: "무장애 정보가 등록되지 않음",
+    INDOOR_UNVERIFIED: "실내 이용 가능 여부를 확인할 수 없음",
+    ROUTE_UNAVAILABLE: "경로를 찾을 수 없음",
+    OPEN_WINDOW_OVERFLOW: "짧은 빈 시간에 다녀올 곳이 없음",
+    NEXT_FIXED_APPOINTMENT_AT_RISK: "예약 사이에 넣을 곳이 없음",
+    CONCENTRATION_HIGH: "대안까지 혼잡이 예측됨",
+  };
+  return labels[reasonCode] ?? reasonCode;
+}
+
 function missionStatusLabel(status?: string): string {
   switch (status) {
     case "open":
@@ -188,6 +215,11 @@ export default function PolicyFlow() {
 
   const [insight, setInsight] = useState<Insight | null>(null);
   const [missions, setMissions] = useState<Mission[]>([]);
+  /* 이 지역에서 실제로 여행이 끊긴 이유. 기획안 6.5의 `감지된 공백`이다.
+     방문 통계는 "몇 명이 왔는가"를 말하지만 이것은 "온 사람이 여행을 계속할 수
+     있었는가, 못했다면 무엇이 막았는가"를 말한다 — 이어가만 만들 수 있는 자료다. */
+  const [gaps, setGaps] = useState<ContinuityGap[]>([]);
+  const [gapObservations, setGapObservations] = useState(0);
   const [apiLog, setApiLog] = useState<string[]>([]);
   const [errorText, setErrorText] = useState("");
 
@@ -278,6 +310,15 @@ export default function PolicyFlow() {
           generatedAt:
             typeof root.generatedAt === "string" ? root.generatedAt : undefined,
         });
+        const gapRoot = asRecord(asRecord(insightPayload)?.continuityGaps);
+        setGaps(
+          Array.isArray(gapRoot?.gaps) ? (gapRoot.gaps as ContinuityGap[]) : [],
+        );
+        setGapObservations(
+          typeof gapRoot?.totalObservations === "number"
+            ? gapRoot.totalObservations
+            : 0,
+        );
         const missionRoot = asRecord(missionPayload);
         setMissions(
           Array.isArray(missionRoot?.missions)
@@ -507,6 +548,72 @@ export default function PolicyFlow() {
             <p className={styles.sub}>{insight.coverage?.meaning}</p>
 
             <div className={styles.body}>
+              {/* 이 화면의 첫 카드는 **이 지역에 대한 사실**이어야 한다.
+
+                  예전에는 `근거 커버리지`가 맨 위였다. 그런데 그 숫자는 우리
+                  파이프라인의 완성도이고, 화면 스스로 "지역이 우수하다는 뜻이
+                  아니다"라고 적어 두었다. 지자체 담당자가 가장 먼저 보는 자리에
+                  자기 지역이 아닌 우리 사정을 둔 것이다. 커버리지는 아래로 내리고,
+                  실제로 여행이 끊긴 이유를 위로 올린다. */}
+              <div className={`${styles.card} ${policyStyles.gapCard}`}>
+                <div className={styles.cardTop}>
+                  <div>
+                    <h2 className={styles.cardTitle}>
+                      이 지역에서 여행이 끊긴 이유
+                    </h2>
+                    <p className={styles.cardAddr}>
+                      {gapObservations > 0
+                        ? `실제 추천 요청 ${gapObservations.toLocaleString("ko-KR")}건에서 집계`
+                        : "아직 집계된 요청이 없습니다"}
+                    </p>
+                  </div>
+                </div>
+                {gaps.length > 0 ? (
+                  <>
+                    <p className={policyStyles.readingGuide}>
+                      방문자 수는 “몇 명이 왔는가”를 말합니다. 이 표는 <b>온
+                      사람이 여행을 계속할 수 있었는가, 못했다면 무엇이 막았는가</b>를
+                      말합니다. 장소명·좌표는 담지 않고 사유별 건수만 집계합니다.
+                    </p>
+                    <ul className={policyStyles.gapList}>
+                      {gaps.slice(0, 6).map((gap) => (
+                        <li key={`${gap.reasonCode}-${gap.dayPart}`}>
+                          <div className={policyStyles.gapHead}>
+                            <strong>
+                              {reasonLabel(gap.reasonCode)}
+                              <span className={policyStyles.gapWhen}>
+                                {gap.dayPart === "night" ? "야간" : "주간"}
+                              </span>
+                            </strong>
+                            <span className={policyStyles.gapCount}>
+                              {gap.rejectionCount.toLocaleString("ko-KR")}건
+                            </span>
+                          </div>
+                          {gap.emptyResultCount > 0 && (
+                            <p className={policyStyles.gapSevere}>
+                              이 사유가 있던 요청 중 {gap.emptyResultCount}건은
+                              추천이 하나도 없었습니다.
+                            </p>
+                          )}
+                          <p className={policyStyles.gapAction}>
+                            <b>할 수 있는 일</b> {gap.action}
+                          </p>
+                          <p className={policyStyles.gapVerify}>
+                            <b>확인 방법</b> {gap.verification}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p className={policyStyles.readingGuide}>
+                    이 지역에서 아직 추천 요청이 기록되지 않았습니다. 여행자가
+                    이어가를 쓰기 시작하면 여기에 <b>무엇이 여행을 막았는지</b>가
+                    사유별로 쌓입니다. 없는 숫자를 만들어 보여 드리지 않습니다.
+                  </p>
+                )}
+              </div>
+
               <div className={`${styles.card} ${policyStyles.coverageCard}`}>
                 <div className={styles.cardTop}>
                   <div>

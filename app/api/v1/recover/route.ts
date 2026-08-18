@@ -21,6 +21,7 @@ import {
 import { allowRequest, requestRateKey } from "@/lib/rate-limit";
 import { verifyEmbedSessionToken } from "@/lib/session-cookie";
 import { recoverTrip } from "@/lib/recovery/engine";
+import { recordRegionalGaps } from "@/lib/insights/regional-gaps";
 import {
   recoveryAdministrativeScopes,
   recoveryRequestSchema,
@@ -583,6 +584,17 @@ async function runRecovery(params: {
     if (!(error instanceof DeadlineExceededError)) throw error;
     return deadlineResponse(session);
   }
+  /* 지역별 공백 집계. 기획안 6.5의 `감지된 공백` 재료를 이 자리에서 쌓는다.
+
+     사유별 건수만 담고 장소명·좌표·세션은 담지 않으므로 지자체와 공유할 수 있다.
+     외부 호출을 쓰지 않고(D1은 내부 예산), 실패해도 여행자의 응답에는 영향을 주지
+     않는다 — 정책 화면의 재료 때문에 추천이 막히면 우선순위가 거꾸로다. */
+  try {
+    await recordRegionalGaps({ input, result });
+  } catch {
+    /* 집계 실패는 여행자에게 알릴 일이 아니다. */
+  }
+
   if (Date.now() >= deadlineAt) return deadlineResponse(session);
   if (!persistence.persisted) {
     if (persistence.reason === "RECOVERY_DEADLINE_EXCEEDED") {

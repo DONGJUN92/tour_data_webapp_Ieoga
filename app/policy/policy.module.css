@@ -204,3 +204,87 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 이 지역에서 여행이 끊긴 이유. 이 화면의 첫 카드다 — 담당자가 가장 먼저 보는
+   자리에 우리 파이프라인 사정이 아니라 그 지역에 대한 사실을 둔다. */
+.gapCard {
+  border-left: 4px solid var(--brand);
+}
+
+.gapList {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gapList > li {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--paper);
+}
+
+.gapHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gapHead strong {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.gapWhen {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.gapCount {
+  color: var(--brand-deep);
+  font-size: 1.1rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 추천이 0곳이었던 요청. 같은 사유라도 이쪽이 훨씬 심각하다. */
+.gapSevere {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  background: color-mix(in srgb, var(--danger) 8%, var(--paper));
+  color: var(--danger);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.gapAction,
+.gapVerify {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.gapAction b,
+.gapVerify b {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--brand-deep);
+}
+
+.gapVerify {
+  color: var(--muted);
+  font-size: 0.84rem;
+}

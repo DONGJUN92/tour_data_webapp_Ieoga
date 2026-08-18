@@ -28,15 +28,12 @@ import {
 import { withParticle } from "@/lib/text/korean";
 import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
 import {
-  AUDIENCES,
-  AUDIENCES_EN,
   TRAVEL_MODES,
   asRecord,
   fetchJson,
   formatIsoTime,
   normalizePlaceResults,
   readText,
-  type Audience,
   type Language,
   type LoadState,
   type PlaceSearchResult,
@@ -46,6 +43,10 @@ import {
   type TravelMode,
   filterOptionsByTourismCategory,
   sortSimpleOptions,
+  TRAVEL_CONDITIONS,
+  travelConditionFields,
+  travelConditionHint,
+  type TravelConditionValue,
   tourismCategoryCounts,
   type SimpleOptionSort,
 } from "./product-app-model";
@@ -327,9 +328,12 @@ export default function DiscoverWindowPanel({
   } | null>(null);
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
   const [plannedStayMinutes, setPlannedStayMinutes] = useState<number>(60);
-  const [audience, setAudience] = useState<Audience>("general");
+  /* 이동 배려와 실내 조건을 한 선택으로 받는다. 서버로 보낼 때 두 필드로 풀린다. */
+  const [travelCondition, setTravelCondition] =
+    useState<TravelConditionValue>("general");
+  const { audience, indoorOnly } = travelConditionFields(travelCondition);
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
-  const [indoorOnly, setIndoorOnly] = useState(false);
+
   const [nextPlaceKeyword, setNextPlaceKeyword] = useState("");
   const [nextPlace, setNextPlace] = useState<PlaceSearchResult | null>(null);
   /* 다음 장소의 **실제 약속 시각**. 비어 있으면 보내지 않는다.
@@ -1198,17 +1202,23 @@ export default function DiscoverWindowPanel({
 
         <section className={styles.block} aria-labelledby="discover-conditions">
           <h3 id="discover-conditions">
-            {tr(language, "이동·실내 조건", "Mobility and indoor")}
+            {tr(language, "어떻게 다녀올까요", "How you want to go")}
           </h3>
           <label className={styles.selectField}>
-            <span>{tr(language, "이동·접근성 조건", "Accessibility")}</span>
+            <span>
+              {tr(language, "몸이 편해야 하는 조건", "What you need")}
+            </span>
             <select
-              value={audience}
-              onChange={(event) => setAudience(event.target.value as Audience)}
+              value={travelCondition}
+              onChange={(event) =>
+                setTravelCondition(
+                  event.target.value as TravelConditionValue,
+                )
+              }
             >
-              {AUDIENCES.map((item) => (
+              {TRAVEL_CONDITIONS.map((item) => (
                 <option key={item.value} value={item.value}>
-                  {language === "en" ? AUDIENCES_EN[item.value] : item.label}
+                  {language === "en" ? item.labelEn : item.label}
                 </option>
               ))}
             </select>
@@ -1223,8 +1233,8 @@ export default function DiscoverWindowPanel({
             <span>
               {tr(
                 language,
-                "보고 싶은 종류 (선택)",
-                "What you want to see (optional)",
+                "어떤 곳이 보고 싶으세요",
+                "What kind of place",
               )}
             </span>
             <div
@@ -1232,8 +1242,8 @@ export default function DiscoverWindowPanel({
               role="group"
               aria-label={tr(
                 language,
-                "보고 싶은 관광 종류",
-                "Tourism categories you want",
+                "보고 싶은 곳의 종류",
+                "Kinds of place you want",
               )}
             >
               <button
@@ -1277,33 +1287,19 @@ export default function DiscoverWindowPanel({
               {wantedCategories.length === 0
                 ? tr(
                     language,
-                    "고르지 않으면 모든 종류를 함께 찾습니다.",
-                    "Leave it empty to search every category together.",
+                    "고르지 않으면 여러 종류를 골고루 찾아 드려요.",
+                    "Leave it as All and we look across every kind.",
                   )
                 : tr(
                     language,
-                    "고른 종류에만 조회를 써서 그 종류에서 더 많은 곳을 확인합니다.",
-                    "We spend the lookups only on these, so you get more places within them.",
+                    "고른 종류에 집중해서 찾으니 그 종류에서 더 많은 곳이 나와요.",
+                    "We focus the search here, so you get more of these.",
                   )}
             </p>
           </div>
-          <label className={styles.checkField}>
-            <input
-              type="checkbox"
-              checked={indoorOnly}
-              onChange={(event) => setIndoorOnly(event.target.checked)}
-            />
-            <span>
-              <strong>{tr(language, "실내 후보만 찾기", "Indoor only")}</strong>
-              <small>
-                {tr(
-                  language,
-                  "실내 여부가 확인되지 않은 후보는 제외합니다.",
-                  "Excludes places whose indoor fit is unverified.",
-                )}
-              </small>
-            </span>
-          </label>
+          <p className={styles.derived}>
+            {travelConditionHint(travelCondition, language === "en" ? "en" : "ko")}
+          </p>
         </section>
 
         <button
@@ -1526,6 +1522,52 @@ function DiscoverResults({
     value?: string | number;
   }) => void;
 }) {
+  /* 가로 캐러셀. 한 번 누르면 보이는 만큼(두 칸) 넘어간다.
+
+     움직임은 브라우저의 부드러운 스크롤에 맡긴다. 직접 프레임을 그리면 움직임을
+     줄이도록 설정한 기기에서 그 설정을 우리가 따로 존중해야 하는데, 네이티브
+     스크롤은 그것을 이미 지킨다. 스크롤 위치를 읽어 양 끝에서 버튼을 비활성화
+     하므로 끝에서 누르는 헛동작도 없다. */
+  const cardsRef = useRef<HTMLUListElement>(null);
+  const [canScrollBack, setCanScrollBack] = useState(false);
+  const [canScrollForward, setCanScrollForward] = useState(false);
+
+  /* 끝에 닿았는지 판정할 때 두는 여유. 트랙에 포커스 테두리가 잘리지 않도록
+     안쪽 여백을 두었는데, 그만큼이 초기 `scrollLeft`로 잡혀 처음부터 "뒤로 갈 수
+     있다"가 됐다 — 첫 화면에서 왼쪽 버튼이 눌리는 상태로 보였다. 소수점 스크롤
+     위치까지 함께 흡수하도록 여백보다 넉넉하게 잡는다. */
+  const SCROLL_EDGE_TOLERANCE = 12;
+
+  const updateScrollState = () => {
+    const node = cardsRef.current;
+    if (!node) return;
+    setCanScrollBack(node.scrollLeft > SCROLL_EDGE_TOLERANCE);
+    setCanScrollForward(
+      node.scrollLeft + node.clientWidth <
+        node.scrollWidth - SCROLL_EDGE_TOLERANCE,
+    );
+  };
+
+  const scrollCards = (direction: 1 | -1) => {
+    const node = cardsRef.current;
+    if (!node) return;
+    node.scrollBy({ left: direction * node.clientWidth, behavior: "smooth" });
+    /* 부드러운 스크롤은 여러 프레임에 걸쳐 끝난다. 그 사이 `onScroll`이 계속
+       오지만 마지막 프레임 뒤에는 오지 않는 브라우저가 있어, 끝에 닿았는데도
+       버튼이 활성으로 남는 경우가 있다. 한 번 더 확인한다. */
+    window.setTimeout(updateScrollState, 450);
+  };
+
+  useEffect(() => {
+    updateScrollState();
+    const node = cardsRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    /* 창 크기가 바뀌면 보이는 칸 수와 스크롤 폭이 달라진다. */
+    const observer = new ResizeObserver(updateScrollState);
+    observer.observe(node);
+    return () => observer.disconnect();
+  });
+
   /* 여행 복구 화면에는 있던 정렬이 이쪽에는 없었다. 같은 대안 목록인데 한쪽
      에서만 "가까운 순"으로 볼 수 있으면 여행자는 화면마다 규칙을 새로
      배워야 한다. */
@@ -1764,17 +1806,63 @@ function DiscoverResults({
           </button>
         ))}
       </div>
-      <ul className={styles.cards}>
-        {visibleOptions.map((option, index) => (
-          <DiscoverOptionCard
-            key={option.id || option.contentId || `${option.title}-${index}`}
-            option={option}
-            language={language}
-            generatedAt={result.generatedAt}
-            onPlanFromPlace={onPlanFromPlace}
-          />
-        ))}
-      </ul>
+      {/* 기본으로 두 곳을 보여 주고 좌·우 버튼으로 넘긴다.
+
+          세로로 길게 쌓으면 스무 곳을 훑는 동안 조건 입력이 화면에서 사라지고,
+          "몇 곳이 더 있는지"도 알 수 없다. 가로 스크롤에 스크롤 스냅을 걸면
+          카드가 한 칸씩 딱 맞게 멈추고, 손가락으로도 그대로 넘어간다 —
+          애니메이션은 브라우저의 부드러운 스크롤을 쓰므로 움직임을 줄이도록
+          설정한 기기에서는 저절로 즉시 이동이 된다. */}
+      <div className={styles.carousel}>
+        <div className={styles.carouselHead}>
+          <span className={styles.carouselCount}>
+            {tr(
+              language,
+              `${visibleOptions.length}곳 중 ${Math.min(2, visibleOptions.length)}곳씩 보기`,
+              `${visibleOptions.length} places · 2 at a time`,
+            )}
+          </span>
+          <div className={styles.carouselNav}>
+            <button
+              type="button"
+              onClick={() => scrollCards(-1)}
+              disabled={!canScrollBack}
+              aria-label={tr(language, "앞의 대안 보기", "Previous places")}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollCards(1)}
+              disabled={!canScrollForward}
+              aria-label={tr(language, "다음 대안 보기", "Next places")}
+            >
+              ›
+            </button>
+          </div>
+        </div>
+        <ul
+          className={styles.cards}
+          ref={cardsRef}
+          onScroll={updateScrollState}
+          tabIndex={0}
+          aria-label={tr(
+            language,
+            "다녀올 수 있는 곳 목록. 좌우로 넘길 수 있습니다.",
+            "Places that fit. Scroll left and right.",
+          )}
+        >
+          {visibleOptions.map((option, index) => (
+            <DiscoverOptionCard
+              key={option.id || option.contentId || `${option.title}-${index}`}
+              option={option}
+              language={language}
+              generatedAt={result.generatedAt}
+              onPlanFromPlace={onPlanFromPlace}
+            />
+          ))}
+        </ul>
+      </div>
 
       {/* 예전에는 "조건을 통과하지 못한 후보 N곳은 제시하지 않았습니다"라고
           적었다. 두 가지가 잘못됐다. 첫째, 여행에 정답이 없는데 우리가 통과·
@@ -1943,6 +2031,39 @@ function DiscoverOptionCard({
       className={isBlocked ? styles.cardUnverified : styles.card}
       data-testid="discover-option"
     >
+      {/* 공사가 제공하는 대표 사진. 여행자가 "여기 갈까"를 정하는 데 글보다
+          먼저 쓰이는 정보다. 사진이 없는 콘텐츠도 많으므로 없을 때는 자리만
+          비우지 않고 분류 이름을 크게 둔 자리표시를 보여 준다 — 깨진 이미지
+          아이콘이 뜨는 것보다 낫다. */}
+      {option.imageUrl ? (
+        /* eslint-disable-next-line @next/next/no-img-element --
+           `next/image`는 최적화 프록시를 거치는데 이 주소는 공사 서버의 원격
+           호스트다. 프록시에 원격 호스트를 등록하면 우리 워커가 이미지 바이트를
+           중계하게 되고, 요청당 외부 조회 예산과 무료 플랜 대역폭을 사진에 쓰게
+           된다. 사진은 판정에 쓰이지 않는 보조 정보이므로 브라우저가 공사
+           서버에서 직접, 지연 로딩으로 받는 편이 맞다. */
+        <img
+          className={styles.cardPhoto}
+          src={option.imageUrl}
+          alt={tr(
+            language,
+            `${option.title} 대표 사진 (한국관광공사 제공)`,
+            `${option.title}, official photo from the Korea Tourism Organization`,
+          )}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : (
+        <div className={styles.cardPhotoEmpty} aria-hidden="true">
+          <span>
+            {option.tourismCategory
+              ? language === "en"
+                ? option.tourismCategory.labelEn
+                : option.tourismCategory.labelKo
+              : tr(language, "사진 없음", "No photo")}
+          </span>
+        </div>
+      )}
       <div className={styles.cardHead}>
         <div>
           {option.tourismCategory && (

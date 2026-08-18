@@ -70,6 +70,11 @@ import {
   humanizeStatus,
   inferRecoveryContext,
   itineraryContract,
+  TRAVEL_CONDITIONS,
+  travelConditionFields,
+  travelConditionHint,
+  travelConditionValue,
+  type TravelConditionValue,
   makeStop,
   appointmentMinutesFromNow,
   normalizeDistricts,
@@ -393,6 +398,36 @@ export function ProductApp() {
   const [journeyPlaceResults, setJourneyPlaceResults] = useState<PlaceSearchResult[]>([]);
   const [affectedStopId, setAffectedStopId] = useState("");
   const [nextFixedStopId, setNextFixedStopId] = useState("");
+  /* 어느 칸을 고쳐야 하는지 화면이 직접 가리킨다.
+
+     예전에는 잘못된 입력을 문장으로만 알렸다. "고정 일정 시각이 지났습니다"는
+     `<small>` 안에 있어 눈에 띄지도 않았고, 그 문장을 읽은 뒤에도 어디를 눌러야
+     하는지는 여행자가 찾아야 했다. 접힌 `<details>` 안에 있는 칸이면 찾을 수조차
+     없다. 그래서 문장과 함께 **그 칸으로 데려간다.** */
+  const [attentionField, setAttentionField] = useState<string | null>(null);
+
+  function callAttention(field: string) {
+    setAttentionField(field);
+    /* 상태가 반영된 뒤에 찾는다. 접힌 details를 여는 것도 이 시점이어야 한다. */
+    window.setTimeout(() => {
+      const target = document.querySelector<HTMLElement>(
+        `[data-attention="${field}"]`,
+      );
+      if (!target) return;
+      /* 접혀 있으면 펴 준다 — 열지 않으면 스크롤해도 보이지 않는다. */
+      target.closest("details")?.setAttribute("open", "true");
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+      const focusable = target.matches("input, select, textarea, button")
+        ? target
+        : target.querySelector<HTMLElement>("input, select, textarea, button");
+      focusable?.focus({ preventScroll: true });
+    }, 0);
+    /* 강조는 잠시만 둔다. 계속 깜박이면 화면이 고장 난 것처럼 읽힌다. */
+    window.setTimeout(() => setAttentionField(null), 2600);
+  }
+
+  const attentionClass = (field: string) =>
+    attentionField === field ? " field-attention" : "";
 
   const [areaCode, setAreaCode] = useState("");
   const [districts, setDistricts] = useState<District[]>([]);
@@ -1409,6 +1444,7 @@ export function ProductApp() {
     if (!requestReferenceTime.ok) {
       setRecoverState("error");
       setRecoverError(requestReferenceTime.message);
+      callAttention("reference-time");
       return;
     }
     const requestNextAppointmentMinutes = appointmentMinutesFromNow(
@@ -1427,6 +1463,7 @@ export function ProductApp() {
           "The next booking must be after the reference time and within 24 hours of now. Check the schedule time.",
         ),
       );
+      callAttention("next-fixed-stop");
       return;
     }
     if (
@@ -1439,6 +1476,7 @@ export function ProductApp() {
           "There is less time left than the safety buffer required before your next booking. Check its time or use urgent travel support.",
         ),
       );
+      callAttention("next-fixed-stop");
       return;
     }
     const lat = latitude.trim() ? Number(latitude) : Number.NaN;
@@ -1458,6 +1496,7 @@ export function ProductApp() {
           "Use your current location or select a place from the search results.",
         ),
       );
+      callAttention("origin-location");
       return;
     }
     if (
@@ -2893,18 +2932,43 @@ export function ProductApp() {
                         <b>{tr("반드시 도착", "Appointment to protect")}</b>
                         <strong>{selectedNextFixedStop.title}</strong>
                       </span>
-                      <small>
-                        {nextAppointmentMinutes === null
-                          ? tr("남은 시간 계산 전", "Time window not calculated")
-                          : nextAppointmentMinutes > 0
-                            ? language === "en"
-                              ? `In ${nextAppointmentMinutes} min · keep ${safetyBufferMinutes} min buffer`
-                              : `${nextAppointmentMinutes}분 후 · 여유 ${safetyBufferMinutes}분 남기기`
-                            : tr(
-                                "고정 일정 시각이 지났습니다.",
-                                "The protected appointment time has passed.",
-                              )}
-                      </small>
+                      {nextAppointmentMinutes !== null &&
+                      nextAppointmentMinutes > 0 ? (
+                        <small>
+                          {language === "en"
+                            ? `In ${nextAppointmentMinutes} min · keep ${safetyBufferMinutes} min buffer`
+                            : `${nextAppointmentMinutes}분 후 · 여유 ${safetyBufferMinutes}분 남기기`}
+                        </small>
+                      ) : (
+                        /* 막는 조건은 작은 글씨로 적지 않는다. 이 상태에서는 조회
+                           자체가 안 되므로, 무엇이 문제인지와 어디를 고치면 되는지를
+                           같은 자리에서 눌러 갈 수 있게 둔다. */
+                        <p className="contract-blocker" role="alert">
+                          <strong>
+                            {nextAppointmentMinutes === null
+                              ? tr(
+                                  "다음 예약 시각을 아직 읽지 못했어요",
+                                  "The appointment time is not readable yet",
+                                )
+                              : tr(
+                                  "다음 예약 시각이 이미 지났어요",
+                                  "That appointment time has already passed",
+                                )}
+                          </strong>
+                          <span>
+                            {tr(
+                              "지금 시각 이후의 예약이 있어야 대안을 찾을 수 있어요. 예약 시각을 고치거나 다른 일정 구간을 골라 주세요.",
+                              "We need an appointment later than now. Fix the time or choose another segment.",
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => callAttention("next-fixed-stop")}
+                          >
+                            {tr("고칠 곳으로 이동", "Take me there")}
+                          </button>
+                        </p>
+                      )}
                     </div>
                   )}
                   <details className="context-adjustment">
@@ -2934,7 +2998,10 @@ export function ProductApp() {
                           ))}
                       </select>
                     </label>
-                    <label>
+                    <label
+                      data-attention="next-fixed-stop"
+                      className={attentionClass("next-fixed-stop").trim()}
+                    >
                       <span>
                         {tr("다음 고정 일정", "Next protected appointment")} {" "}
                         <i>{tr("필수", "Required")}</i>
@@ -2958,7 +3025,10 @@ export function ProductApp() {
                   </details>
                 </fieldset>
 
-                <fieldset className="form-group">
+                <fieldset
+                  className={`form-group${attentionClass("origin-location")}`}
+                  data-attention="origin-location"
+                >
                   <legend>{tr("지금 어디에 있나요?", "Where are you now?")}</legend>
                   {locationMode === "unselected" && (
                     <div className="location-choice">
@@ -3128,6 +3198,10 @@ export function ProductApp() {
                   </div>
                 </fieldset>
 
+                <div
+                  data-attention="reference-time"
+                  className={attentionClass("reference-time").trim()}
+                >
                 <ReferenceTimePicker
                   idPrefix="recover"
                   language={language}
@@ -3136,6 +3210,7 @@ export function ProductApp() {
                   onModeChange={changeReferenceTimeMode}
                   onLocalValueChange={changeReferenceTimeLocal}
                 />
+                </div>
 
                 <fieldset className="form-group">
                   <legend>{language === "en" ? "What IEOGA will protect" : "이어가가 반드시 지킬 것"}</legend>
@@ -3236,67 +3311,43 @@ export function ProductApp() {
                   <details className="recovery-preferences">
                     <summary>
                       {tr(
-                        "이동 배려·실내 조건이 필요해요",
-                        "I need mobility or indoor conditions",
+                        "몸이 편해야 하는 조건이 있어요",
+                        "I have accessibility or indoor needs",
                       )}
                     </summary>
                     <div className="recovery-preferences-body">
-                      {/* 켜고 끄는 하나다. 두 항목뿐인 드롭다운은 여는 동작이
-                          하나 더 붙을 뿐 고르는 일을 쉽게 만들지 않는다. 아래
-                          실내 조건과 같은 모양으로 맞춰 한 덩어리로 읽힌다. */}
-                      <label className="check-row">
-                        <input
-                          type="checkbox"
-                          checked={audience !== "general"}
-                          onChange={(event) =>
-                            setAudience(
-                              (event.target.checked
-                                ? "assisted"
-                                : "general") as Audience,
-                            )
-                          }
-                        />
+                      {/* 이동 배려와 실내 조건을 **한 드롭다운**으로 합쳤다.
+                          예전에는 체크박스 두 개였는데, 설명이 작아 눌러야 하는
+                          것인지도 잘 보이지 않는다고 보고받았다. 네 항목이라
+                          2×2 조합을 모두 담으므로 고를 수 있는 것은 줄지 않는다. */}
+                      <label className="select-row">
                         <span>
-                          <strong>
-                            {language === "en"
-                              ? AUDIENCES_EN.assisted
-                              : "이동 도움이 필요해요"}
-                          </strong>
-                          <small>
-                            {tr(
-                              "계단 없는 동선이 필요한 경우입니다. 공식 무장애여행정보에서 출입 동선과 내부 이동을 확인합니다.",
-                              "For a stroller, wheelchair or walking aid. IEOGA verifies step-free entry and indoor movement in official accessibility data.",
-                            )}
-                          </small>
+                          {tr("몸이 편해야 하는 조건", "What you need")}
                         </span>
-                      </label>
-                      <label className="check-row">
-                        <input
-                          type="checkbox"
-                          checked={indoorOnly}
+                        <select
+                          value={travelConditionValue(audience, indoorOnly)}
                           onChange={(event) => {
+                            const next = travelConditionFields(
+                              event.target.value as TravelConditionValue,
+                            );
                             setIndoorTouched(true);
-                            setIndoorOnly(event.target.checked);
+                            setAudience(next.audience);
+                            setIndoorOnly(next.indoorOnly);
                           }}
-                        />
-                        <span>
-                          <strong>
-                            {tr("실내 후보만 찾기", "Only find verified indoor options")}
-                          </strong>
-                          <small>
-                            {tr(
-                              "실내 여부가 확인되지 않은 후보는 제외합니다.",
-                              "Options without verified indoor status are excluded.",
-                            )}
-                            {incident === "rain" && !indoorOnly
-                              ? tr(
-                                  " 지금은 꺼져 있어 실외 후보까지 함께 검토합니다.",
-                                  " This is off, so outdoor options are also checked.",
-                                )
-                              : ""}
-                          </small>
-                        </span>
+                        >
+                          {TRAVEL_CONDITIONS.map((item) => (
+                            <option key={item.value} value={item.value}>
+                              {language === "en" ? item.labelEn : item.label}
+                            </option>
+                          ))}
+                        </select>
                       </label>
+                      <p className="form-hint">
+                        {travelConditionHint(
+                          travelConditionValue(audience, indoorOnly),
+                          language === "en" ? "en" : "ko",
+                        )}
+                      </p>
                     </div>
                   </details>
                   <details className="advanced-constraints">

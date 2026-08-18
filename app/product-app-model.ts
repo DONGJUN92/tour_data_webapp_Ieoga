@@ -473,6 +473,111 @@ export const AUDIENCES_EN: Record<Audience, string> = {
   senior: "With a senior traveler",
 };
 
+/* 이동 배려와 실내 조건을 **한 드롭다운**으로 합친 목록.
+
+   예전에는 접근성 선택과 "실내 후보만 찾기" 체크박스가 따로 있었다. 두 개를
+   따로 두면 화면에서 "조건"이라는 한 덩어리가 두 군데로 흩어지고, 체크박스는
+   설명이 작아 눌러야 하는 것인지도 잘 보이지 않았다. 실제로 그렇게 보고받았다.
+
+   네 항목이라 2×2 조합을 모두 담는다 — 합치면서 고를 수 있는 것이 줄지 않는다.
+   `audience`는 서버 열거값이고 `indoorOnly`는 별개 필드이므로, 화면의 한 선택을
+   두 필드로 풀어 보내는 일은 여기서 한 번만 한다. */
+export type TravelConditionValue =
+  | "general"
+  | "indoor"
+  | "assisted"
+  | "assisted_indoor";
+
+export const TRAVEL_CONDITIONS: {
+  value: TravelConditionValue;
+  label: string;
+  labelEn: string;
+  audience: Audience;
+  indoorOnly: boolean;
+}[] = [
+  {
+    value: "general",
+    label: "특별한 조건 없어요",
+    labelEn: "No special needs",
+    audience: "general",
+    indoorOnly: false,
+  },
+  {
+    value: "indoor",
+    label: "실내에 있고 싶어요",
+    labelEn: "I want to stay indoors",
+    audience: "general",
+    indoorOnly: true,
+  },
+  {
+    value: "assisted",
+    label: "이동 도움이 필요해요",
+    labelEn: "Someone needs step-free access",
+    audience: "assisted",
+    indoorOnly: false,
+  },
+  {
+    value: "assisted_indoor",
+    label: "이동 도움이 필요하고, 실내에 있고 싶어요",
+    labelEn: "Step-free access, and indoors",
+    audience: "assisted",
+    indoorOnly: true,
+  },
+];
+
+/* 화면 선택 → 서버 필드. */
+export function travelConditionFields(value: TravelConditionValue): {
+  audience: Audience;
+  indoorOnly: boolean;
+} {
+  const found = TRAVEL_CONDITIONS.find((item) => item.value === value);
+  return found
+    ? { audience: found.audience, indoorOnly: found.indoorOnly }
+    : { audience: "general", indoorOnly: false };
+}
+
+/* 서버 필드 → 화면 선택. 저장된 값을 다시 열 때 쓴다. */
+export function travelConditionValue(
+  audience: Audience,
+  indoorOnly: boolean,
+): TravelConditionValue {
+  const assisted = audience !== "general";
+  if (assisted && indoorOnly) return "assisted_indoor";
+  if (assisted) return "assisted";
+  return indoorOnly ? "indoor" : "general";
+}
+
+/* 조건이 무엇을 검증하게 하는지. 드롭다운 아래 한 줄로 보여 준다. */
+export function travelConditionHint(
+  value: TravelConditionValue,
+  language: "ko" | "en",
+): string {
+  const indoor = value === "indoor" || value === "assisted_indoor";
+  const assisted = value === "assisted" || value === "assisted_indoor";
+  if (language === "en") {
+    if (assisted && indoor) {
+      return "Verifies step-free entry and indoor movement in official accessibility data, and excludes places whose indoor fit is unverified.";
+    }
+    if (assisted) {
+      return "Verifies step-free entry and indoor movement in official accessibility data.";
+    }
+    if (indoor) {
+      return "Excludes places whose indoor fit is not confirmed by official data.";
+    }
+    return "Every place is checked for real routes and opening hours.";
+  }
+  if (assisted && indoor) {
+    return "공식 무장애여행정보로 출입 동선과 내부 이동을 확인하고, 실내 여부가 확인되지 않은 곳은 제외합니다.";
+  }
+  if (assisted) {
+    return "계단 없는 동선이 필요한 경우입니다. 공식 무장애여행정보로 출입 동선과 내부 이동을 확인합니다.";
+  }
+  if (indoor) {
+    return "공식 정보로 실내 이용이 확인된 곳만 찾습니다.";
+  }
+  return "모든 후보를 실제 이동 경로와 운영시간으로 확인합니다.";
+}
+
 export const OPEN_APIS = [
   {
     id: "KorService2",

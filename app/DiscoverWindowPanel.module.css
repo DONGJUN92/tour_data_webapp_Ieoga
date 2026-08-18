@@ -339,12 +339,117 @@
   line-height: 1.6;
 }
 
+/* 가로 캐러셀 트랙. 기본으로 두 칸이 보이고 한 칸씩 딱 맞게 멈춘다. */
 .cards {
   display: grid;
+  grid-auto-flow: column;
+  /* 두 칸 + 사이 간격이 정확히 폭에 맞는다. */
+  grid-auto-columns: calc((100% - 14px) / 2);
   gap: 14px;
   margin: 0;
-  padding: 0;
+  padding: 4px;
   list-style: none;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+}
+
+.cards > * {
+  scroll-snap-align: start;
+}
+
+.cards:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-card);
+}
+
+/* 좁은 화면에서는 한 칸씩. 두 칸을 억지로 넣으면 사진과 글이 모두 작아진다. */
+@media (max-width: 640px) {
+  .cards {
+    grid-auto-columns: 100%;
+  }
+}
+
+.carousel {
+  display: grid;
+  gap: 10px;
+}
+
+.carouselHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.carouselCount {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.carouselNav {
+  display: flex;
+  gap: 8px;
+}
+
+.carouselNav button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.carouselNav button:hover:not(:disabled) {
+  background: var(--brand-tint);
+  border-color: var(--brand);
+  color: var(--brand-deep);
+  transform: translateY(-1px);
+}
+
+.carouselNav button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 공사 대표 사진. 카드 폭을 다 쓰고 높이는 고정 비율로 잡아, 사진이 있는 카드와
+   없는 카드의 높이가 어긋나지 않게 한다. */
+.cardPhoto,
+.cardPhotoEmpty {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line);
+}
+
+.cardPhoto {
+  object-fit: cover;
+  background: var(--surface-muted, #f1f3f5);
+}
+
+.cardPhotoEmpty {
+  display: grid;
+  place-items: center;
+  background: var(--brand-tint);
+  color: var(--brand-deep);
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carouselNav button {
+    transition: none;
+  }
+  .carouselNav button:hover:not(:disabled) {
+    transform: none;
+  }
 }
 
 .card,
@@ -650,12 +755,10 @@
   white-space: nowrap;
 }
 
-@media (min-width: 900px) {
-  .panel {
-    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-    align-items: start;
-  }
-}
+/* 위아래 한 줄씩이다. 예전에는 900px 이상에서 조건과 결과를 좌우로 갈랐는데,
+   그러면 결과 칸이 화면의 절반뿐이라 카드가 좁고 사진을 실을 자리가 없다. 위에
+   조건, 아래에 결과를 두면 카드가 화면 폭을 다 쓰고, 조건을 바꾼 뒤 결과로
+   내려가는 순서도 읽는 방향과 같아진다. */
 
 /* 대안 정렬 칩. 여행 복구 화면과 같은 축(추천·가까운·한적·붐비는)을 쓰고
    생김새도 맞춘다 — 같은 일을 하는 컨트롤이 화면마다 다르게 생기면 여행자가

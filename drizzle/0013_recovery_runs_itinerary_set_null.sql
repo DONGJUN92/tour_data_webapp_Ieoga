@@ -1,18 +1,3 @@
--- 제안 상태. `drizzle/` 로 옮기지 말 것 — 결정 없이는.
---
--- 릴리스 워크플로(.github/workflows/release-production.yml)는 매 배포마다
--- `wrangler d1 migrations apply --remote` 로 `drizzle/` 의 모든 마이그레이션을
--- 운영 DB 에 자동 적용한다. 그 단계 이름은 "additive" 인데 이 파일은 테이블
--- 재구축(DROP TABLE + RENAME)이다. `drizzle/` 에 두면 다음 릴리스가 운영
--- 데이터에 대해 되돌리기 어려운 작업을 사람 확인 없이 실행한다.
---
--- 지금은 앱 쪽에서 같은 결과를 만든다 — 일정을 지우기 전에 복구 기록의 링크를
--- 먼저 끊는다(lib/db/repository.ts, lib/sync/policy-sync.ts). 선언(set null)과
--- 실제 DDL(no action)의 어긋남 자체를 없애려면 이 파일을 적용해야 한다.
---
--- 로컬에서 검증했다: 적용 전 삭제는 FOREIGN KEY constraint failed, 적용 후에는
--- 삭제가 통과하고 복구 기록은 남은 채 itinerary_id 만 NULL 이 된다.
-
 -- recovery_runs.itinerary_id 에 빠져 있던 ON DELETE SET NULL 을 실제로 적용한다.
 --
 -- 왜 필요한가. db/schema.ts 는 처음부터 `onDelete: "set null"` 로 선언했지만,
@@ -35,8 +20,18 @@
 --       복구 기록이 아직 만료되지 않았으면 같은 FK 에 막힌다. 지워야 할 데이터가
 --       남으므로 보관기간 약속이 조용히 깨진다.
 --
+-- 이 파일은 additive 가 아니다 — 테이블 재구축(DROP TABLE + RENAME)이다.
+-- 릴리스 워크플로가 `drizzle/` 전체를 매 배포마다 원격에 적용하므로, 재구축을
+-- 여기 두는 것은 그 자체가 결정이다. 2026-08-19 사용자 승인을 받고 옮겼고,
+-- 적용 전 recovery_runs 59행을 내보내 두었다. 한 번 적용된 뒤로는 d1_migrations
+-- 에 기록되어 이후 배포에서는 아무 일도 하지 않는다.
+--
 -- 자식 테이블(recovery_options 등)의 FK 는 0001 에서 같은 재구축을 거쳤을 때
 -- 정상 유지됐음을 운영 DB 에서 확인했다.
+--
+-- 앱 쪽 링크 해제(lib/db/repository.ts, lib/sync/policy-sync.ts)는 이 마이그레이션
+-- 뒤에도 남긴다. 환경마다 스키마가 앞서거나 뒤처질 수 있는데, 동작이 어느 쪽인지에
+-- 따라 달라지지 않는 편이 낫다.
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
 CREATE TABLE `__new_recovery_runs` (
 	`id` text PRIMARY KEY NOT NULL,

@@ -75,7 +75,11 @@ test("ON DELETE 없는 외래키를 새로 늘리지 않는다", async () => {
   const offenders = [];
   for (const name of files) {
     const sql = await readFile(new URL(name, dir), "utf8");
-    for (const line of sql.split(/\r?\n/)) {
+    for (const raw of sql.split(/\r?\n/)) {
+      const line = raw.trim();
+      /* 주석은 건너뛴다. 0013 은 무엇이 잘못됐는지 설명하려고 문제의 그 줄을
+         그대로 인용하고 있어서, 걸러 내지 않으면 설명이 위반으로 잡힌다. */
+      if (line.startsWith("--")) continue;
       /* `ALTER TABLE ... ADD ... REFERENCES ...` 에 ON DELETE 가 없으면 SQLite
          기본값 NO ACTION 이 되어 부모 삭제를 막는다. 열을 나중에 붙일 때 특히
          쉽게 놓친다 — 그렇게 이 결함이 들어왔다. */
@@ -89,32 +93,52 @@ test("ON DELETE 없는 외래키를 새로 늘리지 않는다", async () => {
       }
     }
   }
-  /* 이미 들어온 한 건은 그대로 둔다 — 고치려면 테이블 재구축이 필요하고, 릴리스
-     워크플로가 `drizzle/` 을 매 배포마다 원격에 자동 적용하므로 사람 확인 없이
-     운영 데이터에 DROP TABLE 을 실행하게 된다. 준비된 마이그레이션은
-     `db/proposed/` 에 두었다. 그 사이의 안전은 위 두 시험이 지킨다. */
+  /* 0002 의 그 줄은 역사이므로 그대로 남는다 — 0013 이 테이블을 재구축해 실제
+     DDL 을 선언과 맞췄지만, 이미 커밋된 마이그레이션 파일을 고칠 수는 없다.
+     이 목록이 늘어나면 새로 같은 함정을 판 것이다. */
   assert.deepEqual(offenders, [
     "0002_past_xorn.sql: ALTER TABLE `recovery_runs` ADD `itinerary_id` text REFERENCES itineraries(id);--> statement-breakpoint",
   ]);
 });
 
-test("준비된 마이그레이션은 자동 적용 경로에 두지 않는다", async () => {
-  const proposed = await readFile(
+test("선언과 실제 DDL을 맞추는 마이그레이션이 있다", async () => {
+  const migration = await readFile(
     new URL(
-      "../db/proposed/0013_recovery_runs_itinerary_set_null.sql",
+      "../drizzle/0013_recovery_runs_itinerary_set_null.sql",
       import.meta.url,
     ),
     "utf8",
   );
-  /* 선언대로(set null) 만드는 내용이어야 한다. */
-  assert.match(proposed, /ON DELETE set null/);
-  assert.match(proposed, /__new_recovery_runs/);
-  /* 왜 여기 있는지 파일 스스로 밝혀야 한다. */
-  assert.match(proposed, /drizzle\/. 로 옮기지 말 것|drizzle\/` 로 옮기지 말 것/);
+  /* 선언(db/schema.ts)이 말하는 것과 같아야 한다. */
+  assert.match(migration, /FOREIGN KEY \(`itinerary_id`\)[\s\S]*?ON DELETE set null/);
+  /* 세션 연쇄는 그대로 유지된다 — 「내 데이터 삭제」가 여기에 걸려 있다. */
+  assert.match(migration, /FOREIGN KEY \(`session_id`\)[\s\S]*?ON DELETE cascade/);
+  /* 재구축이므로 데이터를 옮기고 인덱스를 다시 만들어야 한다. */
+  assert.match(migration, /INSERT INTO `__new_recovery_runs`/);
+  assert.match(migration, /ALTER TABLE `__new_recovery_runs` RENAME TO `recovery_runs`/);
+  for (const index of [
+    "recovery_runs_session_idx",
+    "recovery_runs_itinerary_idx",
+    "recovery_runs_region_idx",
+    "recovery_runs_started_idx",
+  ]) {
+    assert.ok(
+      migration.includes(index),
+      `재구축 뒤 인덱스 ${index} 를 다시 만들지 않는다`,
+    );
+  }
+  /* additive 가 아니라는 사실과 승인 경위를 파일이 스스로 밝혀야 한다 — 릴리스
+     워크플로가 이 디렉터리를 매 배포마다 원격에 적용하기 때문이다. */
+  assert.match(migration, /additive 가 아니다/);
+});
 
-  const files = await readdir(new URL("../drizzle/", import.meta.url));
-  assert.ok(
-    !files.some((name) => name.startsWith("0013")),
-    "재구축 마이그레이션이 자동 적용 디렉터리에 들어갔다",
-  );
+test("스키마를 고친 뒤에도 앱의 링크 해제를 남긴다", async () => {
+  /* 환경마다 스키마가 앞서거나 뒤처질 수 있다. 동작이 어느 쪽인지에 따라
+     달라지지 않는 편이 낫고, 위 두 시험이 그 순서를 계속 지킨다. */
+  const [repository, sync] = await Promise.all([
+    readFile(new URL("../lib/db/repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/sync/policy-sync.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(repository, /\.set\(\{ itineraryId: null \}\)/);
+  assert.match(sync, /\.set\(\{ itineraryId: null \}\)/);
 });

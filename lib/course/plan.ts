@@ -43,6 +43,16 @@ export type CourseStop = {
   latitude: number;
   longitude: number;
   imageUrl?: string;
+  /* 공사 상세 운영정보에서 읽은 값. 코스 카드가 "몇 시에 여는가"를 말할 수 있어야
+     여행자가 그 지점을 갈지 정할 수 있다. 없으면 없다고 적는다. */
+  operatingHours?: string;
+  restDate?: string;
+  contact?: string;
+  /* 앞 지점에서 이 지점까지의 직선거리와 권하는 이동 수단. 실제 경로가 아니라
+     좌표 사이 직선이라는 사실을 화면이 함께 밝힌다 — 경로 조회는 복구 시점에
+     한다. */
+  legMeters?: number;
+  legMode?: "walk" | "transit" | "car";
 };
 
 export type CoursePlan = {
@@ -163,6 +173,26 @@ export function courseItineraryNodes(
   return nodes;
 }
 
+/* 앞 지점에서 이 지점까지 권하는 이동 수단.
+ *
+ * 직선거리로만 정한다 — 경로 조회는 요청당 외부 조회 예산을 쓰고, 계획 단계에서는
+ * 지점마다 그것을 쓸 값어치가 없다. 그래서 화면은 "직선거리 기준"임을 함께 적고,
+ * 실제 경로는 일정이 틀어져 복구할 때 조회한다. */
+export function legModeFor(meters: number): "walk" | "transit" | "car" {
+  if (meters <= 1_500) return "walk";
+  if (meters <= 10_000) return "transit";
+  return "car";
+}
+
+/* 지점 사이 구간 정보를 채운다. 첫 지점에는 앞 구간이 없다. */
+export function withLegs(stops: CourseStop[]): CourseStop[] {
+  return stops.map((stop, index) => {
+    if (index === 0) return stop;
+    const meters = Math.round(haversineMeters(stops[index - 1], stop));
+    return { ...stop, legMeters: meters, legMode: legModeFor(meters) };
+  });
+}
+
 /* ---------------------------------------------------------------- 엮기 ---- */
 
 /* 실측한 형태를 그대로 옮긴 것. 관광지·문화시설 사이에 식당을 끼운다. */
@@ -220,6 +250,11 @@ export function assembleLocalCourse(params: {
   regionName: string;
   regionCode?: string;
   districtCode?: string;
+  /* 여행자가 있는 곳. 주면 그 지점에서 가장 가까운 장소를 기준점으로 삼는다.
+     주지 않으면 목록의 첫 장소가 기준점이 된다 — 그때는 같은 시·군·구 안이지만
+     여행자에게서 멀 수 있고, 제목도 "근처"라고 적을 수 없다. */
+  origin?: { latitude: number; longitude: number };
+  originLabel?: string;
 }): CoursePlan | undefined {
   const sights = params.sights
     .map(toStop)
@@ -229,15 +264,25 @@ export function assembleLocalCourse(params: {
     .filter((stop): stop is CourseStop => Boolean(stop));
   if (!sights.length) return undefined;
 
-  const anchor = sights[0];
+  /* 기준점. 여행자 위치를 알면 거기서 가장 가까운 장소를 잡는다 — 같은 시·군·구
+     안이라도 첫 장소가 20km 밖일 수 있고, 그러면 "근처 하루 코스"가 거짓이 된다. */
+  const anchor = params.origin
+    ? sights.reduce((closest, stop) =>
+        haversineMeters(params.origin!, stop) <
+        haversineMeters(params.origin!, closest)
+          ? stop
+          : closest,
+      )
+    : sights[0];
   const near = (stop: CourseStop) =>
     haversineMeters(anchor, stop) <= ASSEMBLED_MAX_SPAN_METERS;
   const nearSights = sights.filter(near);
   const nearMeals = meals.filter(near);
 
-  const used = new Set<string>();
-  const stops: CourseStop[] = [];
-  for (const slot of ASSEMBLED_SHAPE) {
+  /* 기준점을 첫 지점으로 두고, 실측한 형태대로 나머지를 채운다. */
+  const used = new Set<string>([anchor.contentId]);
+  const stops: CourseStop[] = [anchor];
+  for (const slot of ASSEMBLED_SHAPE.slice(1)) {
     const pool = slot === "meal" ? nearMeals : nearSights;
     const pick = pool.find((stop) => !used.has(stop.contentId));
     if (!pick) continue;
@@ -248,10 +293,12 @@ export function assembleLocalCourse(params: {
 
   return {
     source: "assembled",
-    title: `${params.regionName} 하루 코스`,
+    title: params.originLabel
+      ? `${params.originLabel} 근처 하루 코스`
+      : `${params.regionName} 하루 코스`,
     regionCode: params.regionCode,
     districtCode: params.districtCode,
     imageUrl: stops.find((stop) => stop.imageUrl)?.imageUrl,
-    stops,
+    stops: withLegs(stops),
   };
 }

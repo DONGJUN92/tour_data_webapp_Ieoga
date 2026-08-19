@@ -68,6 +68,9 @@ type Props = {
   /* 고른 시·군·구로 추천코스를 받는 경로. 이 고르개는 세 자리에서 쓰는데 코스는
      여행을 **처음 계획할 때만** 의미가 있으므로, 이 콜백을 넘긴 화면에서만
      버튼이 생긴다. */
+  /* 코스 조회 경로. 이 화면에서 시·군·구를 고르지 않아도 누를 수 있어야 한다 —
+     앞 단계에서 이미 위치를 정했기 때문이다. 그래서 고른 값이 없으면 빈 문자열을
+     넘기고, 어디를 기준으로 삼을지는 호출한 화면이 정한다. */
   onCourseRequest?: (area: {
     regionCode: string;
     districtCode: string;
@@ -507,18 +510,18 @@ export function ManualLocationPicker({
               type="button"
               className="manual-picker-course"
               data-testid="manual-picker-course-request"
-              disabled={!districtCode || courseBusy}
+              disabled={courseBusy}
               onClick={() => {
-                const region = regions.find(
-                  (item) => item.code === regionCode,
-                );
+                /* 고른 값이 있으면 그것을, 없으면 빈 문자열을 넘긴다. 앞 단계에서
+                   정한 위치로 대신 조회할지는 호출한 화면이 안다 — 이 고르개는
+                   그 위치를 모른다. */
+                const region = regions.find((item) => item.code === regionCode);
                 const district = districts.find(
                   (item) => item.code === districtCode,
                 );
-                if (!regionCode || !districtCode) return;
                 onCourseRequest({
-                  regionCode,
-                  districtCode,
+                  regionCode: regionCode || "",
+                  districtCode: districtCode || "",
                   regionName: region?.name ?? "",
                   districtName: district?.name ?? "",
                 });

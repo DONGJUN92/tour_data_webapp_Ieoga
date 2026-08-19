@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { HALF_HOUR_TIMES, todayInKorea } from "../product-app-model";
 import { ManualLocationPicker, type ManualPlace } from "../ManualLocationPicker";
+import { CoursePreview } from "./CoursePreview";
+import { withParticle } from "@/lib/text/korean";
 import styles from "./plan.module.css";
 
 type Step = "date" | "start" | "appointment" | "confirm";
@@ -17,6 +19,12 @@ type CourseStopSummary = {
   address?: string;
   latitude: number;
   longitude: number;
+  imageUrl?: string;
+  operatingHours?: string;
+  restDate?: string;
+  contact?: string;
+  legMeters?: number;
+  legMode?: "walk" | "transit" | "car";
 };
 
 type CourseSummary = {
@@ -188,6 +196,8 @@ export function PlanWizard() {
     districtName: string;
   } | null>(null);
   const [courseApplying, setCourseApplying] = useState("");
+  /* 펼쳐서 동선과 지점을 보고 있는 코스. 화살표로 넘겨 본 뒤 일정으로 삼는다. */
+  const [openedCourse, setOpenedCourse] = useState<CourseSummary | null>(null);
   const index = STEPS.indexOf(step);
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const times = useMemo(() => HALF_HOUR_TIMES, []);
@@ -266,18 +276,42 @@ export function PlanWizard() {
     districtName: string;
   }) {
     clearError();
-    setCourseArea(area);
+    /* 이 화면에서 시·군·구를 고르지 않았어도 앞 단계에서 이미 출발지를 정했다.
+       그 위치의 행정구역으로 대신 조회한다 — 같은 것을 두 번 묻지 않는다.
+
+       둘 다 없을 때만 시·도를 청한다. 검색으로 고른 장소는 행정구역 코드를 함께
+       주지 않는 경우가 있어서, 그때는 물어보는 것이 추측하는 것보다 낫다. */
+    const regionCode = area.regionCode || start?.areaCode || "";
+    const districtCode = area.districtCode || start?.sigunguCode || "";
+    if (!regionCode) {
+      setError(
+        tr(
+          "코스를 추천하려면 시·도를 골라 주세요. 앞 단계에서 고른 장소에 행정구역 정보가 없었습니다.",
+          "Choose a province to get courses — the place you picked earlier carried no administrative region.",
+        ),
+      );
+      return;
+    }
+    const resolved = { ...area, regionCode, districtCode };
+    setCourseArea(resolved);
     setCourseState("loading");
     setCourses([]);
     setCourseNotes([]);
+    setOpenedCourse(null);
     try {
       const response = await fetch("/api/v1/courses", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          regionCode: area.regionCode,
-          districtCode: area.districtCode,
-          regionName: area.districtName || area.regionName,
+          regionCode,
+          districtCode: districtCode || undefined,
+          regionName: area.districtName || area.regionName || undefined,
+          /* 앞 단계에서 정한 위치를 함께 보낸다. 서버가 그 지점에서 가장 가까운
+             장소를 코스 기준점으로 삼으므로, 같은 시·군·구 안에서도 실제로 가까운
+             곳들로 엮인다. */
+          latitude: start?.latitude,
+          longitude: start?.longitude,
+          originLabel: start?.title,
         }),
       });
       const payload = (await response.json().catch(() => null)) as {
@@ -312,14 +346,53 @@ export function PlanWizard() {
     }
   }
 
-  /* 고른 코스를 일정으로 삼는다. 공식 코스는 구성 지점을 한 번 더 받아야 한다 —
-     목록 응답에는 지점이 없다. 우리가 엮은 코스는 이미 지점을 들고 있다. */
+  /* 공식 코스는 목록 응답에 지점이 없다. 미리 보여 주려면 한 번 더 받아야 한다. */
+  async function openCourse(course: CourseSummary) {
+    clearError();
+    if (course.stops.length > 0) {
+      setOpenedCourse(course);
+      return;
+    }
+    setCourseApplying(course.contentId ?? course.title);
+    try {
+      const response = await fetch("/api/v1/courses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          regionCode: courseArea?.regionCode,
+          districtCode: courseArea?.districtCode,
+          contentId: course.contentId,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        course?: { stops?: CourseStopSummary[] };
+        notes?: string[];
+        error?: { message?: string };
+      } | null;
+      if (!response.ok) {
+        setError(
+          payload?.error?.message ??
+            tr(
+              "코스의 지점 정보를 불러오지 못했습니다.",
+              "Could not load the course stops.",
+            ),
+        );
+        return;
+      }
+      if (payload?.notes?.length) setCourseNotes(payload.notes);
+      setOpenedCourse({ ...course, stops: payload?.course?.stops ?? [] });
+    } finally {
+      setCourseApplying("");
+    }
+  }
+
+  /* 고른 코스를 일정으로 삼는다. */
   async function applyCourse(course: CourseSummary) {
     clearError();
     setCourseApplying(course.contentId ?? course.title);
     try {
       let stops = course.stops;
-      if (course.source === "official" && course.contentId) {
+      if (!stops.length && course.source === "official" && course.contentId) {
         const response = await fetch("/api/v1/courses", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -755,34 +828,67 @@ export function PlanWizard() {
                       "Every stop is official KTO tourism data; the order is ours. This is not an official KTO course.",
                     )}
               </p>
+              {courseArea && !courseArea.districtName && start && (
+                /* 어디를 기준으로 찾았는지 밝힌다. 여행자가 이 화면에서 지역을
+                   고르지 않았으므로, 앞 단계의 장소를 썼다는 사실을 알려야 한다. */
+                <p className={styles.courseNote}>
+                  {tr(
+                    `앞 단계에서 고른 ${withParticle(start.title, "을/를")} 기준으로 찾았습니다.`,
+                    `Searched around ${start.title}, the place you picked earlier.`,
+                  )}
+                </p>
+              )}
               {courseNotes.map((note) => (
                 <p key={note} className={styles.courseNote}>
                   {note}
                 </p>
               ))}
-              <ul className={styles.courseList}>
-                {courses.map((course) => (
-                  <li key={course.contentId ?? course.title}>
-                    <strong>{course.title}</strong>
-                    {course.stops.length > 0 && (
-                      <em>
-                        {course.stops.map((stop) => stop.title).join(" → ")}
-                      </em>
-                    )}
-                    <button
-                      type="button"
-                      className={styles.primary}
-                      data-testid="plan-use-course"
-                      disabled={Boolean(courseApplying)}
-                      onClick={() => void applyCourse(course)}
-                    >
-                      {courseApplying === (course.contentId ?? course.title)
-                        ? tr("일정으로 옮기는 중…", "Adding to your trip…")
-                        : tr("이 코스로 일정 만들기", "Use this course")}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {/* 예전에는 "구봉산 → 오백돈 → 장태산…"처럼 화살표로 이은 한 줄만
+                  보여 줬다. 여행자는 그 이름들이 어디에 있고 몇 시에 여는지, 어떻게
+                  가는지를 알 수 없어 고를 근거가 없었다. 동선 지도 한 장과 지점마다
+                  사진·운영시간·이동 수단을 담은 카드로 바꾸고, 대안 목록과 같은
+                  캐러셀로 넘겨 본다 — 조작을 새로 배우지 않게 한다. */}
+              {!openedCourse && (
+                <ul className={styles.courseList}>
+                  {courses.map((course) => (
+                    <li key={course.contentId ?? course.title}>
+                      <strong>{course.title}</strong>
+                      {course.stops.length > 0 && (
+                        <em>
+                          {tr(
+                            `${course.stops.length}곳`,
+                            `${course.stops.length} stops`,
+                          )}
+                        </em>
+                      )}
+                      <button
+                        type="button"
+                        className={styles.primary}
+                        data-testid="plan-open-course"
+                        disabled={Boolean(courseApplying)}
+                        onClick={() => void openCourse(course)}
+                      >
+                        {courseApplying === (course.contentId ?? course.title)
+                          ? tr("불러오는 중…", "Loading…")
+                          : tr("코스 살펴보기", "Look at this course")}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {openedCourse && (
+                <div className={styles.coursePreview}>
+                  <h3 className={styles.courseTitle}>{openedCourse.title}</h3>
+                  <CoursePreview
+                    course={openedCourse}
+                    language={language}
+                    onApply={() => void applyCourse(openedCourse)}
+                    applying={Boolean(courseApplying)}
+                    onBack={() => setOpenedCourse(null)}
+                  />
+                </div>
+              )}
               <p className={styles.courseNote}>
                 {tr(
                   "지점별 머무는 시간은 공사가 제공하지 않아 이어가가 2시간 간격으로 잡았습니다. 일정이 틀어졌을 때 한 곳을 바꿔도 다음 지점에 닿을 수 있는 간격이에요. 다음 화면에서 시각을 고칠 수 있어요.",

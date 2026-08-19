@@ -186,3 +186,100 @@ test("코스 조회는 시·도 없이는 추측하지 않는다", async () => {
     assert.ok(route.includes(status), `${status} 상태가 없다`);
   }
 });
+
+test("코스 미리보기는 동선 한 장과 지점 카드로 보여 준다", async () => {
+  const preview = await readFile(
+    new URL("../app/plan/CoursePreview.tsx", import.meta.url),
+    "utf8",
+  );
+
+  /* "구봉산 → 오백돈 → 장태산…"처럼 이름을 화살표로 이은 한 줄로는 고를 수 없다.
+     어디에 있고 몇 시에 여는지, 어떻게 가는지를 하나도 알 수 없기 때문이다. */
+  assert.match(preview, /RouteMap/);
+  assert.match(preview, /PlacePhoto/);
+  assert.match(preview, /운영시간/);
+  assert.match(preview, /앞 지점에서/);
+  /* 첫 화면이 동선이므로 화면 수는 지점 수 + 1이다. */
+  assert.match(preview, /total=\{stops\.length \+ 1\}/);
+  /* 대안 목록과 같은 캐러셀을 쓴다 — 조작을 새로 배우지 않게 한다. */
+  assert.match(preview, /OptionCarousel/);
+  assert.match(preview, /perView=\{1\}/);
+
+  /* 그려진 선을 실제 경로로 오해하지 않게 한다. 경로 조회는 복구 시점에 한다. */
+  assert.match(preview, /실제 이동 경로가 아니며/);
+  assert.match(preview, /직선거리 기준/);
+  /* 운영시간이 없으면 없다고 적는다 — 빈칸과 "정보에 없다"는 다른 뜻이다. */
+  assert.match(preview, /공사 정보에 없어요/);
+});
+
+test("코스 추천은 앞 단계에서 정한 위치로도 조회한다", async () => {
+  const [wizard, picker] = await Promise.all([
+    readFile(new URL("../app/plan/PlanWizard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ManualLocationPicker.tsx", import.meta.url), "utf8"),
+  ]);
+
+  /* 앞 단계에서 이미 위치를 정했으므로 이 화면에서 지역을 또 고르게 하지 않는다.
+     버튼은 시·군·구 선택과 무관하게 눌릴 수 있어야 한다. */
+  assert.match(picker, /disabled=\{courseBusy\}/);
+  assert.doesNotMatch(picker, /disabled=\{!districtCode \|\| courseBusy\}/);
+
+  /* 고른 값이 없으면 앞 단계의 행정구역으로 대신 조회한다. */
+  assert.match(wizard, /area\.regionCode \|\| start\?\.areaCode/);
+  assert.match(wizard, /area\.districtCode \|\| start\?\.sigunguCode/);
+  /* 그 사실을 화면이 밝힌다. 조사는 저장소 도우미로 붙인다. */
+  assert.match(wizard, /withParticle\(start\.title, "을\/를"\)/);
+  /* 여행자 위치를 서버에 함께 보내 가장 가까운 곳을 기준점으로 삼게 한다. */
+  assert.match(wizard, /latitude: start\?\.latitude/);
+  /* 둘 다 없으면 추측하지 않고 시·도를 청한다. */
+  assert.match(wizard, /코스를 추천하려면 시·도를 골라 주세요/);
+});
+
+test("코스는 여행자 위치에서 가장 가까운 곳을 기준점으로 삼는다", async () => {
+  const { assembleLocalCourse } = await import("../lib/course/plan.ts");
+
+  /* 같은 시·군·구 안이라도 목록의 첫 장소가 여행자에게서 멀 수 있다. 그때 첫
+     장소를 기준으로 잡으면 "근처 하루 코스"가 거짓이 된다. */
+  const plan = assembleLocalCourse({
+    sights: [
+      place("far", "12", "먼 곳", 37.70, 127.10),
+      place("near", "12", "가까운 곳", 37.5670, 126.9785),
+      place("mid", "12", "중간 곳", 37.5750, 126.9850),
+    ],
+    meals: [place("m", "39", "근처 식당", 37.5680, 126.9800)],
+    regionName: "서울특별시",
+    origin: { latitude: 37.5665, longitude: 126.978 },
+    originLabel: "서울시청",
+  });
+  assert.ok(plan);
+  assert.equal(plan.stops[0].contentId, "near", "가장 가까운 곳이 첫 지점이어야 한다");
+  assert.equal(plan.title, "서울시청 근처 하루 코스");
+  /* 구간 정보가 채워져 카드가 이동 수단을 말할 수 있다. */
+  assert.equal(plan.stops[0].legMeters, undefined, "첫 지점에는 앞 구간이 없다");
+  assert.ok(plan.stops[1].legMeters > 0);
+  assert.ok(["walk", "transit", "car"].includes(plan.stops[1].legMode));
+});
+
+test("이동 수단은 직선거리로만 권한다", async () => {
+  const { legModeFor } = await import("../lib/course/plan.ts");
+  /* 경로 조회는 요청당 외부 조회 예산을 쓴다. 계획 단계에서 지점마다 쓸 값어치가
+     없으므로 직선거리로 권하고, 그 사실을 화면이 밝힌다. */
+  assert.equal(legModeFor(300), "walk");
+  assert.equal(legModeFor(1_500), "walk");
+  assert.equal(legModeFor(1_501), "transit");
+  assert.equal(legModeFor(10_000), "transit");
+  assert.equal(legModeFor(10_001), "car");
+});
+
+test("캐러셀의 끝 판정은 한 칸 폭을 기준으로 한다", async () => {
+  const carousel = await readFile(
+    new URL("../app/OptionCarousel.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 12px 고정값이던 시절, 끝에서 처음으로 즉시 옮기면 스크롤 스냅 보정으로
+     `scrollLeft`가 21px에 앉았다. 12보다 크므로 "처음이 아니다"로 읽혀 왼쪽
+     화살표가 마지막으로 넘어가지 못했다(실측). 한 칸 폭을 기준으로 재면 여백·
+     소수점·스냅 보정을 함께 흡수한다. */
+  assert.match(carousel, /const edgeTolerance = \(step: number\)/);
+  assert.match(carousel, /Math\.max\(12, step \* 0\.4\)/);
+  assert.doesNotMatch(carousel, /SCROLL_EDGE_TOLERANCE/);
+});

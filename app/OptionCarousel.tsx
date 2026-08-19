@@ -41,12 +41,21 @@ export function OptionCarousel({
   trackLabel,
   children,
   testId,
+  /* 한 화면에 몇 칸을 보일지. 대안 목록은 두 칸이 맞지만, 코스처럼 한 칸이 지도
+     한 장이거나 사진과 운영시간을 담은 카드일 때는 두 칸으로 쪼개면 둘 다 작아져
+     읽을 수 없다. 순환·화살표·순번 표시는 그대로 함께 쓴다. */
+  perView: requestedPerView = 2,
+  /* 순번 문구를 바꿔 끼울 수 있게 둔다. 기본 문구는 "N곳 중 1·2번째"인데, 코스
+     캐러셀의 첫 화면은 장소가 아니라 동선 지도라 "곳"으로 세면 틀린 말이 된다. */
+  formatPosition,
 }: {
   total: number;
   language: Language;
   trackLabel: string;
   children: ReactNode;
   testId?: string;
+  perView?: 1 | 2;
+  formatPosition?: (visible: number[], total: number) => string;
 }) {
   const trackRef = useRef<HTMLUListElement>(null);
   /* 지금 몇 번째 후보를 보고 있는가. "9곳 중 2곳씩 보기"는 규칙만 알려 주고
@@ -60,11 +69,15 @@ export function OptionCarousel({
      처음으로 돌아왔음을 눈으로 알 수 있게 한다. */
   const [wrapped, setWrapped] = useState(false);
 
-  /* 끝에 닿았는지 판정할 때 두는 여유. 트랙에 포커스 테두리가 잘리지 않도록
-     안쪽 여백을 두었는데, 그만큼이 초기 `scrollLeft`로 잡혀 처음부터 "뒤로 갈
-     수 있다"가 됐다. 소수점 스크롤 위치까지 함께 흡수하도록 여백보다 넉넉하게
-     잡는다. */
-  const SCROLL_EDGE_TOLERANCE = 12;
+  /* 끝에 닿았는지 판정하는 기준.
+     처음에는 12px 고정값이었다. 트랙에 포커스 테두리가 잘리지 않도록 안쪽 여백을
+     두었는데 그만큼이 초기 `scrollLeft`로 잡혀 "뒤로 갈 수 있다"가 됐기 때문이다.
+
+     그 고정값이 순환에서 깨졌다. 끝에서 처음으로 즉시 옮기면 스크롤 스냅이 위치를
+     한 번 더 보정해 `scrollLeft`가 21px로 앉는데, 12보다 크므로 "처음이 아니다"로
+     읽혀 왼쪽 화살표가 마지막으로 넘어가지 못했다(실측). 여백이 아니라 **한 칸 폭**
+     을 기준으로 재면 여백·소수점·스냅 보정을 한꺼번에 흡수한다. */
+  const edgeTolerance = (step: number) => Math.max(12, step * 0.4);
 
   /* 한 칸의 폭 + 사이 간격. 칸 폭은 화면 폭에 따라 달라지므로(좁은 화면에서는
      한 칸) 상수로 두지 않고 실제로 그려진 첫 칸에서 읽는다. */
@@ -87,8 +100,9 @@ export function OptionCarousel({
     const node = trackRef.current;
     if (!node) return;
     const maxScroll = Math.max(0, node.scrollWidth - node.clientWidth);
-    const atEnd = node.scrollLeft >= maxScroll - SCROLL_EDGE_TOLERANCE;
-    const atStart = node.scrollLeft <= SCROLL_EDGE_TOLERANCE;
+    const tolerance = edgeTolerance(stepWidth(node));
+    const atEnd = node.scrollLeft >= maxScroll - tolerance;
+    const atStart = node.scrollLeft <= tolerance;
     /* 끝에서 한 번 더 누르면 처음으로 잇는다. 예전에는 끝에서 버튼이 꺼져
        목록이 여기서 끝났다는 사실만 남았는데, 처음으로 돌아가려면 화살표를
        여덟 번 되눌러야 했다. */
@@ -130,7 +144,9 @@ export function OptionCarousel({
   const numbers = Array.from({ length: shown }, (_, index) => start + index);
   const pageable = total > shown;
 
-  const positionLabel = !pageable
+  const positionLabel = formatPosition
+    ? formatPosition(numbers, total)
+    : !pageable
     ? language === "en"
       ? `${total} place${total === 1 ? "" : "s"} in total`
       : `총 ${total}곳`
@@ -166,7 +182,9 @@ export function OptionCarousel({
         )}
       </div>
       <ul
-        className={`${styles.track} ${wrapped ? styles.trackWrapped : ""}`}
+        className={`${styles.track} ${
+          requestedPerView === 1 ? styles.trackSingle : ""
+        } ${wrapped ? styles.trackWrapped : ""}`}
         ref={trackRef}
         onScroll={updateScrollState}
         tabIndex={0}

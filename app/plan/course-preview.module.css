@@ -1,0 +1,139 @@
+/* 한 화면이 한 칸을 다 쓴다. 동선 지도든 지점 카드든, 두 칸으로 쪼개면 사진과
+   운영시간이 모두 작아져 읽을 수 없다. */
+.screen {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e5e8eb;
+  border-radius: 14px;
+  background: #fff;
+  align-content: start;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.summary > div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f7f8fa;
+}
+
+.summary dt {
+  margin: 0 0 3px;
+  color: #6b7684;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.summary dd {
+  margin: 0;
+  color: #191f28;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.stopBody {
+  display: grid;
+  gap: 4px;
+}
+
+.stopOrder {
+  color: #0b7570;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.stopTitle {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: #191f28;
+  line-height: 1.35;
+}
+
+.stopAddress {
+  margin: 0 0 4px;
+  color: #6b7684;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.stopFacts {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.stopFacts > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.stopFacts dt {
+  margin: 0;
+  color: #6b7684;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.stopFacts dd {
+  margin: 0;
+  color: #333d4b;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.apply {
+  width: 100%;
+  min-height: 52px;
+  border: 0;
+  border-radius: 12px;
+  background: #0b7570;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.apply:disabled {
+  background: #d8dde2;
+  color: #6b7684;
+  cursor: not-allowed;
+}
+
+.back {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid #d7dee6;
+  border-radius: 12px;
+  background: #fff;
+  color: #333d4b;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (max-width: 420px) {
+  .summary {
+    grid-template-columns: 1fr;
+  }
+  .stopFacts > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

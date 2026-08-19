@@ -388,3 +388,17 @@
   color: #4e5968;
   line-height: 1.55;
 }
+
+.coursePreview {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.courseTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: #191f28;
+  line-height: 1.4;
+}

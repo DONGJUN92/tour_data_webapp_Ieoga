@@ -8,10 +8,13 @@ import {
   getAreaPlaces,
   getCourseStops,
   getTourismCommonDetail,
+  getTourismIntro,
 } from "@/lib/kto/adapters";
+import { evaluateAvailabilityItem } from "@/lib/kto/availability";
 import type { KtoAudit, KtoItem } from "@/lib/kto/types";
 import {
   assembleLocalCourse,
+  withLegs,
   type CoursePlan,
   type CourseStop,
 } from "@/lib/course/plan";
@@ -41,6 +44,11 @@ const requestSchema = z
       .regex(/^\d{5}$/)
       .optional(),
     regionName: z.string().trim().min(1).max(40).optional(),
+    /* 이전 단계에서 정한 현재 위치. 있으면 그 지점에서 가장 가까운 장소를 코스
+       기준점으로 삼는다 — 같은 시·군·구 안이라도 첫 장소가 멀 수 있다. */
+    latitude: z.number().min(33).max(39).optional(),
+    longitude: z.number().min(124).max(132).optional(),
+    originLabel: z.string().trim().min(1).max(60).optional(),
     /* 코스 하나의 구성 지점까지 받아 온다. 목록만 필요할 때는 비워 둔다. */
     contentId: z
       .string()
@@ -54,6 +62,42 @@ const requestSchema = z
    중앙값이 7지점이므로, 무료 플랜의 요청당 외부 조회 50건 안에서 안전하게
    다루려면 상한이 필요하다. 넘치는 지점은 조용히 버리지 않고 밝힌다. */
 const MAX_RESOLVED_STOPS = 10;
+
+/* 지점마다 공사 상세 운영정보를 붙인다.
+ *
+ * `detailIntro2`를 지점 수만큼 부르므로 비용이 든다. 그래도 붙이는 이유는, 운영시간을
+ * 모르면 카드가 "갈지 말지"에 필요한 것을 주지 못하기 때문이다. 유형별 필드 이름은
+ * `evaluateAvailabilityItem`이 이미 알고 있어 그것을 그대로 쓴다 — 숙박의 입실 시각을
+ * 운영시간으로 읽지 않는 것 같은 교정이 모두 반영돼 있다.
+ *
+ * 한 지점을 못 받아도 코스를 버리지 않는다. 없는 값은 없는 대로 두고 화면이 밝힌다. */
+async function attachHours(
+  stops: CourseStop[],
+  ledger: KtoAudit[],
+): Promise<CourseStop[]> {
+  const filled: CourseStop[] = [];
+  for (const stop of stops) {
+    try {
+      const intro = await getTourismIntro(stop.contentId, stop.contentTypeId);
+      ledger.push(intro.audit);
+      const item = intro.items[0];
+      if (!item) {
+        filled.push(stop);
+        continue;
+      }
+      const evidence = evaluateAvailabilityItem(item, intro.audit);
+      filled.push({
+        ...stop,
+        operatingHours: evidence.operatingHours,
+        restDate: evidence.restDate,
+        contact: evidence.contact,
+      });
+    } catch {
+      filled.push(stop);
+    }
+  }
+  return filled;
+}
 
 function text(item: KtoItem, key: string): string {
   const value = item[key];
@@ -219,15 +263,16 @@ export async function POST(request: NextRequest) {
         `코스의 ${rows.length}개 지점 중 좌표를 확인한 ${stops.length}곳만 일정에 넣을 수 있습니다.`,
       );
     }
+    const withHours = await attachHours(stops, ledger);
     return jsonResponse({
-      status: stops.length >= 2 ? "ready" : "insufficient",
+      status: withHours.length >= 2 ? "ready" : "insufficient",
       course: {
         source: "official" as const,
         contentId: input.contentId,
         title: "",
         regionCode: input.regionCode,
         districtCode: input.districtCode,
-        stops,
+        stops: withLegs(withHours),
       },
       notes,
       sourceLedger: ledger,
@@ -301,6 +346,11 @@ export async function POST(request: NextRequest) {
       regionName: input.regionName ?? "이 지역",
       regionCode: input.regionCode,
       districtCode: input.districtCode,
+      origin:
+        input.latitude !== undefined && input.longitude !== undefined
+          ? { latitude: input.latitude, longitude: input.longitude }
+          : undefined,
+      originLabel: input.originLabel,
     });
     if (!assembled) {
       return jsonResponse({
@@ -313,9 +363,15 @@ export async function POST(request: NextRequest) {
         sourceLedger: ledger,
       });
     }
+    /* 엮은 코스도 운영시간을 채운다. 지점이 넷이라 조회 비용이 크지 않고, 이것이
+       없으면 카드가 "몇 시에 여는가"를 말할 수 없다. */
+    const detailed = {
+      ...assembled,
+      stops: withLegs(await attachHours(assembled.stops, ledger)),
+    };
     return jsonResponse({
       status: "assembled",
-      courses: [assembled],
+      courses: [detailed],
       notes,
       sourceLedger: ledger,
     });

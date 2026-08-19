@@ -78,6 +78,12 @@
   scrollbar-width: thin;
 }
 
+/* 한 칸이 한 화면을 다 쓰는 경우. 지도 한 장이나 사진·운영시간을 담은 카드는
+   두 칸으로 쪼개면 둘 다 작아져 읽을 수 없다. */
+.trackSingle {
+  grid-auto-columns: 100%;
+}
+
 .track > * {
   scroll-snap-align: start;
   min-width: 0;

@@ -143,20 +143,7 @@ type RecoveryOption = {
   };
 };
 
-type ProofShareLink = {
-  runId: string;
-  optionId: string;
-  relativeUrl: string;
-  expiresAt?: string;
-  proofKind: "actionable_recovery" | "historical_execution";
-  actionability: "current_at_share" | "historical_not_actionable";
-  executionStatus?: JourneyExecution["status"];
-};
 
-type ProofShareLinks = {
-  actionable: ProofShareLink | null;
-  historical: ProofShareLink | null;
-};
 
 type Language = "ko" | "en";
 
@@ -432,65 +419,6 @@ async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
   return payload;
 }
 
-function proofShareLinkFromPayload(
-  payload: unknown,
-  expected: {
-    runId: string;
-    optionId: string;
-    proofKind: ProofShareLink["proofKind"];
-    executionId?: string;
-  },
-): ProofShareLink | null {
-  const root = asRecord(payload);
-  const proof = asRecord(root?.proof);
-  const proofKind = readText(proof, ["proofKind"]);
-  const actionability = readText(proof, ["actionability"]);
-  const relativeUrl = readText(root, ["url"]);
-  const expectedActionability =
-    expected.proofKind === "historical_execution"
-      ? "historical_not_actionable"
-      : "current_at_share";
-  if (
-    !relativeUrl ||
-    readText(proof, ["runId"]) !== expected.runId ||
-    readText(proof, ["optionId"]) !== expected.optionId ||
-    proofKind !== expected.proofKind ||
-    actionability !== expectedActionability
-  ) {
-    return null;
-  }
-
-  let executionStatus: JourneyExecution["status"] | undefined;
-  if (expected.proofKind === "historical_execution") {
-    const proofExecution = asRecord(proof?.execution);
-    const status = readText(proofExecution, ["status"]);
-    const terminalStatuses = new Set<JourneyExecution["status"]>([
-      "contract_met",
-      "contract_missed",
-      "completed",
-      "abandoned",
-      "superseded",
-    ]);
-    if (
-      !expected.executionId ||
-      readText(proofExecution, ["id"]) !== expected.executionId ||
-      !terminalStatuses.has(status as JourneyExecution["status"])
-    ) {
-      return null;
-    }
-    executionStatus = status as JourneyExecution["status"];
-  }
-
-  return {
-    runId: expected.runId,
-    optionId: expected.optionId,
-    relativeUrl,
-    expiresAt: readText(root, ["expiresAt"]) || undefined,
-    proofKind: expected.proofKind,
-    actionability: expectedActionability,
-    ...(executionStatus ? { executionStatus } : {}),
-  };
-}
 
 function evidenceText(value: unknown, language: Language): string {
   const record = asRecord(value);
@@ -641,10 +569,6 @@ export default function FlowApp() {
   );
   const [actionMessage, setActionMessage] = useState("");
   const [shareMessage, setShareMessage] = useState("");
-  const [proofShareLinks, setProofShareLinks] = useState<ProofShareLinks>({
-    actionable: null,
-    historical: null,
-  });
   const [recoveryStale, setRecoveryStale] = useState(false);
   const searchAbort = useRef<AbortController | null>(null);
   const searchRequestGenerationRef = useRef(0);
@@ -734,7 +658,6 @@ export default function FlowApp() {
     setActionMessage("");
     setActionPriority("polite");
     setShareMessage("");
-    setProofShareLinks({ actionable: null, historical: null });
     setRecoveryStale(true);
     if (
       step === "searching" ||
@@ -829,13 +752,6 @@ export default function FlowApp() {
     nextFixedExecutionStep?.arrivedAt ??
     execution?.contractMissedAt ??
     execution?.contractMetAt;
-  const selectedProofShareLink =
-    proofShareLinks.actionable &&
-    selectedOption &&
-    proofShareLinks.actionable.runId === recoveryRequestId &&
-    proofShareLinks.actionable.optionId === selectedOption.id
-      ? proofShareLinks.actionable
-      : null;
   /* 이어가가 새로 넣은 곳. 완료 화면은 같은 세션에서만 닿으므로 `options`가
      아직 메모리에 있다 — 새 조회를 시작할 때만 비워지고, 그 초기화는 실행 중인
      여행이 있으면 건너뛴다. 그래서 추가 조회 없이 좌표와 이름을 얻는다. */
@@ -843,13 +759,6 @@ export default function FlowApp() {
     ? (options.find((option) => option.id === execution.sourceOptionId) ??
       null)
     : null;
-  const executionHistoricalProofShareLink =
-    proofShareLinks.historical &&
-    execution &&
-    proofShareLinks.historical.runId === execution.sourceRunId &&
-    proofShareLinks.historical.optionId === execution.sourceOptionId
-      ? proofShareLinks.historical
-      : null;
 
   /* The remaining window shrinks in real time, so the clock lives in state
      rather than being read during render. It stays null until mount so the
@@ -1283,7 +1192,6 @@ export default function FlowApp() {
     setSelectedOptionId("");
     setTourismCategory("all");
     setExecution(null);
-    setProofShareLinks({ actionable: null, historical: null });
     setActionPriority("polite");
     setActionMessage("");
     setShareMessage("");
@@ -1695,140 +1603,8 @@ export default function FlowApp() {
     }
   };
 
-  const presentProofShareLink = async (
-    link: ProofShareLink,
-    title: string,
-  ) => {
-    const shareUrl = new URL(link.relativeUrl, window.location.origin);
-    if (
-      shareUrl.origin !== window.location.origin ||
-      !/^\/share\/[^/?#]+$/.test(shareUrl.pathname)
-    ) {
-      throw new Error(
-        tr(
-          "공유 링크의 안전한 주소를 확인하지 못했습니다.",
-          "The proof link did not have a verified safe address.",
-        ),
-      );
-    }
-    const absoluteUrl = shareUrl.toString();
-    if (typeof navigator.share === "function") {
-      await navigator.share({
-        title: `IEOGA · ${title}`,
-        text:
-          link.proofKind === "historical_execution"
-            ? tr(
-                "현재 출발 가능 여부가 아닌, 종료된 여행의 실행 이력 증명입니다.",
-                "A historical execution record for an ended journey, not proof that it is currently safe to depart.",
-              )
-            : tr(
-                "다음 예약과 원래 목적을 지키는 여행 복구 판정 증명입니다.",
-                "A recovery decision proof for protecting the next appointment and original travel purpose.",
-              ),
-        url: absoluteUrl,
-      });
-      setShareMessage(
-        link.proofKind === "historical_execution"
-          ? tr(
-              "과거 실행 이력 증명을 공유했습니다. 현재 이동 결정에는 사용할 수 없습니다.",
-              "Historical execution proof shared. It must not be used for a current travel decision.",
-            )
-          : tr("공유 완료", "Shared"),
-      );
-    } else {
-      await navigator.clipboard.writeText(absoluteUrl);
-      setShareMessage(
-        link.proofKind === "historical_execution"
-          ? tr(
-              "7일 과거 실행 이력 링크를 복사했습니다. 현재 이동 결정에는 사용할 수 없습니다.",
-              "Copied the 7-day historical execution link. It must not be used for a current travel decision.",
-            )
-          : tr("7일 증명 링크를 복사했습니다.", "Copied the 7-day proof link."),
-      );
-    }
-  };
 
 
-  const shareSelectedOption = async () => {
-    if (
-      selectedOption &&
-      !optionApplicationSafety(selectedOption, language).canApply
-    ) {
-      setActionPriority("assertive");
-      setShareMessage(
-        tr(
-          "필수 조건의 공식 근거가 모두 확인되기 전에는 복구 증명을 공유할 수 없습니다.",
-          "Proof cannot be shared until every required condition is verified by official evidence.",
-        ),
-      );
-      return;
-    }
-    if (!selectedOption || !recoveryRequestId || !recoveryPersisted) {
-      setActionPriority("assertive");
-      setShareMessage(
-        tr(
-          "저장이 확인된 복구안만 증명 링크를 만들 수 있습니다.",
-          "A proof link requires a persisted recovery option.",
-        ),
-      );
-      return;
-    }
-    setActionBusy(true);
-    setActionPriority("polite");
-    setShareMessage(
-      selectedProofShareLink
-        ? tr("저장한 증명 링크를 여는 중…", "Opening the saved proof link…")
-        : tr("출발 전 판정 증명 링크 생성 중…", "Creating a pre-departure decision proof…"),
-    );
-    try {
-      let link = selectedProofShareLink;
-      if (!link) {
-        const payload = await postJson("/api/v1/share", {
-            runId: recoveryRequestId,
-            optionId: selectedOption.id,
-          });
-        const createdLink = proofShareLinkFromPayload(payload, {
-          runId: recoveryRequestId,
-          optionId: selectedOption.id,
-          proofKind: "actionable_recovery",
-        });
-        if (!createdLink) {
-          throw new Error(
-            tr(
-              "서버가 현재 출발 판단에 사용할 수 있는 판정 증명 계약을 확인하지 못했습니다.",
-              "The server did not return a verified actionable decision-proof contract.",
-            ),
-          );
-        }
-        link = createdLink;
-        setProofShareLinks((current) => ({
-          ...current,
-          actionable: createdLink,
-        }));
-      }
-      await presentProofShareLink(link, selectedOption.title);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        setActionPriority("polite");
-        setShareMessage(tr("공유를 취소했습니다.", "Sharing cancelled."));
-      } else {
-        setActionPriority("assertive");
-        const requestError = error as RequestError;
-        setShareMessage(
-          `${requestError.message}${
-            requestError.requestId
-              ? tr(
-                  ` · 요청 ID ${requestError.requestId}`,
-                  ` · Request ID ${requestError.requestId}`,
-                )
-              : ""
-          }`,
-        );
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  };
 
   /* 카드 한 컷을 만들어 내보낸다. 어디로 갔는지(공유 시트 / 내려받기)를
      `exportJourneyCard`가 돌려주므로, 화면은 실제로 일어난 일을 적는다 —
@@ -1897,66 +1673,6 @@ export default function FlowApp() {
     }
   };
 
-  const createOrShareHistoricalProof = async () => {
-    if (!execution) return;
-    setActionBusy(true);
-    setActionPriority("polite");
-    setShareMessage(
-      executionHistoricalProofShareLink
-        ? tr(
-            "저장한 과거 실행 이력 링크를 여는 중…",
-            "Opening the saved historical execution link…",
-          )
-        : tr(
-            "현재 이동 결정과 분리된 과거 실행 이력 증명을 만드는 중…",
-            "Creating historical execution proof that is separate from any current travel decision…",
-          ),
-    );
-    try {
-      let link = executionHistoricalProofShareLink;
-      if (!link) {
-        const payload = await postJson("/api/v1/share", {
-          runId: execution.sourceRunId,
-          optionId: execution.sourceOptionId,
-        });
-        const createdLink = proofShareLinkFromPayload(payload, {
-          runId: execution.sourceRunId,
-          optionId: execution.sourceOptionId,
-          proofKind: "historical_execution",
-          executionId: execution.id,
-        });
-        if (!createdLink) {
-          throw new Error(
-            tr(
-              "서버가 과거 실행 이력과 현재 이동 불가 표시를 함께 확인하지 않아 링크를 만들지 않았습니다.",
-              "The server did not confirm both the historical execution and the not-currently-actionable marker, so no link was accepted.",
-            ),
-          );
-        }
-        link = createdLink;
-        setProofShareLinks((current) => ({
-          ...current,
-          historical: createdLink,
-        }));
-      }
-      await presentProofShareLink(
-        link,
-        options.find((option) => option.id === execution.sourceOptionId)?.title ??
-          execution.steps[0]?.title ??
-          "IEOGA",
-      );
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        setActionPriority("polite");
-        setShareMessage(tr("공유를 취소했습니다.", "Sharing cancelled."));
-      } else {
-        setActionPriority("assertive");
-        setShareMessage(requestErrorText(error, language));
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  };
 
   const confirmCurrentArrival = useCallback(async () => {
     if (
@@ -3199,29 +2915,6 @@ export default function FlowApp() {
                       "Call the 1330 Travel Helpline",
                     )}
                   </a>
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    data-testid="flow-create-historical-proof"
-                    onClick={() => void createOrShareHistoricalProof()}
-                    disabled={actionBusy}
-                  >
-                    {executionHistoricalProofShareLink
-                      ? tr(
-                          "실패 실행 이력 증명 다시 공유",
-                          "Share the missed execution proof again",
-                        )
-                      : tr(
-                          "실패 실행 이력 증명 만들기",
-                          "Create missed execution proof",
-                        )}
-                  </button>
-                  <p className={styles.proofUnavailable}>
-                    {tr(
-                      "현재 출발 가능 증명이 아니라 약속 실패를 포함한 과거 실행 이력입니다. 현재 이동 결정에 사용하면 안 됩니다.",
-                      "This is historical execution evidence including the missed appointment, not proof that it is currently safe to depart. Do not use it for a current travel decision.",
-                    )}
-                  </p>
                 </div>
               </section>
             ) : executionContractMet ? (
@@ -3279,32 +2972,6 @@ export default function FlowApp() {
                       "Resume the original itinerary",
                     )}
                   </Link>
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    data-testid="flow-create-historical-proof"
-                    onClick={() => void createOrShareHistoricalProof()}
-                    disabled={actionBusy}
-                  >
-                    {executionHistoricalProofShareLink
-                      ? tr(
-                          "과거 실행 이력 증명 다시 공유",
-                          "Share historical execution proof again",
-                        )
-                      : tr(
-                          "과거 실행 이력 증명 만들기",
-                          "Create historical execution proof",
-                        )}
-                  </button>
-                  <p
-                    className={styles.proofUnavailable}
-                    data-testid="flow-historical-proof-not-actionable"
-                  >
-                    {tr(
-                      "이 링크는 종료된 여행의 실행 상태와 시각을 보여 주는 이력입니다. 현재 영업·경로·예약 가능 여부나 지금 출발해도 된다는 뜻이 아니며, 현재 이동 결정에 사용하면 안 됩니다.",
-                      "This link records the ended journey's execution status and timestamps. It does not show current opening, route or booking availability, is not proof that it is safe to depart now, and must not be used for a current travel decision.",
-                    )}
-                  </p>
 
                   {/* 지운 자리에 들어온 것. "출발 전 저장한 판정 증명도 공유"는
                       출발 전에 만든 판정 링크를 여행이 끝난 자리에서 한 번 더
@@ -3381,23 +3048,6 @@ export default function FlowApp() {
                   <a className={styles.ctaLink} href="tel:1330">
                     {tr("관광통역안내 1330 연결", "Call the 1330 Travel Helpline")}
                   </a>
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    data-testid="flow-create-historical-proof"
-                    onClick={() => void createOrShareHistoricalProof()}
-                    disabled={actionBusy}
-                  >
-                    {executionHistoricalProofShareLink
-                      ? tr(
-                          "과거 실행 이력 증명 다시 공유",
-                          "Share historical execution proof again",
-                        )
-                      : tr(
-                          "과거 실행 이력 증명 만들기",
-                          "Create historical execution proof",
-                        )}
-                  </button>
                 </div>
               </section>
             ) : currentExecutionStep ? (
@@ -3747,35 +3397,6 @@ export default function FlowApp() {
                       "Select a recovery option",
                     )}
             </button>
-            <button
-              type="button"
-              className={styles.secondaryButton}
-              data-testid="flow-create-proof"
-              onClick={() => void shareSelectedOption()}
-              disabled={
-                !selectedOption ||
-                selectedOption.confirmationRequired ||
-                (selectedOption.evidenceGaps?.length ?? 0) > 0 ||
-                actionBusy ||
-                !recoveryPersisted
-              }
-            >
-              {selectedProofShareLink
-                ? tr(
-                    "저장한 출발 전 판정 증명 다시 공유",
-                    "Share the saved pre-departure proof again",
-                  )
-                : tr(
-                    "출발 전 판정 증명 링크 만들기",
-                    "Create a pre-departure decision proof",
-                  )}
-            </button>
-            <p className={styles.proofTimingNote}>
-              {tr(
-                "판정 증명은 생성 시점의 공식 근거를 고정합니다. 완료 뒤 과거 근거를 새 링크로 다시 만들 수 없으므로 필요하면 출발 전에 생성해 주세요.",
-                "A decision proof freezes the official evidence available when it is created. Because old evidence cannot be recreated as a new link after completion, create it before departure if you need one.",
-              )}
-            </p>
           </div>
         )}
 

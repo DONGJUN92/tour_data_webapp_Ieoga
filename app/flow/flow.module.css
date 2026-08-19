@@ -991,26 +991,6 @@ a.cta {
   font-weight: 800;
 }
 
-.proofUnavailable,
-.proofTimingNote {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.proofUnavailable {
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-chip);
-  background: var(--paper);
-  text-align: left;
-}
-
-.proofTimingNote {
-  padding: 0 4px;
-}
-
 .proofId,
 .errorHelp {
   color: var(--ink-soft);

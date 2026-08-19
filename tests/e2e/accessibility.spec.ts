@@ -605,9 +605,11 @@ test("an evidence-gap-only result cannot be selected, applied, or shared", async
   await expect(
     page.getByRole("button", { name: "복구안을 선택해 주세요" }),
   ).toBeDisabled();
+  /* 증명 링크 만들기 버튼은 지웠으므로 존재 자체를 확인한다. 근거 공백이 있는 안에서
+     공유가 열리지 않는다는 원래 의도는 아래 `shareCalls`가 그대로 지킨다. */
   await expect(
     page.getByRole("button", { name: "출발 전 판정 증명 링크 만들기" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   expect(state.applyBodies).toEqual([]);
   expect(state.shareCalls).toBe(0);
 });

@@ -231,12 +231,22 @@ test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·�
   assert.match(applyHead, /if \(!safety\.canApply && !acknowledged\)/);
 
   /* 공유는 열리지 않는다. 적용은 내가 감수하는 선택이고, 공유는 남에게 건네는
-     검증 증명서다. */
-  const share = flow.slice(flow.indexOf("const shareSelectedOption"));
-  assert.match(
-    share.slice(0, 1_200),
-    /!optionApplicationSafety\(selectedOption, language\)\.canApply/,
+     검증 증명서다.
+
+     흐름 화면의 공유 경로는 이후에 지웠다 — 여행자가 증명 링크를 만들 이유가 없었다.
+     그래서 이 불변식은 공유가 남아 있는 화면에서 확인한다. 검사를 없애지 않는 이유는
+     불변식이 사라진 것이 아니라 자리만 옮겼기 때문이다. */
+  assert.doesNotMatch(flow, /const shareSelectedOption/);
+  const productSource = await readFile(
+    new URL("../app/ProductApp.tsx", import.meta.url),
+    "utf8",
   );
+  const share = productSource.slice(
+    productSource.indexOf("async function shareRecoveryOption"),
+  );
+  assert.ok(share.length > 100, "공유 경로를 찾지 못했다");
+  assert.match(share.slice(0, 1_200), /const safety = optionApplicationSafety\(option, language\);/);
+  assert.match(share.slice(0, 1_200), /if \(!safety\.canApply\)/);
   assert.ok(
     !/selfConfirmable|acknowledged/.test(share.slice(0, 1_200)),
     "공유에까지 동의로 예외를 열어서는 안 된다",

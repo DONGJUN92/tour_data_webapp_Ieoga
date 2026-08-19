@@ -28,14 +28,14 @@ test("완료 화면은 출발 전 판정 증명을 다시 공유하지 않는다
     "지운 버튼의 처리기가 죽은 코드로 남아서는 안 된다",
   );
 
-  /* 지우면 안 되는 것. 과거 실행 이력 증명은 그 자체가 "지난 기록"이라고 밝히는
-     장치이므로 남는다. */
-  assert.match(flow, /data-testid="flow-create-historical-proof"/);
-  assert.match(flow, /현재 이동 결정에 사용하면 안 됩니다/);
-
-  /* 출발 전 판정 링크를 **만드는** 버튼은 후보 화면에 그대로 있다. 그것은 출발
-     전에 쓰는 것이므로 자리가 맞다. */
-  assert.match(flow, /출발 전 판정 증명 링크 만들기/);
+  /* 증명 링크를 **만드는** 버튼도 이후에 지웠다.
+     처음에는 "지난 기록이라고 스스로 밝히는 장치이므로 남긴다"고 판단했지만,
+     여행자에게는 만들 이유가 없는 링크였다. 만드는 버튼과 그 한계를 적은 안내문이
+     화면 두 덩어리를 차지하면서 정작 할 수 있는 일은 없었다. 증명 자체는 /app 탭의
+     결과 공유에 남아 있어 심사에서 확인할 수 있다. */
+  assert.doesNotMatch(flow, /data-testid="flow-create-historical-proof"/);
+  assert.doesNotMatch(flow, /출발 전 판정 증명 링크 만들기/);
+  assert.doesNotMatch(flow, /presentProofShareLink/);
 
   /* 새로 들어온 두 가지. */
   assert.match(flow, /data-testid="flow-share-journey-card"/);

@@ -545,11 +545,19 @@ test("/flow contract_missed는 실패로 고정하고 재도착·완료 후 dead
   assert.match(flow, /href="tel:1330"/);
   assert.match(flow, /execution\.status === "active"[\s\S]*data-testid="flow-confirm-arrival"/);
   assert.match(flow, /arrivalInFlightRef\.current/);
-  assert.match(flow, /data-testid="flow-create-historical-proof"/);
-  assert.match(flow, /proofKind: "historical_execution"/);
-  assert.match(flow, /"historical_not_actionable"/);
-  assert.match(flow, /현재 이동 결정에 사용하면 안 됩니다/);
-  assert.match(flow, /proofShareLinks\.historical\.runId === execution\.sourceRunId/);
+  /* 증명 링크 만들기 버튼은 지웠다.
+     여행자가 실행 이력 링크를 만들 일이 없었다 — 그 링크는 지난 여행의 상태를
+     보여 주는 것이고, 완료 화면에서 여행자가 하고 싶은 일은 기록을 남기거나 다시
+     찾는 것이다. 링크를 만들려면 버튼과 안내문 두 덩어리를 읽어야 했는데, 정작
+     그것으로 할 수 있는 일이 없었다.
+
+     지운 뒤에도 남아야 하는 것은 확인한다: 그 버튼이 있던 자리의 실제 행동들. */
+  assert.doesNotMatch(flow, /data-testid="flow-create-historical-proof"/);
+  assert.doesNotMatch(flow, /data-testid="flow-create-proof"/);
+  assert.doesNotMatch(flow, /proofShareLinks/);
+  /* 완료 화면에는 여행자가 실제로 쓰는 것만 남는다. */
+  assert.match(flow, /data-testid="flow-share-journey-card"/);
+  assert.match(flow, /href="tel:1330"/);
 });
 
 test("contract_missed는 성공과 분리해 한·영 경고, 재복구와 1330 지원을 제공한다", async () => {

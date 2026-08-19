@@ -93,7 +93,11 @@ export async function POST(
             activated.reason === "NOT_FOUND"
               ? "이 세션의 복구안이나 원래 일정을 찾지 못했습니다."
               : activated.reason === "ACKNOWLEDGEMENT_REQUIRED"
-                ? "운영시간을 확인하지 못한 곳입니다. 안내를 읽고 동의한 뒤에 적용할 수 있습니다."
+                /* 운영시간이라고 못박지 않는다. v5에서 이 문이 네 가지 공백
+                   으로 넓어졌으므로, 집중률 예측을 확인하지 못한 곳에 "운영시간을
+                   확인하지 못했다"고 적으면 그 문장이 거짓이 된다. 무엇을 확인하지
+                   못했는지는 화면이 공백마다 따로 적는다. */
+                ? "공식 정보로 확인하지 못한 조건이 있는 곳입니다. 안내를 읽고 직접 확인한 뒤에 적용할 수 있습니다."
               : activated.reason === "INVALID_STATE"
                 ? "검증된 전체 경로를 실행 일정으로 만들 수 없습니다. 일정을 다시 확인해 주세요."
                 : activated.reason === "UPSTREAM_UNAVAILABLE"

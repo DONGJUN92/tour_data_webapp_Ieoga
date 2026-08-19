@@ -309,3 +309,145 @@ test("코스가 하나뿐이면 다른 코스 보기를 두지 않는다", async
   assert.match(preview, /\{canGoBack && \(/);
   assert.match(wizard, /canGoBack=\{courses\.length > 1\}/);
 });
+
+test("출발지는 코스 지점으로 다시 세지 않는다", async () => {
+  const { assembleLocalCourse } = await import("../lib/course/plan.ts");
+
+  /* 2026-08-19 실측 결함. 대전역 동광장을 출발지로 정하고 코스를 받으면, 그
+     좌표에서 가장 가까운 장소가 대전역 동광장 자신이었다. 그것이 기준점이 되면서
+     코스의 1번째 지점으로 올라가, 등록된 일정에 09:00 대전역 동광장과 18:00
+     대전역 동광장이 나란히 들어갔다. 여행자는 이미 그곳에 있는데 두 시각에 두 번
+     가라는 일정이 만들어진 것이다.
+
+     원인은 한 값이 두 역할을 겸한 것이다 — 기준점("어디를 중심으로 찾을지")과
+     지점("가야 할 곳"). 역할을 나눈다: 기준점으로는 계속 쓰고 목록에서만 뺀다. */
+  /* 좌표는 실측값이다. 모두 대전역 동광장에서 12km(ASSEMBLED_MAX_SPAN_METERS)
+     안에 둔다 — 반경 밖 후보를 섞으면 지점 수가 반경 때문에 줄어, 이 시험이
+     보려는 것(출발지를 뺐다고 줄지는 않는다)을 가린다. */
+  const origin = { latitude: 36.3342294989, longitude: 127.4362194451 };
+  const sights = [
+    place("1", "12", "대전역 동광장", 36.3342294989, 127.4362194451),
+    place("2", "12", "식장산 문화공원", 36.3023172606, 127.4805721964),
+    place("3", "12", "대청호", 36.3999, 127.4899),
+    place("4", "12", "보문산공원", 36.2905, 127.4041),
+  ];
+  const meals = [place("9", "39", "평양숨두부", 36.3012086, 127.4567106)];
+
+  const plan = assembleLocalCourse({
+    sights,
+    meals,
+    regionName: "동구",
+    origin,
+    originLabel: "대전역 동광장",
+  });
+
+  assert.ok(plan);
+  const titles = plan.stops.map((stop) => stop.title);
+  assert.ok(
+    !titles.includes("대전역 동광장"),
+    `출발지가 지점으로 남았다: ${titles.join(" → ")}`,
+  );
+
+  /* 뺐다고 지점 수가 줄지 않는다 — 형태의 첫 칸부터 채우므로. 같은 자료로 출발지만
+     주지 않은 경우와 나란히 두어 "줄지 않는다"를 눈에 보이게 잠근다. */
+  const anonymous = assembleLocalCourse({ sights, meals, regionName: "동구" });
+  assert.ok(anonymous);
+  assert.equal(anonymous.stops[0].title, "대전역 동광장");
+  assert.equal(plan.stops.length, anonymous.stops.length);
+
+  /* 제목은 여전히 참이다. 그 근처에서 찾은 것은 사실이므로. */
+  assert.match(plan.title, /대전역 동광장 근처/);
+});
+
+test("출발지를 주지 않으면 기준점을 그대로 첫 지점으로 쓴다", async () => {
+  const { assembleLocalCourse } = await import("../lib/course/plan.ts");
+  /* 코스만 받고 들어온 여행자에게는 첫 지점이 출발지가 된다. 그 경로를 위에서
+     함께 망가뜨리지 않았음을 잠근다. */
+  const plan = assembleLocalCourse({
+    sights: [
+      place("1", "12", "구봉산", 36.29, 127.35),
+      place("2", "12", "장태산자연휴양림", 36.2295, 127.3327),
+      place("3", "12", "평송청소년문화센터", 36.35, 127.38),
+    ],
+    meals: [place("9", "39", "오백돈", 36.3, 127.36)],
+    regionName: "서구",
+  });
+  assert.ok(plan);
+  assert.equal(plan.stops[0].title, "구봉산");
+});
+
+test("같은 곳 판별은 좁게 잡는다", async () => {
+  const { isSameSpot, SAME_SPOT_METERS } = await import("../lib/geo.ts");
+
+  /* 이름이 같으면 같은 곳이다 — 공사 자료는 같은 장소를 같은 콘텐츠로 준다. */
+  assert.equal(
+    isSameSpot(
+      { title: "대전역 동광장", latitude: 36.3342, longitude: 127.4362 },
+      { title: "대전역 동광장", latitude: 36.3345, longitude: 127.437 },
+    ),
+    true,
+  );
+  /* 이름이 갈려도 같은 자리면 같은 곳이다("대전역" vs "대전역 동광장"). */
+  assert.equal(
+    isSameSpot(
+      { title: "대전역", latitude: 36.3342, longitude: 127.4362 },
+      { title: "대전역 동광장", latitude: 36.33423, longitude: 127.43622 },
+    ),
+    true,
+  );
+  /* 넓히면 안 된다. 200m 떨어진 다른 식당까지 묶이면 멀쩡한 후보가 사라진다. */
+  assert.equal(
+    isSameSpot(
+      { title: "평양숨두부", latitude: 36.3012, longitude: 127.4567 },
+      { title: "다른 식당", latitude: 36.3030, longitude: 127.4567 },
+    ),
+    false,
+  );
+  assert.equal(SAME_SPOT_METERS, 60);
+});
+
+test("하루에 못 담은 지점을 말없이 버리지 않는다", async () => {
+  const wizard = await readFile(
+    new URL("../app/plan/PlanWizard.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 2026-08-19 15:50 KST 실측: 오늘 날짜로 4곳 코스를 등록하면 첫 지점이 18:00이
+     되어 네 번째 지점(대청호)이 24:00을 넘겨 사라졌다. 화면은 "4곳"이라 했는데
+     등록된 일정은 3곳이었고, 어디가 왜 빠졌는지는 어디에도 없었다. */
+  assert.match(wizard, /\{ entries: PlanEntry\[\]; dropped: number \}/);
+  assert.match(wizard, /dropped \+= 1;/);
+  assert.match(wizard, /자정을 넘겨서 빼 두었습니다/);
+  /* 오류 자리에 쓰지 않는다 — 붉은 글씨는 못 넘어간다는 뜻으로 읽힌다. */
+  assert.match(wizard, /setPlanNote\(/);
+  assert.match(wizard, /className=\{styles\.summaryNote\} role="status"/);
+});
+
+test("공식 코스에도 출발지 겹침 방어를 둔다", async () => {
+  const wizard = await readFile(
+    new URL("../app/plan/PlanWizard.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 엮은 코스는 서버가 기준점을 빼 주지만, 공사 공식 추천코스의 지점은 우리가
+     고른 것이 아니어서 출발지와 겹칠 수 있다. 미리 보기에 들어오는 자리에서
+     걸러야 "코스는 4곳인데 일정은 3개"가 되지 않는다. */
+  assert.match(wizard, /function withoutOrigin\(/);
+  assert.match(wizard, /!isSameSpot\(origin, stop\)/);
+  assert.match(wizard, /coursePlanEntries\(\s*withoutOrigin\(stops\),/);
+  /* 다 걸러져 빈 목록이 되면 빈 화면을 열지 않는다. */
+  assert.match(wizard, /지금 출발지로 정한 곳과 같습니다/);
+});
+
+test("저장이 막힌 이유를 화면이 버리지 않는다", async () => {
+  const wizard = await readFile(
+    new URL("../app/plan/PlanWizard.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 실측: 같은 IP로 1분에 20번을 넘기면 서버는 429 `RATE_LIMITED`와 "일정 저장
+     요청이 많습니다. 잠시 후 다시 시도해 주세요."를 돌려준다. 예전 화면은 요청
+     ID만 붙이고 그 메시지를 버려서, 한도 초과든 계약 위반이든 똑같이 "일정을
+     저장하지 못했습니다."만 떴다 — 여행자는 다시 눌러야 하는지 무엇을 고쳐야
+     하는지 알 수 없었고, 신고를 받은 우리도 원인을 좁힐 수 없었다. */
+  assert.match(wizard, /error\?: \{ code\?: string; message\?: string; requestId\?: string \}/);
+  assert.match(wizard, /const detail = payload\?\.error\?\.message\?\.trim\(\);/);
+  assert.match(wizard, /const code = payload\?\.error\?\.code\?\.trim\(\);/);
+});

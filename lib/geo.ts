@@ -26,6 +26,31 @@ export function haversineMeters(
   );
 }
 
+/* 두 지점이 같은 곳인가.
+ *
+ * 좁게 잡았다. 공사 자료는 같은 장소를 같은 콘텐츠로 주므로 **이름이 같으면**
+ * 같은 곳이고, 좌표는 "대전역"과 "대전역 동광장"처럼 표기가 갈리는 경우만
+ * 잡는다. 60m는 역·공원처럼 넓은 지점의 대표 좌표가 자료마다 흔들리는 폭이고,
+ * 이보다 넓히면 100m 떨어진 다른 식당까지 같은 곳으로 묶여 멀쩡한 후보가
+ * 사라진다.
+ *
+ * 이 판별기가 필요한 곳은 하나다 — 여행자가 이미 출발지로 정한 곳이 코스의
+ * 지점으로 다시 올라오는 것을 막는 자리. 후보끼리 서로 묶는 데에는 쓰지 않는다.
+ *
+ * 이 파일에 두는 이유는 번들이다. `lib/geo.ts`는 import가 없는 잎 모듈이어서
+ * 화면에서 가져와도 서버 전용 모듈을 끌고 오지 않는다. */
+export const SAME_SPOT_METERS = 60;
+
+export function isSameSpot(
+  a: { title?: string; latitude: number; longitude: number },
+  b: { title?: string; latitude: number; longitude: number },
+): boolean {
+  const titleA = a.title?.trim();
+  const titleB = b.title?.trim();
+  if (titleA && titleB && titleA === titleB) return true;
+  return haversineMeters(a, b) <= SAME_SPOT_METERS;
+}
+
 export function conservativeWalkingMinutes(distanceMeters: number): number {
   return Math.max(1, Math.ceil(distanceMeters / 60) + 4);
 }

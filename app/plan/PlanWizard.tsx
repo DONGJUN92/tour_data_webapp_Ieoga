@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { HALF_HOUR_TIMES, todayInKorea } from "../product-app-model";
 import { ManualLocationPicker, type ManualPlace } from "../ManualLocationPicker";
+import { isSameSpot } from "@/lib/geo";
 import { CoursePreview } from "./CoursePreview";
 import { withParticle } from "@/lib/text/korean";
 import styles from "./plan.module.css";
@@ -83,15 +84,24 @@ export function coursePlanEntries(
   stops: CourseStopSummary[],
   date: string,
   now = Date.now(),
-): PlanEntry[] {
+): { entries: PlanEntry[]; dropped: number } {
   const used = stops.slice(0, COURSE_MAX_STOPS);
   const first = courseStartMinutes(date, now);
   const entries: PlanEntry[] = [];
+  /* 자정에 걸려 못 넣은 지점 수. 세는 이유는 말해 줘야 하기 때문이다.
+     실측(2026-08-19 15:50 KST): 오늘 날짜로 4곳 코스를 등록하면 첫 지점이
+     18:00이 되어 네 번째 지점(대청호)이 24:00을 넘겨 조용히 사라졌다. 화면은
+     "4곳"이라고 했는데 등록된 일정은 3곳이었고, 어디가 빠졌는지도 왜 빠졌는지도
+     적히지 않았다. */
+  let dropped = 0;
   used.forEach((stop, index) => {
     const minutes = first + index * COURSE_STOP_GAP_MINUTES;
     /* 자정을 넘기면 그 지점부터는 넣지 않는다. 날짜를 넘긴 시각을 같은 날짜에
        붙이면 시각이 거꾸로 가고, 계약이 그것을 거절한다. */
-    if (minutes >= 24 * 60) return;
+    if (minutes >= 24 * 60) {
+      dropped += 1;
+      return;
+    }
     entries.push({
       place: {
         title: stop.title,
@@ -105,7 +115,7 @@ export function coursePlanEntries(
     });
   });
   if (entries.length) entries[entries.length - 1].locked = true;
-  return entries;
+  return { entries, dropped: dropped + Math.max(0, stops.length - used.length) };
 }
 
 const STEPS: Step[] = ["date", "start", "appointment", "confirm"];
@@ -181,6 +191,9 @@ export function PlanWizard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState("");
+  /* 확인 화면에 남기는 안내. 오류가 아니라 "이렇게 줄여 담았다"는 사실이므로
+     오류 자리에 쓰지 않는다 — 붉은 글씨는 못 넘어간다는 뜻으로 읽힌다. */
+  const [planNote, setPlanNote] = useState("");
   /* 추천코스를 받아 일정으로 삼는 경로. 꼭 지킬 약속이 아직 없어서 무엇을 할지부터
      정하고 싶은 여행자를 위한 자리다. 새 단계를 만들지 않고 이 단계 안에서 처리한다
      — 단계 배열은 진행 표시와 뒤로가기 규칙이 함께 걸려 있다. */
@@ -346,11 +359,35 @@ export function PlanWizard() {
     }
   }
 
+  /* 출발지로 이미 정한 곳은 코스 지점에서 뺀다.
+     엮은 코스는 서버가 기준점을 목록에서 빼 주지만(lib/course/plan.ts), 공사
+     공식 추천코스의 지점은 우리가 고른 것이 아니어서 출발지와 겹칠 수 있다.
+     미리 보기와 등록될 일정이 어긋나지 않도록 **화면에 들어오는 자리**에서 한 번
+     걸러 둔다 — 등록할 때만 걸러 내면 "코스는 4곳인데 일정은 3개"가 된다. */
+  function withoutOrigin(stops: CourseStopSummary[]): CourseStopSummary[] {
+    if (!start) return stops;
+    const origin = start;
+    return stops.filter((stop) => !isSameSpot(origin, stop));
+  }
+
   /* 공식 코스는 목록 응답에 지점이 없다. 미리 보여 주려면 한 번 더 받아야 한다. */
   async function openCourse(course: CourseSummary) {
     clearError();
     if (course.stops.length > 0) {
-      setOpenedCourse(course);
+      /* 걸러 낸 뒤 남는 지점이 없으면 열지 않는다. 미리 보기는 지점이 없으면
+         아무것도 그리지 않으므로, 열어 두면 빈 화면만 남아 무슨 일이 일어난
+         것인지 알 수 없다. */
+      const stops = withoutOrigin(course.stops);
+      if (!stops.length) {
+        setError(
+          tr(
+            "이 코스의 지점이 지금 출발지로 정한 곳과 같습니다. 다른 코스를 골라 주세요.",
+            "Every stop in this course is the place you already set as your start. Pick another course.",
+          ),
+        );
+        return;
+      }
+      setOpenedCourse({ ...course, stops });
       return;
     }
     setCourseApplying(course.contentId ?? course.title);
@@ -380,7 +417,17 @@ export function PlanWizard() {
         return;
       }
       if (payload?.notes?.length) setCourseNotes(payload.notes);
-      setOpenedCourse({ ...course, stops: payload?.course?.stops ?? [] });
+      const stops = withoutOrigin(payload?.course?.stops ?? []);
+      if (!stops.length) {
+        setError(
+          tr(
+            "이 코스의 지점이 지금 출발지로 정한 곳과 같습니다. 다른 코스를 골라 주세요.",
+            "Every stop in this course is the place you already set as your start. Pick another course.",
+          ),
+        );
+        return;
+      }
+      setOpenedCourse({ ...course, stops });
     } finally {
       setCourseApplying("");
     }
@@ -420,7 +467,10 @@ export function PlanWizard() {
         stops = payload?.course?.stops ?? [];
         if (payload?.notes?.length) setCourseNotes(payload.notes);
       }
-      const entries = coursePlanEntries(stops, date);
+      const { entries, dropped } = coursePlanEntries(
+        withoutOrigin(stops),
+        date,
+      );
       if (entries.length < 1) {
         setError(
           tr(
@@ -431,13 +481,26 @@ export function PlanWizard() {
         return;
       }
       /* 출발지가 아직 없으면 코스의 첫 지점을 출발지로 쓴다. 코스만 받고 들어온
-         여행자에게 출발지를 또 묻지 않는다. */
+         여행자에게 출발지를 또 묻지 않는다.
+
+         출발지가 이미 있으면 그대로 둔다. 이때 코스 지점에 출발지가 섞여 있었다면
+         위 `withoutOrigin`이 이미 빼 두었으므로 여기서 다시 볼 필요가 없다. */
       if (!start) {
         setStart(entries[0].place);
         setPlan(entries.slice(1));
       } else {
         setPlan(entries);
       }
+      /* 자정에 걸려 못 담은 지점이 있으면 확인 화면에서 말한다. 몇 곳을 담았는지
+         적어, 코스에서 본 수와 다른 이유를 여행자가 알 수 있게 한다. */
+      setPlanNote(
+        dropped > 0
+          ? tr(
+              `하루 안에 담을 수 있는 ${entries.length}곳만 넣었어요. 나머지 ${dropped}곳은 자정을 넘겨서 빼 두었습니다. 날짜를 바꾸거나 시각을 앞당기면 더 담을 수 있어요.`,
+              `We added the ${entries.length} stops that fit in one day. The other ${dropped} would run past midnight. Pick another date or move the times earlier to fit more.`,
+            )
+          : "",
+      );
       setCourseState("idle");
       setCourses([]);
       setPending(null);
@@ -459,6 +522,7 @@ export function PlanWizard() {
 
   function back() {
     clearError();
+    setPlanNote("");
     if (step === "appointment") {
       if (pending) {
         setPending(null);
@@ -532,17 +596,30 @@ export function PlanWizard() {
       const payload = (await response.json().catch(() => null)) as {
         itinerary?: { id?: string };
         requestId?: string;
-        error?: { requestId?: string };
+        error?: { code?: string; message?: string; requestId?: string };
       } | null;
       if (!response.ok) {
         const requestId =
           response.headers.get("x-request-id") ||
           payload?.requestId ||
           payload?.error?.requestId;
+        /* 서버가 말한 이유를 그대로 옮긴다.
+           예전에는 요청 ID만 붙이고 `error.code`와 `error.message`를 버렸다.
+           그래서 한도 초과(429 `RATE_LIMITED` — "잠시 후 다시 시도해 주세요")든
+           계약 위반이든 화면에는 똑같이 "일정을 저장하지 못했습니다."만 떴다.
+           여행자는 다시 눌러야 하는지 무엇을 고쳐야 하는지 알 수 없었고, 신고를
+           받은 우리도 무엇이 막았는지 좁힐 수 없었다. */
+        const detail = payload?.error?.message?.trim();
+        const code = payload?.error?.code?.trim();
         throw new Error(
-          `${tr("일정을 저장하지 못했습니다.", "Could not save the itinerary.")}${
-            requestId ? ` · ${tr("요청 ID", "Request ID")} ${requestId}` : ""
-          }`,
+          [
+            tr("일정을 저장하지 못했습니다.", "Could not save the itinerary."),
+            detail,
+            code ? `(${code})` : "",
+            requestId ? `${tr("요청 ID", "Request ID")} ${requestId}` : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
         );
       }
       setSavedId(payload?.itinerary?.id ?? "saved");
@@ -929,6 +1006,11 @@ export function PlanWizard() {
               </li>
             ))}
           </ol>
+          {planNote && (
+            <p className={styles.summaryNote} role="status">
+              {planNote}
+            </p>
+          )}
           {error && <p className={styles.error} role="alert">{error}</p>}
           <button
             type="button"

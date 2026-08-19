@@ -141,6 +141,18 @@
   font-weight: 700;
 }
 
+/* 확인 화면의 안내. 오류가 아니라 "이렇게 줄여 담았다"는 사실이므로 붉은
+   글씨(.error)와 구별되어야 한다 — 붉은 글씨는 못 넘어간다는 뜻으로 읽힌다. */
+.summaryNote {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-soft, rgba(14, 149, 148, 0.08));
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .primary,
 .secondary {
   width: 100%;

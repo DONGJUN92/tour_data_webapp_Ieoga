@@ -1,4 +1,4 @@
-import { haversineMeters } from "@/lib/geo";
+import { haversineMeters, isSameSpot } from "@/lib/geo";
 import type { KtoItem } from "@/lib/kto/types";
 
 /* 추천코스를 여행 일정으로 바꾼다.
@@ -279,10 +279,26 @@ export function assembleLocalCourse(params: {
   const nearSights = sights.filter(near);
   const nearMeals = meals.filter(near);
 
-  /* 기준점을 첫 지점으로 두고, 실측한 형태대로 나머지를 채운다. */
+  /* 기준점이 여행자의 출발지 그 자체이면 지점으로 세지 않는다.
+     실측(2026-08-19): 대전역 동광장을 출발지로 정하고 코스를 받으면 여기서
+     가장 가까운 장소가 대전역 동광장 자신이었고, 그것이 코스의 1번째 지점으로
+     올라가 등록된 일정에 09:00과 18:00 두 번 들어갔다. 여행자는 이미 그곳에
+     있는데 두 시각에 두 번 가라는 일정이 만들어진 것이다.
+
+     기준점은 "어디를 중심으로 찾을지"를 정하는 좌표이고, "가야 할 곳"의 목록과는
+     다른 것이다. 두 역할을 한 값이 겸하고 있어서 생긴 결함이라, 역할을 나눈다 —
+     기준점으로는 계속 쓰고 목록에서만 뺀다.
+
+     뺀 만큼 형태의 첫 칸부터 채우므로 지점 수는 줄지 않는다. */
+  const originIsAnchor =
+    params.origin !== undefined &&
+    isSameSpot({ title: params.originLabel, ...params.origin }, anchor);
+
   const used = new Set<string>([anchor.contentId]);
-  const stops: CourseStop[] = [anchor];
-  for (const slot of ASSEMBLED_SHAPE.slice(1)) {
+  const stops: CourseStop[] = originIsAnchor ? [] : [anchor];
+  for (const slot of originIsAnchor
+    ? ASSEMBLED_SHAPE
+    : ASSEMBLED_SHAPE.slice(1)) {
     const pool = slot === "meal" ? nearMeals : nearSights;
     const pick = pool.find((stop) => !used.has(stop.contentId));
     if (!pick) continue;

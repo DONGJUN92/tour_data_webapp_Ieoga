@@ -541,11 +541,15 @@ a.cta {
   margin: -19px -19px 18px;
 }
 
-.cardImage img {
+/* `PlacePhoto`가 자기 상자를 이미 16:9로 잡고 테두리를 두르므로, 여기서는
+   카드 위쪽에 붙이는 일만 한다. 사진이 없어도 칸이 사라지지 않아 카드 높이가
+   서로 어긋나지 않는다. */
+.cardImage > * {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
+  border: 0;
+  border-radius: 0;
 }
 
 .rank {
@@ -1109,6 +1113,31 @@ a.cta {
 
 /* 확인되지 않은 조건에 대한 명시적 동의. 적용 버튼 바로 위에 두어, 무엇을
    확인하지 못했는지 읽지 않고 누르는 일이 없게 한다. */
+/* 카드 안에서 직접 확인을 받는 버튼. 눌러야 할 것으로 보여야 하므로 브랜드
+   색을 쓰지만, 적용 CTA보다 작게 두어 "이것이 적용은 아니다"를 크기로 말한다. */
+.selfConfirmButton {
+  margin-top: 10px;
+  min-height: 46px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--brand);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+}
+
+.selfConfirmButton:hover {
+  background: var(--brand-strong);
+}
+
+.selfConfirmButton:focus-visible {
+  outline: 3px solid var(--brand-deep);
+  outline-offset: 2px;
+}
+
 .ackRow {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

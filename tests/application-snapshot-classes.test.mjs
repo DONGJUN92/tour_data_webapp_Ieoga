@@ -25,8 +25,8 @@ function snapshotFor({ status, gaps }) {
    저장이 실패하고 **응답 전체가 버려진다.** 실제로 그렇게 됐다 — 화면에는
    "실행 전체를 안전하게 저장하지 못해 결과를 제공하지 않습니다"만 남고 후보는
    한 곳도 나오지 않았다. 계약이 두 갈래를 아는지 여기서 고정한다. */
-test("실행 계약은 완전 검증과 운영시간 미확인을 모두 담는다", async () => {
-  const { applicationSnapshotClass } = await import(
+test("실행 계약은 완전 검증과 직접 확인 가능을 모두 담는다", async () => {
+  const { applicationSnapshotClass, SELF_CONFIRMABLE_GAP_CODES } = await import(
     "../lib/recovery/application-snapshot.ts"
   );
 
@@ -42,10 +42,45 @@ test("실행 계약은 완전 검증과 운영시간 미확인을 모두 담는�
       applicationSnapshotClass(
         snapshotFor({ status, gaps: ["OPERATING_HOURS_UNVERIFIED"] }),
       ),
-      "hours_unconfirmed",
+      "self_confirmed",
       `${status}가 계약에 들지 못한다`,
     );
   }
+
+  /* v5에서 넓힌 부분. 네 코드는 모두 "확인하지 못했다"이므로 여행자가 직접
+     확인하면 열려야 한다. 예전에는 운영시간 하나만 열려 있어서, 집중률 예측이
+     없는 곳과 무장애 정보가 없는 곳이 영구히 적용 불가로 남았다. */
+  for (const code of SELF_CONFIRMABLE_GAP_CODES) {
+    assert.equal(
+      applicationSnapshotClass(snapshotFor({ status: "confirmed_open", gaps: [code] })),
+      "self_confirmed",
+      `${code}가 계약에 들지 못한다`,
+    );
+  }
+
+  /* 운영시간은 확인됐는데 집중률 예측만 없는 안이 실제로 있다. 예전 조건은
+     상태가 대조 불가일 때만 받았으므로 이 안이 계약을 만들지 못했다. */
+  assert.equal(
+    applicationSnapshotClass(
+      snapshotFor({
+        status: "confirmed_open",
+        gaps: ["CONCENTRATION_UNVERIFIED", "ACCESSIBILITY_UNVERIFIED"],
+      }),
+    ),
+    "self_confirmed",
+  );
+
+  /* 목록에 없는 공백이 섞이면 어느 갈래에도 들지 못한다. 직접 확인으로 풀리지
+     않는 것을 확인 한 번으로 열어 주면 그 확인이 거짓말을 한다. */
+  assert.equal(
+    applicationSnapshotClass(
+      snapshotFor({
+        status: "confirmed_open",
+        gaps: ["OPERATING_HOURS_UNVERIFIED", "SOMETHING_ELSE"],
+      }),
+    ),
+    undefined,
+  );
 });
 
 /* `confirmationRequired`는 공백과 같은 사실의 두 표현이다. 둘이 어긋난 스냅숏은
@@ -78,12 +113,15 @@ test("확인 필요 표시가 근거 공백과 어긋나면 계약에 들지 못
   );
 });
 
-test("휴무·다른 근거 공백은 어느 계약에도 들지 못한다", async () => {
+test("휴무와 직접 확인으로 풀리지 않는 공백은 어느 계약에도 들지 못한다", async () => {
   const { applicationSnapshotClass } = await import(
     "../lib/recovery/application-snapshot.ts"
   );
 
-  /* 닫혀 있다고 **확인된** 곳. 동의를 받는다고 문이 열리지 않는다. */
+  /* 닫혀 있다고 **확인된** 곳. 확인을 받는다고 문이 열리지 않는다. 이것이
+     v5에서 넓힌 뒤에도 절대 넘지 않는 선이다 — "확인하지 못했다"와 "확인해
+     보니 닫혀 있다"는 다른 사실이고, 뒤의 것은 여행자가 감수할 수 있는 위험이
+     아니라 확정된 헛걸음이다. */
   assert.equal(
     applicationSnapshotClass(
       snapshotFor({ status: "confirmed_closed", gaps: [] }),
@@ -91,24 +129,23 @@ test("휴무·다른 근거 공백은 어느 계약에도 들지 못한다", asy
     undefined,
   );
 
-  /* 접근성처럼 다른 조건이 미확인이면 동의로 열리지 않는다. */
+  /* 직접 확인 목록에 없는 공백이 하나라도 섞이면 열리지 않는다. 여행자가 할 수
+     있는 확인이 아닌 것을 확인 한 번으로 통과시키면 그 확인이 거짓말이 된다. */
   assert.equal(
     applicationSnapshotClass(
       snapshotFor({
         status: "official_hours_unstructured",
-        gaps: ["OPERATING_HOURS_UNVERIFIED", "ACCESSIBILITY_UNVERIFIED"],
+        gaps: ["OPERATING_HOURS_UNVERIFIED", "ROUTE_UNVERIFIED"],
       }),
     ),
     undefined,
   );
 
-  /* 운영시간은 확인됐는데 공백이 남아 있는 조합도 통과시키지 않는다. */
+  /* 공백이 없는데 확인 필요만 참인 안 — 두 값이 어긋난 상태다. 어느 쪽이 참인지
+     알 수 없으므로 계약에 넣지 않는다. */
   assert.equal(
     applicationSnapshotClass(
-      snapshotFor({
-        status: "confirmed_open",
-        gaps: ["ACCESSIBILITY_UNVERIFIED"],
-      }),
+      { availability: { status: "confirmed_open", checkedAt: new Date().toISOString() }, evidenceGapCodes: [], confirmationRequired: true },
     ),
     undefined,
   );
@@ -153,7 +190,7 @@ test("봉인하지 못한 안은 그 안만 빠지고 응답은 살아남는다"
 
 /* 화면의 체크박스는 화면의 약속일 뿐이다. 요청을 직접 만들면 지나갈 수 있으므로,
    계약을 만드는 서버가 다시 물어야 한다. */
-test("운영시간 미확인 안은 서버에서도 동의 없이 적용되지 않는다", async () => {
+test("직접 확인이 필요한 안은 서버에서도 동의 없이 적용되지 않는다", async () => {
   const repository = await readFile(
     new URL("../lib/db/repository.ts", import.meta.url),
     "utf8",
@@ -163,7 +200,7 @@ test("운영시간 미확인 안은 서버에서도 동의 없이 적용되지 �
   );
   assert.match(
     activate.slice(0, 8_000),
-    /applicationSnapshotClass\(applicationSnapshot\) === "hours_unconfirmed"/,
+    /applicationSnapshotClass\(applicationSnapshot\) === "self_confirmed"/,
   );
   assert.match(
     activate.slice(0, 8_000),
@@ -197,6 +234,6 @@ test("계약 버전은 규칙이 바뀌면 함께 올라간다", async () => {
   );
   assert.match(
     source,
-    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v4"/,
+    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v5"/,
   );
 });

@@ -1,4 +1,5 @@
 import { getStableSessionSecret } from "@/lib/session-cookie";
+import { SELF_CONFIRMABLE_GAP_CODES } from "./self-confirmable-gaps";
 import type { ItineraryRegistration } from "@/lib/recovery/schema";
 import type { RecoveryMode } from "@/lib/recovery/types";
 import {
@@ -10,11 +11,12 @@ import {
    운영시간을 대조하지 못한 안이 목록에 오르자 그 안의 스냅숏이 만들어지지 않아
    **응답 전체가 저장 실패로 버려졌다.** 버전을 올려 예전에 저장된 스냅숏이 새
    규칙으로 읽히지 않게 한다 — 옛 계약은 다시 실행해야 한다. */
-export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v4";
+export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v5";
 
-/* 확인을 받으면 적용할 수 있는 유일한 근거 공백. 이 목록에 없는 공백이 있으면
-   그 안은 어느 쪽 계약에도 들지 못한다. */
-export const ACKNOWLEDGEABLE_GAP_CODE = "OPERATING_HOURS_UNVERIFIED";
+/* 화면과 서버가 **같은 목록**을 봐야 하므로 상수는 의존성 없는 파일에 두고 여기서
+   다시 내보낸다. 계약 모듈은 세션 비밀 때문에 서버 전용 바인딩을 끌고 오는데, 화면이
+   그것을 통해 상수를 가져가면 클라이언트 묶음이 통째로 깨진다. */
+export { SELF_CONFIRMABLE_GAP_CODES } from "./self-confirmable-gaps";
 
 export type ItineraryImpactNodeSnapshot = {
   id: string;
@@ -52,7 +54,7 @@ export function applicationSnapshotClass(
     RecoveryApplicationSnapshot,
     "availability" | "evidenceGapCodes" | "confirmationRequired"
   >,
-): "verified" | "hours_unconfirmed" | undefined {
+): "verified" | "self_confirmed" | undefined {
   const gaps = Array.isArray(snapshot.evidenceGapCodes)
     ? snapshot.evidenceGapCodes
     : undefined;
@@ -69,14 +71,20 @@ export function applicationSnapshotClass(
   ) {
     return "verified";
   }
+  /* 두 번째 갈래는 `confirmed_open`도 받는다. 집중률 예측이나 무장애 정보를
+     확인하지 못한 것은 운영시간과 무관한 공백이므로, 운영시간은 확인됐는데
+     다른 하나가 비어 있는 안이 실제로 있다 — 예전 조건은 상태가 대조 불가일
+     때만 받았으므로 그 안이 계약을 만들지 못했다.
+
+     휴무로 확인된 곳은 여기 들 수 없다. 이 스냅숏의 `availability.status` 자체가
+     `confirmed_closed`를 담을 수 없게 좁혀져 있어(아래 타입 참고) 구조적으로
+     표현 불가하다. 그 좁힘을 풀지 않는다. */
   if (
-    (snapshot.availability.status === "official_hours_unstructured" ||
-      snapshot.availability.status === "unknown") &&
-    gaps.length === 1 &&
-    gaps[0] === ACKNOWLEDGEABLE_GAP_CODE &&
+    gaps.length > 0 &&
+    gaps.every((code) => SELF_CONFIRMABLE_GAP_CODES.has(code)) &&
     snapshot.confirmationRequired === true
   ) {
-    return "hours_unconfirmed";
+    return "self_confirmed";
   }
   return undefined;
 }
@@ -97,7 +105,7 @@ export type RecoveryApplicationSnapshot = {
     status: "confirmed_open" | "official_hours_unstructured" | "unknown";
     checkedAt: string;
   };
-  /* 확인이 필요한 안인가. `hours_unconfirmed` 계약에서는 참이다 — 리터럴
+  /* 확인이 필요한 안인가. `self_confirmed` 계약에서는 참이다 — 리터럴
      `false`로 묶어 두면 그 계약을 아예 표현할 수 없다. */
   confirmationRequired: boolean;
   evidenceGapCodes: string[];

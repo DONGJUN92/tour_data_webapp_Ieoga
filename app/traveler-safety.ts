@@ -1,4 +1,8 @@
 import type { JourneyExecution } from "@/lib/recovery/execution";
+/* 계약 모듈이 아니라 상수 파일에서 가져온다. 계약 모듈은 세션 비밀을 읽어
+   `cloudflare:workers`를 끌고 오므로, 화면 모듈이 그것을 거치면 브라우저 묶음이
+   통째로 로드에 실패한다. */
+import { SELF_CONFIRMABLE_GAP_CODES } from "@/lib/recovery/self-confirmable-gaps";
 
 export type TravelerLanguage = "ko" | "en";
 
@@ -12,13 +16,99 @@ export type OptionApplicationSafety = {
   canApply: boolean;
   availabilityStatus: string;
   reasons: string[];
-  /* 막는 이유가 **운영시간을 대조하지 못했다는 것 하나뿐**인가.
+  /* 막는 이유가 **전부 "확인하지 못했다"뿐**인가 — 즉 여행자가 직접 확인하면
+     열릴 수 있는 안인가.
+
      "닫혀 있다고 확인된 곳"과 "열려 있는지 모르는 곳"은 여행자에게 전혀 다른
      상황인데, 예전에는 둘 다 똑같이 선택 불가였다. 앞의 것은 헛걸음이 확실하고,
      뒤의 것은 원문 운영시간을 읽거나 전화 한 통으로 풀리는 일이다.
-     화면이 그 둘을 갈라 다루려면 먼저 구별할 수 있어야 한다. */
-  hoursUnconfirmedOnly: boolean;
+     화면이 그 둘을 갈라 다루려면 먼저 구별할 수 있어야 한다.
+
+     예전 이름은 `hoursUnconfirmedOnly`였고 운영시간에만 열려 있었다. 그래서
+     집중률 예측이나 무장애 정보를 확인하지 못한 안은 영구히 적용 불가로 남았다.
+     그 셋은 모두 같은 성격의 공백이므로 함께 다룬다. */
+  selfConfirmable: boolean;
+  /* 직접 확인으로 열리는 공백들의 코드. 화면이 "무엇을 확인해 달라"를 공백마다
+     다르게 적을 수 있어야 한다 — 운영시간 안내문을 집중률 예측이 없는 곳에
+     붙이면 그 안내가 거짓말을 한다. */
+  selfConfirmableCodes: string[];
 };
+
+/* 공백마다 "무엇을, 어떻게 확인하면 되는가". 예전에는 세 화면 모두 운영시간
+   안내문 하나만 띄웠는데, 집중률 예측이 없는 곳에 "원문 운영시간을 읽어
+   주세요"라고 적으면 그 안내가 거짓말을 한다. 여행자가 실제로 할 수 있는 일을
+   공백별로 적는다 — 우리가 못 한 확인을 떠넘기는 것이 아니라, 우리가 어디까지
+   확인했는지 밝히고 남은 한 걸음을 알려 주는 것이다. */
+const SELF_CONFIRMATION_GUIDE: Record<
+  string,
+  { ko: { what: string; how: string }; en: { what: string; how: string } }
+> = {
+  OPERATING_HOURS_UNVERIFIED: {
+    ko: {
+      what: "운영시간",
+      how: "아래 공식 운영시간 원문을 읽거나, 문의 전화로 오늘 여는지 확인해 주세요.",
+    },
+    en: {
+      what: "Opening hours",
+      how: "Read the official hours below, or call the venue to check today's opening.",
+    },
+  },
+  CONCENTRATION_UNVERIFIED: {
+    ko: {
+      what: "붐빔 예측",
+      how: "이 곳은 공사 집중률 예측에 없어요. 붐비는 것이 걱정되면 지도 앱의 실시간 혼잡도를 함께 보고 정해 주세요.",
+    },
+    en: {
+      what: "Crowding forecast",
+      how: "This place is absent from the official forecast. If crowding matters, check a live map app before you go.",
+    },
+  },
+  ACCESSIBILITY_UNVERIFIED: {
+    ko: {
+      what: "이동 편의 정보",
+      how: "계단·경사로·화장실이 공식 무장애 정보에 없어요. 문의 전화로 확인하는 편이 확실합니다.",
+    },
+    en: {
+      what: "Accessibility",
+      how: "Steps, ramps and toilets are not in the official barrier-free data. Calling ahead is the reliable check.",
+    },
+  },
+  INDOOR_UNVERIFIED: {
+    ko: {
+      what: "실내 여부",
+      how: "실내인지 공식 정보로 확인하지 못했어요. 대표 사진과 안내를 보고 정해 주세요.",
+    },
+    en: {
+      what: "Indoor or not",
+      how: "Official data does not say whether this is indoors. Use the photo and venue notes to decide.",
+    },
+  },
+};
+
+/**
+ * 직접 확인으로 열리는 공백들에 대해, 무엇을 어떻게 확인하면 되는지.
+ *
+ * 목록에 없는 코드는 조용히 버리지 않고 일반 문구로 남긴다 — 새 공백 코드가
+ * 생겼을 때 화면에서 그 항목이 사라지면, 여행자는 확인할 것이 하나 줄었다고
+ * 잘못 읽는다.
+ */
+export function selfConfirmationChecklist(
+  codes: readonly string[],
+  language: TravelerLanguage,
+): Array<{ code: string; what: string; how: string }> {
+  return codes.map((code) => {
+    const guide = SELF_CONFIRMATION_GUIDE[code]?.[language];
+    if (guide) return { code, ...guide };
+    return {
+      code,
+      what: language === "en" ? "A required condition" : "필수 조건",
+      how:
+        language === "en"
+          ? "Official data did not confirm this. Please check with the venue before you go."
+          : "공식 정보로 확인하지 못했어요. 출발 전 운영기관에 확인해 주세요.",
+    };
+  });
+}
 
 export type VerifiedTravelerOrigin = {
   latitude: number;
@@ -122,8 +212,9 @@ export function optionApplicationSafety(
 ): OptionApplicationSafety {
   const availabilityStatus = String(record(option.availability)?.status ?? "unknown");
   const reasons: string[] = [];
-  /* 운영시간 말고 다른 이유가 하나라도 있으면 그 카드는 여전히 막힌다. */
-  let nonHoursReason = false;
+  /* 직접 확인으로 풀리지 않는 이유가 하나라도 있으면 그 카드는 여전히 막힌다. */
+  let unresolvableReason = false;
+  const selfConfirmableCodes: string[] = [];
 
   if (availabilityStatus === "confirmed_closed") {
     reasons.push(
@@ -146,12 +237,20 @@ export function optionApplicationSafety(
       (language === "en"
         ? "A required travel condition has not been verified."
         : "필수 여행 조건의 공식 근거를 확인하지 못했습니다.");
-    if (gap.code !== "OPERATING_HOURS_UNVERIFIED") nonHoursReason = true;
+    /* 서버 계약과 **같은 목록**을 본다. 화면이 따로 목록을 들고 있으면 둘이
+       어긋나, 버튼은 열리는데 서버가 거절하는 상태가 만들어진다. */
+    if (gap.code && SELF_CONFIRMABLE_GAP_CODES.has(gap.code)) {
+      if (!selfConfirmableCodes.includes(gap.code)) {
+        selfConfirmableCodes.push(gap.code);
+      }
+    } else {
+      unresolvableReason = true;
+    }
     if (!reasons.includes(message)) reasons.push(message);
   }
 
   if (option.confirmationRequired && reasons.length === 0) {
-    nonHoursReason = true;
+    unresolvableReason = true;
     reasons.push(
       language === "en"
         ? "A required travel condition still needs official confirmation."
@@ -165,10 +264,11 @@ export function optionApplicationSafety(
     reasons,
     /* 닫혀 있다고 확인된 곳은 여기에 들지 않는다. 그것은 확인하지 못한 것이
        아니라 확인된 사실이고, 확인을 한 번 더 받는다고 문이 열리지는 않는다. */
-    hoursUnconfirmedOnly:
+    selfConfirmable:
       reasons.length > 0 &&
-      !nonHoursReason &&
+      !unresolvableReason &&
       availabilityStatus !== "confirmed_closed",
+    selfConfirmableCodes,
   };
 }
 
@@ -186,7 +286,7 @@ export function optionApplicationSafety(
 export function optionSelectableWithAcknowledgement(
   safety: OptionApplicationSafety,
 ): boolean {
-  return safety.canApply || safety.hoursUnconfirmedOnly;
+  return safety.canApply || safety.selfConfirmable;
 }
 
 export type LockedAppointmentSnapshot = {

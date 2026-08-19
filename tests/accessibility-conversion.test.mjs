@@ -214,16 +214,19 @@ test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·�
      동의가 여는 문은 운영시간 하나뿐이고, 그때도 검증된 것으로 승격하지
      않는다 — 근거 공백은 그대로 남고 공유는 계속 막힌다.
 
-     운영시간을 따로 다루는 이유는 그것이 덜 중요해서가 아니라, "확인하지 못했다"와
-     "닫혀 있다고 확인했다"가 다른 사실이기 때문이다. 앞의 것은 원문을 읽거나
+     "확인하지 못했다"를 따로 다루는 이유는 그것이 덜 중요해서가 아니라,
+     "닫혀 있다고 확인했다"와 다른 사실이기 때문이다. 앞의 것은 원문을 읽거나
      전화 한 통으로 풀리고, 그 판단은 여행자가 할 수 있다. */
   assert.match(flow, /optionApplicationSafety\(option, language\)/);
-  assert.match(flow, /disabled=\{isBlocked\}/);
+  assert.match(
+    flow,
+    /isBlocked \|\| \(needsSelfConfirmation && !selfConfirmed\)/,
+  );
 
   const apply = flow.slice(flow.indexOf("const applySelectedOption"));
   const applyHead = apply.slice(0, 1_600);
-  /* 동의는 운영시간만 미확인인 경우에만 성립한다. */
-  assert.match(applyHead, /safety\.hoursUnconfirmedOnly/);
+  /* 동의는 남은 이유가 모두 "확인하지 못했다"일 때만 성립한다. */
+  assert.match(applyHead, /safety\.selfConfirmable/);
   assert.match(applyHead, /acknowledgedOptionId === selectedOption\.id/);
   assert.match(applyHead, /if \(!safety\.canApply && !acknowledged\)/);
 
@@ -235,7 +238,7 @@ test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·�
     /!optionApplicationSafety\(selectedOption, language\)\.canApply/,
   );
   assert.ok(
-    !/hoursUnconfirmedOnly|acknowledged/.test(share.slice(0, 1_200)),
+    !/selfConfirmable|acknowledged/.test(share.slice(0, 1_200)),
     "공유에까지 동의로 예외를 열어서는 안 된다",
   );
 
@@ -244,9 +247,10 @@ test("확인되지 않은 필수 조건은 UI에서도 fail-closed로 적용·�
     new URL("../app/traveler-safety.ts", import.meta.url),
     "utf8",
   );
-  assert.match(safety, /hoursUnconfirmedOnly:\s*\n?\s*reasons\.length > 0/);
+  assert.match(safety, /selfConfirmable:\s*\n?\s*reasons\.length > 0/);
   assert.match(safety, /availabilityStatus !== "confirmed_closed"/);
-  assert.match(safety, /gap\.code !== "OPERATING_HOURS_UNVERIFIED"/);
+  /* 화면이 자기 목록을 따로 들면 서버 계약과 어긋난다. 같은 상수를 본다. */
+  assert.match(safety, /SELF_CONFIRMABLE_GAP_CODES\.has\(gap\.code\)/);
 
   const product = await readFile(
     new URL("../app/ProductApp.tsx", import.meta.url),

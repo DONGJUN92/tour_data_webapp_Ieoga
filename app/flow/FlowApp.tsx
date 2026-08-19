@@ -7,6 +7,9 @@ import type {
   JourneyExecutionStep,
 } from "@/lib/recovery/execution";
 import type { RejectionReasonCode } from "@/lib/recovery/types";
+import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
+import { PlacePhoto } from "../PlacePhoto";
+import { exportJourneyCard } from "../journey-card";
 import {
   filterOptionsByTourismCategory,
   formatCrowd,
@@ -33,6 +36,7 @@ import {
   executionPreservesLockedAppointment,
   optionApplicationSafety,
   optionSelectableWithAcknowledgement,
+  selfConfirmationChecklist,
   type LockedAppointmentSnapshot,
 } from "../traveler-safety";
 import styles from "./flow.module.css";
@@ -104,6 +108,7 @@ type RecoveryOption = {
   latitude: number;
   longitude: number;
   imageUrl?: string;
+  thumbnailUrl?: string;
   contentTypeId?: string;
   tourismCategory?: {
     code: string;
@@ -602,6 +607,10 @@ export default function FlowApp() {
   /* 우천을 골랐지만 실외까지 포함해 다시 찾고 싶은 경우. 예전에는 이 상태가
      없어 우천을 고르면 실외 후보가 사라지고 되돌릴 방법이 화면에 없었다. */
   const [allowOutdoor, setAllowOutdoor] = useState(false);
+  /* 조회 전에 미리 고른 관광 분류. 비어 있으면 전체를 본다. 결과 화면의
+     `tourismCategory` 칩은 받은 목록을 걸러 보는 것이고, 이것은 서버가 무엇을
+     조회할지를 정한다 — 이름이 비슷하지만 하는 일이 다르다. */
+  const [wantedCategories, setWantedCategories] = useState<string[]>([]);
   /* Kept as UI state for sessions restored from an older deployment. New
      unsafe options cannot be selected and acknowledgement never overrides the
      fail-closed safety decision. */
@@ -823,13 +832,13 @@ export default function FlowApp() {
     proofShareLinks.actionable.optionId === selectedOption.id
       ? proofShareLinks.actionable
       : null;
-  const executionActionableProofShareLink =
-    proofShareLinks.actionable &&
-    execution &&
-    proofShareLinks.actionable.runId === execution.sourceRunId &&
-    proofShareLinks.actionable.optionId === execution.sourceOptionId
-      ? proofShareLinks.actionable
-      : null;
+  /* 이어가가 새로 넣은 곳. 완료 화면은 같은 세션에서만 닿으므로 `options`가
+     아직 메모리에 있다 — 새 조회를 시작할 때만 비워지고, 그 초기화는 실행 중인
+     여행이 있으면 건너뛴다. 그래서 추가 조회 없이 좌표와 이름을 얻는다. */
+  const completedPlace = execution
+    ? (options.find((option) => option.id === execution.sourceOptionId) ??
+      null)
+    : null;
   const executionHistoricalProofShareLink =
     proofShareLinks.historical &&
     execution &&
@@ -993,7 +1002,7 @@ export default function FlowApp() {
      체크박스를 붙이면 그 체크박스가 거짓말을 한다. */
   const selectedNeedsAcknowledgement = Boolean(
     selectedOption &&
-      optionApplicationSafety(selectedOption, language).hoursUnconfirmedOnly,
+      optionApplicationSafety(selectedOption, language).selfConfirmable,
   );
 
   const detectOrigin = useCallback(() => {
@@ -1388,6 +1397,9 @@ export default function FlowApp() {
             : { mode: "assumed", at: referenceIso },
         /* 명시적으로 보낸 값이 엔진의 우천 기본값을 이긴다. */
         indoorOnly: incident === "rain" ? !includeOutdoor : false,
+        /* 고른 분류만 보낸다. 하나도 고르지 않았으면 필드를 넣지 않아 전체를
+           본다 — 스키마가 빈 배열을 거부하므로 `undefined`여야 한다. */
+        tourismCategories: wantedCategories.length ? wantedCategories : undefined,
         availableMinutes: requestAvailableMinutes,
         safetyBufferMinutes: 15,
         minimumStayMinutes: 30,
@@ -1484,6 +1496,7 @@ export default function FlowApp() {
     referenceTimeLocal,
     referenceTimeMode,
     tr,
+    wantedCategories,
   ]);
 
   const applySelectedOption = async () => {
@@ -1498,12 +1511,12 @@ export default function FlowApp() {
     /* 운영시간만 확인되지 않은 안은 여행자가 그 사실을 읽고 동의했을 때만
        열린다. 동의는 확인을 대신하지 않는다 — 카드는 계속 미확인으로 남는다. */
     const acknowledged =
-      safety.hoursUnconfirmedOnly &&
+      safety.selfConfirmable &&
       acknowledgedOptionId === selectedOption.id;
     if (!safety.canApply && !acknowledged) {
       setActionPriority("assertive");
       setActionMessage(
-        safety.hoursUnconfirmedOnly
+        safety.selfConfirmable
           ? tr(
               "운영시간을 확인하지 못했다는 안내를 읽고 동의해 주세요.",
               "Please read and accept the note about the unconfirmed opening hours.",
@@ -1731,27 +1744,6 @@ export default function FlowApp() {
     }
   };
 
-  const shareSavedProofLink = async (
-    link: ProofShareLink,
-    title: string,
-  ) => {
-    setActionBusy(true);
-    setActionPriority("polite");
-    setShareMessage(tr("저장한 증명 링크를 여는 중…", "Opening the saved proof link…"));
-    try {
-      await presentProofShareLink(link, title);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        setActionPriority("polite");
-        setShareMessage(tr("공유를 취소했습니다.", "Sharing cancelled."));
-      } else {
-        setActionPriority("assertive");
-        setShareMessage(requestErrorText(error, language));
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  };
 
   const shareSelectedOption = async () => {
     if (
@@ -1827,6 +1819,73 @@ export default function FlowApp() {
                 )
               : ""
           }`,
+        );
+      }
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  /* 카드 한 컷을 만들어 내보낸다. 어디로 갔는지(공유 시트 / 내려받기)를
+     `exportJourneyCard`가 돌려주므로, 화면은 실제로 일어난 일을 적는다 —
+     "공유했습니다"라고 적어 두고 파일이 저장됐으면 그 문장이 거짓이 된다. */
+  const shareJourneyCard = async () => {
+    if (!execution) return;
+    setActionBusy(true);
+    setActionPriority("polite");
+    setShareMessage(tr("카드를 만드는 중…", "Building the card…"));
+    try {
+      const stops = (execution.steps ?? []).map((step) => ({
+        title: step.title,
+        timeLabel:
+          formatKstTime(
+            step.role === "next_fixed"
+              ? step.scheduledAt
+              : (step.estimatedArrivalAt ?? step.scheduledAt),
+            language,
+          ) || "",
+        inserted: step.verificationStatus === "continuity_verified",
+      }));
+      const result = await exportJourneyCard(
+        {
+          stops,
+          headline: tr("여행을 이어 갔어요", "The trip continued"),
+          subheadline: completedPlace
+            ? tr(
+                `${completedPlace.title}을 넣고 다음 약속을 지켰어요`,
+                `Added ${completedPlace.title} and still made the appointment`,
+              )
+            : tr("다음 약속을 지켰어요", "The next appointment was kept"),
+          /* 이미지만 떠돌아도 오해가 생기지 않도록, 카드 자체에 지난 기록이라는
+             사실을 적는다. 화면 바깥으로 나가는 것에는 화면의 경고가 따라가지
+             않는다. */
+          footnote: tr(
+            "지난 여행 기록입니다. 지금의 영업·경로를 보장하지 않습니다.",
+            "A record of a past trip. Not a guarantee of current opening or routes.",
+          ),
+          language: language === "en" ? "en" : "ko",
+        },
+        "ieoga-journey-card.png",
+      );
+      setShareMessage(
+        result === "shared"
+          ? tr("여행 카드를 공유했습니다.", "Shared the trip card.")
+          : tr(
+              "여행 카드를 이미지로 저장했습니다.",
+              "Saved the trip card as an image.",
+            ),
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setActionPriority("polite");
+        setShareMessage(tr("공유를 취소했습니다.", "Sharing cancelled."));
+      } else {
+        setActionPriority("assertive");
+        setShareMessage(
+          tr(
+            "카드를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            "Could not build the card. Please try again.",
+          ),
         );
       }
     } finally {
@@ -2521,6 +2580,76 @@ export default function FlowApp() {
                   </button>
                 ))}
               </div>
+
+              {/* 보고 싶은 종류를 조회 **전에** 고르는 자리.
+
+                  결과를 받은 뒤 걸러내는 칩은 결과 화면에 그대로 있다. 그것은
+                  원하지 않는 종류에도 운영시간·경로 조회를 다 쓴 뒤 화면에서
+                  지우는 것이다. 여기서 고르면 서버가 조회 전에 걸러내므로 같은
+                  예산이 고른 종류에만 쓰인다 — 다른 두 화면이 이미 이렇게
+                  동작하는데 이 화면에만 없어서, 같은 앱인데 화면마다 찾을 수
+                  있는 것이 달랐다. */}
+              <div className={styles.field} style={{ marginTop: 10 }}>
+                <span className={styles.label}>
+                  {tr("어떤 곳이 보고 싶으세요", "What kind of place")}
+                </span>
+                <div
+                  className={styles.sortRow}
+                  role="group"
+                  aria-label={tr(
+                    "보고 싶은 곳의 종류",
+                    "Kinds of place you want",
+                  )}
+                >
+                  <button
+                    type="button"
+                    className={
+                      wantedCategories.length === 0
+                        ? styles.sortActive
+                        : styles.sortChip
+                    }
+                    aria-pressed={wantedCategories.length === 0}
+                    onClick={() => {
+                      invalidateRecoveryResults();
+                      setWantedCategories([]);
+                    }}
+                  >
+                    {tr("전체", "All")}
+                  </button>
+                  {KTO_TOURISM_CATEGORIES.map((entry) => {
+                    const on = wantedCategories.includes(entry.code);
+                    return (
+                      <button
+                        key={entry.code}
+                        type="button"
+                        className={on ? styles.sortActive : styles.sortChip}
+                        aria-pressed={on}
+                        onClick={() => {
+                          invalidateRecoveryResults();
+                          setWantedCategories((current) =>
+                            current.includes(entry.code)
+                              ? current.filter((code) => code !== entry.code)
+                              : [...current, entry.code],
+                          );
+                        }}
+                      >
+                        {language === "en" ? entry.labelEn : entry.labelKo}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className={styles.fieldNote}>
+                  {wantedCategories.length === 0
+                    ? tr(
+                        "고르지 않으면 여러 종류를 골고루 찾아 드려요.",
+                        "Leave it as All and we look across every kind.",
+                      )
+                    : tr(
+                        "고른 종류에 집중해서 찾으니 그 종류에서 더 많은 곳이 나와요.",
+                        "We focus the search here, so you get more of these.",
+                      )}
+                </p>
+              </div>
             </div>
           </>
         )}
@@ -2683,6 +2812,9 @@ export default function FlowApp() {
                 /* 확인을 받으면 고를 수 있는 안은 흐리게 칠하지 않는다. */
                 const isBlocked =
                   !optionSelectableWithAcknowledgement(safety);
+                /* 확인하지 못한 것만 남아, 여행자가 직접 확인하면 열리는 안. */
+                const needsSelfConfirmation = safety.selfConfirmable;
+                const selfConfirmed = acknowledgedOptionId === option.id;
                 const selected = selectedOptionId === option.id;
                 return (
                 <article
@@ -2691,20 +2823,27 @@ export default function FlowApp() {
                     selected ? styles.cardSelected : ""
                   } ${isBlocked ? styles.cardUnverified : ""}`}
                 >
-                  {option.imageUrl && (
-                    <div className={styles.cardImage}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={option.imageUrl}
-                        alt=""
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.parentElement?.remove();
-                        }}
-                      />
-                    </div>
-                  )}
+                  {/* 사진이 없거나 주소가 죽어 있을 때 무엇을 대신 보여 줄지는
+                      `PlacePhoto`가 정한다. 예전에는 사진이 없으면 이 칸 자체가
+                      사라져 카드 높이가 서로 어긋났고, 로딩이 실패하면 부모
+                      요소를 DOM에서 직접 지웠다 — 리액트가 관리하는 나무를
+                      손으로 잘라내는 일이라 다시 그릴 때 되살아났다. */}
+                  <div className={styles.cardImage}>
+                    <PlacePhoto
+                      imageUrl={option.imageUrl}
+                      thumbnailUrl={option.thumbnailUrl}
+                      title={option.title}
+                      categoryCode={option.tourismCategory?.code}
+                      categoryLabel={
+                        option.tourismCategory
+                          ? language === "en"
+                            ? option.tourismCategory.labelEn
+                            : option.tourismCategory.labelKo
+                          : undefined
+                      }
+                      language={language === "en" ? "en" : "ko"}
+                    />
+                  </div>
                   <div className={styles.cardTop}>
                     <div>
                       <span className={styles.rank}>
@@ -2765,6 +2904,66 @@ export default function FlowApp() {
                           </li>
                         ))}
                       </ul>
+                    </section>
+                  )}
+
+                  {/* 확인하지 못한 것만 남은 안. 예전에는 이 카드도 "공식 확인 전
+                      적용 불가"로 잠겨 있었다. 그런데 우리가 확인하지 못한 것과
+                      확인해 보니 아닌 것은 전혀 다르다 — 붐빔 예측이 없는 곳은
+                      붐비는 곳이 아니라 **아무도 모르는 곳**이다. 무엇을 확인하지
+                      못했는지 밝히고 결정은 여행자에게 돌려준다. 확인을 받았다고
+                      카드가 "검증됨"으로 바뀌지는 않고, 공유도 열리지 않는다. */}
+                  {needsSelfConfirmation && (
+                    <section
+                      className={styles.gapAlert}
+                      aria-label={tr(
+                        "출발 전 직접 확인할 항목",
+                        "Check these before you leave",
+                      )}
+                    >
+                      <strong>
+                        {selfConfirmed
+                          ? tr(
+                              "직접 확인하셨어요. 이제 선택할 수 있어요",
+                              "You have checked these — you can select it now",
+                            )
+                          : tr(
+                              "직접 확인하면 선택할 수 있어요",
+                              "Check these yourself to select this option",
+                            )}
+                      </strong>
+                      <p>
+                        {tr(
+                          "아래 항목은 공식 정보로 확인하지 못했어요. 확인해도 카드가 검증됨으로 바뀌지는 않고, 못 확인한 사실은 그대로 남습니다.",
+                          "We could not verify the items below in official data. Confirming does not mark this option verified — the gap stays on record.",
+                        )}
+                      </p>
+                      <ul>
+                        {selfConfirmationChecklist(
+                          safety.selfConfirmableCodes,
+                          language === "en" ? "en" : "ko",
+                        ).map((item) => (
+                          <li key={`${option.id}-check-${item.code}`}>
+                            <b>{item.what}</b> — {item.how}
+                          </li>
+                        ))}
+                      </ul>
+                      {!selfConfirmed && (
+                        <button
+                          type="button"
+                          className={styles.selfConfirmButton}
+                          data-testid="flow-self-confirm"
+                          onClick={() => {
+                            setAcknowledgedOptionId(option.id);
+                            setSelectedOptionId(option.id);
+                            setActionPriority("polite");
+                            setActionMessage("");
+                            setShareMessage("");
+                          }}
+                        >
+                          {tr("직접 확인했어요", "I checked these myself")}
+                        </button>
+                      )}
                     </section>
                   )}
 
@@ -2890,7 +3089,9 @@ export default function FlowApp() {
                     <button
                       type="button"
                       className={styles.selectButton}
-                      disabled={isBlocked}
+                      disabled={
+                        isBlocked || (needsSelfConfirmation && !selfConfirmed)
+                      }
                       aria-pressed={selected}
                       onClick={() => {
                         setSelectedOptionId(option.id);
@@ -2903,9 +3104,14 @@ export default function FlowApp() {
                         ? safety.availabilityStatus === "confirmed_closed"
                           ? tr("휴무·폐점 시간이라 선택 불가", "Closed — cannot select")
                           : tr("공식 확인 전 적용 불가", "Cannot apply until verified")
-                        : selected
-                          ? tr("선택한 복구안", "Selected option")
-                          : tr("이 복구안 선택", "Select this option")}
+                        : needsSelfConfirmation && !selfConfirmed
+                          ? tr(
+                              "위에서 직접 확인하면 선택할 수 있어요",
+                              "Confirm above to select",
+                            )
+                          : selected
+                            ? tr("선택한 복구안", "Selected option")
+                            : tr("이 복구안 선택", "Select this option")}
                     </button>
                     <a
                       href={`https://map.kakao.com/link/map/${encodeURIComponent(option.title)},${option.latitude},${option.longitude}`}
@@ -3095,26 +3301,38 @@ export default function FlowApp() {
                       "This link records the ended journey's execution status and timestamps. It does not show current opening, route or booking availability, is not proof that it is safe to depart now, and must not be used for a current travel decision.",
                     )}
                   </p>
-                  {executionActionableProofShareLink && (
-                    <button
-                      type="button"
-                      className={styles.secondaryButton}
-                      onClick={() =>
-                        void shareSavedProofLink(
-                          executionActionableProofShareLink,
-                          options.find(
-                            (option) =>
-                              option.id === execution.sourceOptionId,
-                          )?.title ?? execution.steps[0]?.title ?? "IEOGA",
-                        )
-                      }
-                      disabled={actionBusy}
+
+                  {/* 지운 자리에 들어온 것. "출발 전 저장한 판정 증명도 공유"는
+                      출발 전에 만든 판정 링크를 여행이 끝난 자리에서 한 번 더
+                      내미는 버튼이었다. 받는 사람은 그것을 지금 쓸 수 있는
+                      정보로 읽는데, 그 링크는 이미 지난 판정이다. 여행자가 끝난
+                      뒤 실제로 남기고 싶은 것은 증명서가 아니라 오늘 이렇게
+                      다녀왔다는 한 장이므로, 카드 한 컷과 지도 링크로 바꿨다. */}
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    data-testid="flow-share-journey-card"
+                    onClick={() => void shareJourneyCard()}
+                    disabled={actionBusy}
+                  >
+                    {tr(
+                      "이어 간 여행 한 컷으로 저장하기",
+                      "Save this trip as one card",
+                    )}
+                  </button>
+                  {completedPlace && (
+                    <a
+                      className={styles.ctaLink}
+                      href={`https://map.kakao.com/link/map/${encodeURIComponent(completedPlace.title)},${completedPlace.latitude},${completedPlace.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
                     >
                       {tr(
-                        "출발 전 저장한 판정 증명도 공유",
-                        "Also share the saved pre-departure proof",
+                        `${completedPlace.title} 지도에서 보기`,
+                        `See ${completedPlace.title} on the map`,
                       )}
-                    </button>
+                      <span aria-hidden="true"> ↗</span>
+                    </a>
                   )}
                 </div>
                 {(actionMessage || shareMessage) && (
@@ -3491,72 +3709,10 @@ export default function FlowApp() {
 
         {step === "options" && (
           <div className={styles.footStack}>
-            {selectedNeedsAcknowledgement && selectedOption && (
-              /* 확인하지 못한 조건을 읽고 동의하면 적용을 연다. 동의해도 카드가
-                 "검증됨"으로 바뀌지는 않으며, 무엇이 확인되지 않았는지는 그대로
-                 남는다. 공유는 여전히 완전 검증된 결과에만 허용한다. */
-              <label className={styles.ackRow}>
-                <input
-                  type="checkbox"
-                  checked={acknowledgedOptionId === selectedOption.id}
-                  onChange={(event) =>
-                    setAcknowledgedOptionId(
-                      event.target.checked ? selectedOption.id : "",
-                    )
-                  }
-                />
-                <span>
-                  <strong>
-                    {tr(
-                      "운영시간을 확인하지 못했습니다. 알고 이어갑니다",
-                      "Opening hours are unconfirmed — I understand",
-                    )}
-                  </strong>
-                  {/* 우리가 들고 있는 원문과 문의처는 넘긴다. "확인해 주세요"
-                      보다 전화번호 한 줄이 실행 가능한 안내다. */}
-                  {(() => {
-                    const evidence = asRecord(selectedOption.availability);
-                    const hours = readText(evidence, ["operatingHours"]);
-                    const contact = readText(evidence, ["contact"]);
-                    if (!hours && !contact) return null;
-                    return (
-                      <small>
-                        {[
-                          hours ? `${tr("공식 표기", "Official text")} ${hours}` : "",
-                          contact ? `${tr("문의", "Phone")} ${contact}` : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </small>
-                    );
-                  })()}
-                  <small>
-                    {(selectedOption.evidenceGaps ?? [])
-                      .map(
-                        (gap) =>
-                          (language === "en" ? gap.noteEn : "") ||
-                          gap.note ||
-                          REJECTION_LABELS[
-                            gap.code as RejectionReasonCode
-                          ]?.[language] ||
-                          "",
-                      )
-                      .filter(Boolean)
-                      .join(" · ") ||
-                      tr(
-                        "원래 하려던 활동과 종류가 다릅니다.",
-                        "This is a different kind of stop than you planned.",
-                      )}
-                  </small>
-                  <small>
-                    {tr(
-                      "출발 전에 운영기관에 직접 확인해 주세요. 이어가는 확인되지 않은 조건을 충족으로 바꾸지 않습니다.",
-                      "Please confirm with the venue before you set out. IEOGA does not mark an unverified condition as met.",
-                    )}
-                  </small>
-                </span>
-              </label>
-            )}
+            {/* 확인은 카드에서 받는다. 무엇을 확인하지 못했는지가 적혀 있는
+                자리에서 눌러야 그 확인이 정보에 근거한 확인이다 — 예전에는 이
+                자리에 체크박스가 따로 있어, 카드의 경고와 발 아래의 동의가
+                떨어져 있었고 문구도 운영시간에만 맞춰져 있었다. */}
             <button
               type="button"
               className={styles.cta}

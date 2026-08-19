@@ -1,0 +1,70 @@
+/* 사진이 있는 카드와 없는 카드의 높이가 어긋나지 않도록 같은 상자를 쓴다.
+   높이가 다르면 캐러셀에서 카드가 한 칸씩 튀어 보인다. */
+.box {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-control, 12px);
+  border: 1px solid var(--line, #dee2e6);
+}
+
+/* 사진 아래에 지도가 바로 붙는 카드에서는 두 칸이 한 덩어리로 보이게 한다. */
+.boxJoined {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: 0;
+}
+
+.photo {
+  display: block;
+  object-fit: cover;
+  background: var(--surface-muted, #f1f3f5);
+}
+
+/* 사진이 없을 때. 옅은 상자에 분류 이름만 크게 띄우면 "문화"라는 글자가 사진
+   보다 먼저 읽혀 카드가 잘못 만들어진 것처럼 보였다. 아주 옅은 사선 무늬 위에
+   분류 그림을 놓아, 채워지지 않은 자리가 아니라 의도한 자리로 읽히게 한다. */
+.empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 2px;
+  padding: 8px;
+  color: var(--brand-deep, #0b7570);
+  background-color: var(--brand-tint, #e7f4f3);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgb(255 255 255 / 0.55) 0 2px,
+    transparent 2px 9px
+  );
+  text-align: center;
+}
+
+.empty svg {
+  width: 34px;
+  height: 34px;
+  opacity: 0.85;
+}
+
+.emptyCategory {
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.emptyNote {
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.68;
+  letter-spacing: -0.01em;
+}
+
+/* 좁은 화면에서는 글자를 줄이고 그림만 남긴다 — 두 줄이 되면 상자를 넘친다. */
+@media (max-width: 380px) {
+  .empty svg {
+    width: 28px;
+    height: 28px;
+  }
+  .emptyNote {
+    display: none;
+  }
+}

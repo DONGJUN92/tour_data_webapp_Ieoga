@@ -524,6 +524,10 @@ type WorkingCandidate = {
      정작 탈락을 가르는 구간을 못 본다. */
   estimatedCircuitMinutes?: number;
   imageUrl?: string;
+  /* 공사 `firstimage2`(썸네일). 원본만 비어 있고 썸네일은 있는 콘텐츠가
+     있으므로 사진 칸의 두 번째 후보로 쓴다. 같은 목록 응답에 실려 오므로
+     외부 조회를 한 건도 더 쓰지 않는다. */
+  thumbnailUrl?: string;
   modifiedAt?: string;
   indoor: boolean;
   relatedRank?: number;
@@ -3699,6 +3703,7 @@ function toOption(
     latitude: candidate.latitude,
     longitude: candidate.longitude,
     imageUrl: candidate.imageUrl,
+    thumbnailUrl: candidate.thumbnailUrl,
     contentTypeId: candidate.contentTypeId,
     tourismCategory: ktoTourismCategory(candidate.item),
     score: candidate.baseScore,
@@ -4995,6 +5000,7 @@ export async function recoverTrip(
           })()
         : undefined,
       imageUrl: normalizedImage(item.firstimage),
+      thumbnailUrl: normalizedImage(item.firstimage2),
       modifiedAt: stringValue(item.modifiedtime) || undefined,
       evidenceGaps,
       indoor,

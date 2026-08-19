@@ -672,7 +672,7 @@ test("휴무·제공자 장애는 제외하고, 운영시간 미대조는 확인
             );
             const safety = optionApplicationSafety(option, "ko");
             assert.equal(
-              safety.hoursUnconfirmedOnly,
+              safety.selfConfirmable,
               true,
               "넣기 전에 확인을 받아야 하는 상태로 표시되어야 한다",
             );

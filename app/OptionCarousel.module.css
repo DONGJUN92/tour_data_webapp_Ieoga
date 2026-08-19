@@ -1,0 +1,127 @@
+.carousel {
+  display: grid;
+  gap: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.count {
+  color: var(--ink-soft, #5c6670);
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* 원 안의 화살표를 정중앙에 둔다. 글리프를 쓰던 때에는 폰트의 좌우 여백 차이
+   때문에 한쪽으로 밀렸다. 지금은 도형이므로 격자 가운데 정렬만으로 맞는다. */
+.nav button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line-strong, #ced4da);
+  border-radius: 999px;
+  background: var(--paper, #fff);
+  color: var(--ink, #212529);
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease,
+    border-color 140ms ease, color 140ms ease;
+}
+
+.nav button svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.nav button:hover {
+  background: var(--brand-tint, #e7f4f3);
+  border-color: var(--brand, #0e9594);
+  color: var(--brand-deep, #0b7570);
+  transform: translateY(-1px);
+}
+
+.nav button:active {
+  transform: scale(0.94);
+}
+
+.nav button:focus-visible {
+  outline: 2px solid var(--brand, #0e9594);
+  outline-offset: 2px;
+}
+
+/* 가로 트랙. 기본으로 두 칸이 보이고 한 칸씩 딱 맞게 멈춘다. */
+.track {
+  display: grid;
+  grid-auto-flow: column;
+  /* 두 칸 + 사이 간격이 정확히 폭에 맞는다. */
+  grid-auto-columns: calc((100% - 14px) / 2);
+  gap: 14px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+}
+
+.track > * {
+  scroll-snap-align: start;
+  min-width: 0;
+}
+
+.track:focus-visible {
+  outline: 2px solid var(--brand, #0e9594);
+  outline-offset: 2px;
+  border-radius: var(--r-card, 16px);
+}
+
+/* 끝에서 처음으로 이어 붙는 순간. 즉시 옮기므로 그 사실을 눈으로 알 수 있게
+   한 번 짧게 들어온다. */
+.trackWrapped > * {
+  animation: wrapIn 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes wrapIn {
+  from {
+    opacity: 0.35;
+    transform: translateX(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 좁은 화면에서는 한 칸씩. 두 칸을 억지로 넣으면 사진과 글이 모두 작아진다. */
+@media (max-width: 640px) {
+  .track {
+    grid-auto-columns: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav button {
+    transition: none;
+  }
+  .nav button:hover,
+  .nav button:active {
+    transform: none;
+  }
+  .trackWrapped > * {
+    animation: none;
+  }
+}

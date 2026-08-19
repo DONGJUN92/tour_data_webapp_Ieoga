@@ -14,6 +14,9 @@ import { WeatherGlanceStrip } from "./WeatherGlanceStrip";
 import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
+import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
+import { OptionCarousel } from "./OptionCarousel";
+import { PlacePhoto } from "./PlacePhoto";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
 import {
   PlanPlacementDialog,
@@ -112,6 +115,7 @@ import {
   executionPreservesLockedAppointment,
   optionApplicationSafety,
   optionSelectableWithAcknowledgement,
+  selfConfirmationChecklist,
 } from "./traveler-safety";
 
 const ABLATION_SOURCE_EN: Record<string, { label: string; lost: string }> = {
@@ -377,6 +381,10 @@ export function ProductApp() {
      되돌릴 수도 없다. 축을 고른 행위가 곧 동의가 되게 한다. */
   const [optionSort, setOptionSort] = useState<OptionSort>("recommended");
   const [optionCategory, setOptionCategory] = useState("all");
+  /* 조회 전에 미리 고른 관광 분류. 비어 있으면 전체를 본다. 위의
+     `optionCategory`는 받은 목록을 걸러 보는 것이고, 이것은 서버가 무엇을
+     조회할지를 정한다 — 이름이 비슷하지만 하는 일이 다르다. */
+  const [wantedCategories, setWantedCategories] = useState<string[]>([]);
   const [language, setLanguage] = useState<Language>("ko");
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const [regions, setRegions] = useState<Region[]>([]);
@@ -1551,6 +1559,9 @@ export function ProductApp() {
           disabledSources: disabledSources.length ? disabledSources : undefined,
           safetyBufferMinutes,
           minimumStayMinutes,
+          /* 고른 분류만 보낸다. 하나도 고르지 않았으면 필드를 넣지 않아 전체를
+             본다 — 스키마가 빈 배열을 거부하므로 `undefined`여야 한다. */
+          tourismCategories: wantedCategories.length ? wantedCategories : undefined,
           analyticsConsent,
           itinerary: itineraryContract(
             journeyPlan,
@@ -1823,11 +1834,11 @@ export function ProductApp() {
     /* 운영시간만 확인되지 않은 안은 여행자가 그 사실을 읽고 동의했을 때 열린다.
        동의는 확인을 대신하지 않는다 — 근거 공백은 그대로 남고 공유도 막힌다. */
     const acknowledged =
-      safety.hoursUnconfirmedOnly && acknowledgedOptionId === option.id;
+      safety.selfConfirmable && acknowledgedOptionId === option.id;
     if (!safety.canApply && !acknowledged) {
       setOutcomePriority("assertive");
       setOutcomeMessage(
-        safety.hoursUnconfirmedOnly
+        safety.selfConfirmable
           ? tr(
               "운영시간을 확인하지 못했다는 안내를 읽고 동의해 주세요.",
               "Please read and accept the note about the unconfirmed opening hours.",
@@ -3308,6 +3319,68 @@ export function ProductApp() {
                       ))}
                     </div>
                   </details>
+                  {/* 보고 싶은 종류를 조회 **전에** 고르는 자리.
+
+                      결과를 받은 뒤 걸러내는 칩은 결과 화면에 그대로 있다.
+                      그것은 원하지 않는 종류에도 운영시간·경로 조회를 다 쓴 뒤
+                      화면에서 지우는 것이다. 여기서 고르면 서버가 조회 전에
+                      걸러내므로 같은 예산이 고른 종류에만 쓰인다 — 실측에서
+                      명동 주간 전체 조회는 식당이 2곳이었는데, 식당만 골라
+                      보내면 12곳이 나왔다.
+
+                      `<details>` 안에 접어 두지 않는다. 무엇이 나올지를 가장
+                      크게 바꾸는 입력이라, 펼쳐야 보이면 대부분 못 본다. */}
+                  <div
+                    className="option-sort wanted-categories"
+                    role="group"
+                    aria-label={tr(
+                      "보고 싶은 곳의 종류",
+                      "Kinds of place you want",
+                    )}
+                  >
+                    <p className="wanted-categories-label">
+                      {tr("어떤 곳이 보고 싶으세요", "What kind of place")}
+                    </p>
+                    <button
+                      type="button"
+                      className={wantedCategories.length === 0 ? "is-active" : ""}
+                      aria-pressed={wantedCategories.length === 0}
+                      onClick={() => setWantedCategories([])}
+                    >
+                      {tr("전체", "All")}
+                    </button>
+                    {KTO_TOURISM_CATEGORIES.map((entry) => {
+                      const on = wantedCategories.includes(entry.code);
+                      return (
+                        <button
+                          key={entry.code}
+                          type="button"
+                          className={on ? "is-active" : ""}
+                          aria-pressed={on}
+                          onClick={() =>
+                            setWantedCategories((current) =>
+                              current.includes(entry.code)
+                                ? current.filter((code) => code !== entry.code)
+                                : [...current, entry.code],
+                            )
+                          }
+                        >
+                          {language === "en" ? entry.labelEn : entry.labelKo}
+                        </button>
+                      );
+                    })}
+                    <p className="option-sort-hint">
+                      {wantedCategories.length === 0
+                        ? tr(
+                            "고르지 않으면 여러 종류를 골고루 찾아 드려요.",
+                            "Leave it as All and we look across every kind.",
+                          )
+                        : tr(
+                            "고른 종류에 집중해서 찾으니 그 종류에서 더 많은 곳이 나와요.",
+                            "We focus the search here, so you get more of these.",
+                          )}
+                    </p>
+                  </div>
                   <details className="recovery-preferences">
                     <summary>
                       {tr(
@@ -4102,9 +4175,20 @@ export function ProductApp() {
                       </p>
                     )}
 
-                    <div className="option-list">
+                    {/* 빈 시간 탭과 같은 캐러셀을 함께 쓴다. 기본으로 두 곳을
+                        보여 주고 좌·우 버튼으로 넘기며, 끝에서 한 번 더 누르면
+                        처음으로 이어진다. 규칙이 한 곳에 있으므로 두 화면의
+                        조작이 어긋날 수 없다. */}
+                    <OptionCarousel
+                      total={displayedRecoveryOptions.length}
+                      language={language === "en" ? "en" : "ko"}
+                      trackLabel={tr(
+                        "대안 여행지 목록. 좌우로 넘길 수 있습니다.",
+                        "Alternative places. Scroll left and right.",
+                      )}
+                    >
                       {displayedRecoveryOptions.map((option, index) => (
-                        <article
+                        <li
                           className={[
                             "option-card",
                             appliedOptionId === option.id ? "is-applied" : "",
@@ -4119,150 +4203,31 @@ export function ProductApp() {
                           key={option.id || option.contentId || `${option.title}-${index}`}
                           data-testid="recovery-option"
                         >
+                          {/* 전경 사진을 카드 맨 위에 둔다. 사진이 없거나 주소가
+                              죽어 있을 때 무엇을 대신 보여 줄지는 `PlacePhoto`가
+                              정하므로, 세 화면이 같은 규칙을 쓴다. 예전에는
+                              `alt=""`로 두어 화면 낭독기에는 존재하지 않는 사진
+                              이었고, 없을 때는 빈 상자만 남았다. */}
                           <div className="option-image">
-                            {option.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={option.imageUrl}
-                                alt=""
-                                loading="lazy"
-                                referrerPolicy="no-referrer"
-                                onError={(event) => {
-                                  event.currentTarget.hidden = true;
-                                }}
-                              />
-                            ) : null}
+                            <PlacePhoto
+                              imageUrl={option.imageUrl}
+                              thumbnailUrl={option.thumbnailUrl}
+                              title={option.title}
+                              categoryCode={option.tourismCategory?.code}
+                              categoryLabel={
+                                option.tourismCategory
+                                  ? language === "en"
+                                    ? option.tourismCategory.labelEn
+                                    : option.tourismCategory.labelKo
+                                  : undefined
+                              }
+                              language={language === "en" ? "en" : "ko"}
+                            />
                             <span>#{String(index + 1).padStart(2, "0")}</span>
                           </div>
                           <div className="option-content">
-                            <div className="option-title-row">
-                              <div>
-                                {option.strategyLabel && (
-                                  <span className="strategy-label">
-                                    {(language === "en" &&
-                                      option.strategyLabelEn) ||
-                                      option.strategyLabel}
-                                  </span>
-                                )}
-                                {option.tourismCategory && (
-                                  <span className="tourism-category-label">
-                                    {language === "en"
-                                      ? option.tourismCategory.labelEn
-                                      : option.tourismCategory.labelKo}
-                                  </span>
-                                )}
-                                <p lang={language === "en" ? "ko" : undefined}>
-                                  {option.address || tr("주소 정보 확인 필요", "Address not provided")}
-                                </p>
-                                <h3 lang={language === "en" ? "ko" : undefined}>
-                                  {option.title}
-                                </h3>
-                                {language === "en" && (
-                                  <small>KTO official Korean place name and address</small>
-                                )}
-                              </div>
-                              {typeof option.score === "number" && (
-                                <span className="option-score">
-                                  <b>{Math.round(option.score)}</b>
-                                  <small>{tr("기초 적합도", "Base fit")}</small>
-                                </span>
-                              )}
-                            </div>
-                            {/* 운영시간만 대조하지 못한 안은 막지 않는다. 무엇을
-                                확인하지 못했는지 밝히고, 원문과 문의처를 함께
-                                주고, 읽었다는 동의를 받은 뒤에 연다. 동의해도
-                                카드가 "검증됨"으로 바뀌지는 않는다. */}
-                            {optionApplicationSafety(option, language)
-                              .hoursUnconfirmedOnly ? (
-                              <section
-                                className="evidence-gap-alert is-acknowledgeable"
-                                aria-label={tr(
-                                  "출발 전 직접 확인할 항목",
-                                  "Conditions to verify before leaving",
-                                )}
-                              >
-                                <strong>
-                                  {language === "en"
-                                    ? "We could not confirm the opening hours"
-                                    : "운영시간을 확인하지 못했습니다"}
-                                </strong>
-                                <p>
-                                  {language === "en"
-                                    ? "The official tourism data either has no opening hours for this place, or states them in a form we cannot match against your arrival time. It may be closed when you get there."
-                                    : "한국관광공사 공식 정보에 이 곳의 운영시간이 없거나, 도착 시각과 대조할 수 없는 형식으로 적혀 있습니다. 도착했을 때 문이 닫혀 있을 수 있습니다."}
-                                </p>
-                                {(() => {
-                                  const evidence = asRecord(option.availability);
-                                  const hours = readText(evidence, [
-                                    "operatingHours",
-                                  ]);
-                                  const contact = readText(evidence, ["contact"]);
-                                  if (!hours && !contact) return null;
-                                  return (
-                                    <ul>
-                                      {hours && (
-                                        <li>
-                                          {tr("공식 표기", "Official text")} · {hours}
-                                        </li>
-                                      )}
-                                      {contact && (
-                                        <li>
-                                          {tr("문의", "Phone")} · {contact}
-                                        </li>
-                                      )}
-                                    </ul>
-                                  );
-                                })()}
-                                <label className="evidence-gap-ack">
-                                  <input
-                                    type="checkbox"
-                                    checked={acknowledgedOptionId === option.id}
-                                    onChange={(event) =>
-                                      setAcknowledgedOptionId(
-                                        event.target.checked ? option.id : "",
-                                      )
-                                    }
-                                  />
-                                  <span>
-                                    {language === "en"
-                                      ? "I understand and will check before I go"
-                                      : "확인했습니다. 출발 전에 직접 확인하겠습니다"}
-                                  </span>
-                                </label>
-                              </section>
-                            ) : (
-                              !optionApplicationSafety(option, language)
-                                .canApply && (
-                                <section
-                                  className="evidence-gap-alert"
-                                  role="alert"
-                                  aria-label={tr(
-                                    "출발 전 직접 확인할 항목",
-                                    "Conditions to verify before leaving",
-                                  )}
-                                >
-                                  <strong>
-                                    {language === "en"
-                                      ? "Unavailable until every safety condition is verified"
-                                      : "모든 안전 조건을 확인하기 전에는 적용할 수 없어요"}
-                                  </strong>
-                                  <p>
-                                    {language === "en"
-                                      ? "IEOGA blocks closed and unverified options to prevent a wasted trip or a missed appointment."
-                                      : "헛걸음이나 다음 약속 지연을 막기 위해 휴무·미확인 후보는 일정에 적용하지 않습니다."}
-                                  </p>
-                                  <ul>
-                                    {optionApplicationSafety(option, language).reasons.map(
-                                      (reason, reasonIndex) => (
-                                        <li key={`${option.id}-safety-${reasonIndex}`}>
-                                          {reason}
-                                        </li>
-                                      ),
-                                    )}
-                                  </ul>
-                                </section>
-                              )
-                            )}
+                            {/* 사진 바로 아래에 가는 길. 예전에는 근거 경고와
+                                안전 안내를 모두 지나 카드 한참 아래에 있었다. */}
                             {(() => {
                               const geometry = (option.routeGeometry ??
                                 []) as RoutePoint[];
@@ -4327,6 +4292,166 @@ export function ProductApp() {
                                 />
                               );
                             })()}
+                            <div className="option-title-row">
+                              <div>
+                                {option.strategyLabel && (
+                                  <span className="strategy-label">
+                                    {(language === "en" &&
+                                      option.strategyLabelEn) ||
+                                      option.strategyLabel}
+                                  </span>
+                                )}
+                                {option.tourismCategory && (
+                                  <span className="tourism-category-label">
+                                    {language === "en"
+                                      ? option.tourismCategory.labelEn
+                                      : option.tourismCategory.labelKo}
+                                  </span>
+                                )}
+                                <p lang={language === "en" ? "ko" : undefined}>
+                                  {option.address || tr("주소 정보 확인 필요", "Address not provided")}
+                                </p>
+                                <h3 lang={language === "en" ? "ko" : undefined}>
+                                  {option.title}
+                                </h3>
+                                {language === "en" && (
+                                  <small>KTO official Korean place name and address</small>
+                                )}
+                              </div>
+                              {typeof option.score === "number" && (
+                                <span className="option-score">
+                                  <b>{Math.round(option.score)}</b>
+                                  <small>{tr("기초 적합도", "Base fit")}</small>
+                                </span>
+                              )}
+                            </div>
+                            {/* 확인하지 못한 것만 남은 안은 막지 않는다. 무엇을
+                                확인하지 못했는지 밝히고, 어떻게 확인하면 되는지
+                                알려 주고, 여행자가 직접 확인했다고 말한 뒤에
+                                연다. 확인해도 카드가 "검증됨"으로 바뀌지 않고
+                                공유도 열리지 않는다.
+
+                                예전에는 운영시간에만 이 문이 열려 있었고 문구도
+                                운영시간에 고정돼 있었다. 그래서 집중률 예측이
+                                없는 곳은 영구히 적용 불가로 남았다 — 붐빔 예측이
+                                없다는 것은 붐빈다는 뜻이 아닌데도. */}
+                            {optionApplicationSafety(option, language)
+                              .selfConfirmable ? (
+                              <section
+                                className="evidence-gap-alert is-acknowledgeable"
+                                aria-label={tr(
+                                  "출발 전 직접 확인할 항목",
+                                  "Conditions to verify before leaving",
+                                )}
+                              >
+                                <strong>
+                                  {acknowledgedOptionId === option.id
+                                    ? tr(
+                                        "직접 확인하셨어요. 이제 적용할 수 있어요",
+                                        "You have checked these — you can apply it now",
+                                      )
+                                    : tr(
+                                        "직접 확인하면 적용할 수 있어요",
+                                        "Check these yourself to apply this option",
+                                      )}
+                                </strong>
+                                <p>
+                                  {tr(
+                                    "아래 항목은 공식 정보로 확인하지 못했어요. 확인해도 이어가가 미확인을 충족으로 바꾸지는 않고, 못 확인한 사실은 그대로 남습니다.",
+                                    "We could not verify the items below in official data. Confirming does not turn an unverified condition into a met one — the gap stays on record.",
+                                  )}
+                                </p>
+                                <ul>
+                                  {selfConfirmationChecklist(
+                                    optionApplicationSafety(option, language)
+                                      .selfConfirmableCodes,
+                                    language === "en" ? "en" : "ko",
+                                  ).map((item) => (
+                                    <li key={`${option.id}-check-${item.code}`}>
+                                      <b>{item.what}</b> — {item.how}
+                                    </li>
+                                  ))}
+                                </ul>
+                                {(() => {
+                                  const evidence = asRecord(option.availability);
+                                  const hours = readText(evidence, [
+                                    "operatingHours",
+                                  ]);
+                                  const contact = readText(evidence, ["contact"]);
+                                  if (!hours && !contact) return null;
+                                  return (
+                                    <ul>
+                                      {hours && (
+                                        <li>
+                                          {tr("공식 표기", "Official text")} · {hours}
+                                        </li>
+                                      )}
+                                      {contact && (
+                                        <li>
+                                          {tr("문의", "Phone")} · {contact}
+                                        </li>
+                                      )}
+                                    </ul>
+                                  );
+                                })()}
+                                {/* 체크박스가 아니라 버튼이다. 체크박스는 조건을
+                                    켜는 설정처럼 보이는데, 이것은 여행자가 한 번
+                                    하는 결정이다. 되돌릴 수 있도록 두 상태를
+                                    모두 둔다. */}
+                                {acknowledgedOptionId === option.id ? (
+                                  <button
+                                    type="button"
+                                    className="evidence-gap-confirm is-done"
+                                    onClick={() => setAcknowledgedOptionId("")}
+                                  >
+                                    {tr("직접 확인함 · 취소하기", "Checked — undo")}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="evidence-gap-confirm"
+                                    data-testid="self-confirm-option"
+                                    onClick={() =>
+                                      setAcknowledgedOptionId(option.id)
+                                    }
+                                  >
+                                    {tr("직접 확인했어요", "I checked these myself")}
+                                  </button>
+                                )}
+                              </section>
+                            ) : (
+                              !optionApplicationSafety(option, language)
+                                .canApply && (
+                                <section
+                                  className="evidence-gap-alert"
+                                  role="alert"
+                                  aria-label={tr(
+                                    "출발 전 직접 확인할 항목",
+                                    "Conditions to verify before leaving",
+                                  )}
+                                >
+                                  <strong>
+                                    {language === "en"
+                                      ? "Unavailable until every safety condition is verified"
+                                      : "모든 안전 조건을 확인하기 전에는 적용할 수 없어요"}
+                                  </strong>
+                                  <p>
+                                    {language === "en"
+                                      ? "IEOGA blocks closed and unverified options to prevent a wasted trip or a missed appointment."
+                                      : "헛걸음이나 다음 약속 지연을 막기 위해 휴무·미확인 후보는 일정에 적용하지 않습니다."}
+                                  </p>
+                                  <ul>
+                                    {optionApplicationSafety(option, language).reasons.map(
+                                      (reason, reasonIndex) => (
+                                        <li key={`${option.id}-safety-${reasonIndex}`}>
+                                          {reason}
+                                        </li>
+                                      ),
+                                    )}
+                                  </ul>
+                                </section>
+                              )
+                            )}
                             {option.purposePreservation && (
                               <div
                                 className="purpose-contract"
@@ -4587,7 +4712,7 @@ export function ProductApp() {
                                       .canApply &&
                                       !(
                                         optionApplicationSafety(option, language)
-                                          .hoursUnconfirmedOnly &&
+                                          .selfConfirmable &&
                                         acknowledgedOptionId === option.id
                                       ))
                                   }
@@ -4606,7 +4731,7 @@ export function ProductApp() {
                                       ? "Currently applied"
                                       : "현재 적용 중"
                                     : optionApplicationSafety(option, language)
-                                          .hoursUnconfirmedOnly
+                                          .selfConfirmable
                                       ? acknowledgedOptionId === option.id
                                         ? language === "en"
                                           ? "Continue, hours unconfirmed"
@@ -4647,9 +4772,9 @@ export function ProductApp() {
                               </div>
                             </div>
                           </div>
-                        </article>
+                        </li>
                       ))}
-                    </div>
+                    </OptionCarousel>
                     {recovery.counterfactual?.title && (
                       <aside className="counterfactual-card">
                         <div>

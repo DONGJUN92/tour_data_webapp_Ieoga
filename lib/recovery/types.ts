@@ -356,6 +356,7 @@ export type RecoveryOption = {
   latitude: number;
   longitude: number;
   imageUrl?: string;
+  thumbnailUrl?: string;
   contentTypeId: string;
   tourismCategory: {
     code: string;

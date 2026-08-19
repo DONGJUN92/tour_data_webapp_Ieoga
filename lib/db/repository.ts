@@ -1293,11 +1293,11 @@ export async function activateRecoveryExecution(params: {
          must be generated; mutable upstream data is never used as a bypass. */
       return { activated: false, reason: "INVALID_STATE" };
     }
-    /* 운영시간을 대조하지 못한 안은 여행자가 그 사실을 읽고 동의했을 때만
-       실행 계약이 된다. 화면에도 체크박스가 있지만 그것은 화면의 약속일 뿐이고,
+    /* 확인하지 못한 조건이 남은 안은 여행자가 그 사실을 읽고 직접 확인했을 때만
+       실행 계약이 된다. 화면에도 확인 절차가 있지만 그것은 화면의 약속일 뿐이고,
        요청을 직접 만들면 지나갈 수 있다. 계약을 만드는 자리에서 다시 묻는다. */
     if (
-      applicationSnapshotClass(applicationSnapshot) === "hours_unconfirmed" &&
+      applicationSnapshotClass(applicationSnapshot) === "self_confirmed" &&
       params.acknowledgeUnverifiedHours !== true
     ) {
       return { activated: false, reason: "ACKNOWLEDGEMENT_REQUIRED" };

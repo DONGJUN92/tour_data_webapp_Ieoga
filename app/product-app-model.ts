@@ -195,6 +195,7 @@ export type RecoveryOption = {
   latitude: number;
   longitude: number;
   imageUrl?: string;
+  thumbnailUrl?: string;
   contentTypeId?: string;
   /* KorService2가 장소마다 돌려준 공식 신분류의 1단계 값이다. 화면은 장소명이나
      넓은 contentTypeId로 공원·식당을 다시 추측하지 않고 이 계약만 사용한다.

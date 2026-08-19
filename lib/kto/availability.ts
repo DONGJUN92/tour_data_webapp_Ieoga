@@ -88,6 +88,29 @@ function currentDateNumber(now = new Date()): number {
   );
 }
 
+/* 공사 API가 쓰는 `YYYYMMDD` 한국 날짜. 행사 전용 조회(`searchFestival2`)에
+   `eventStartDate`로 넘기고, 목록에 실려 온 행사 기간과 대조할 때도 같은 값을
+   쓴다 — 두 자리에서 날짜를 각자 만들면 자정 무렵에 하루가 어긋난다. */
+export function koreaCompactDateString(now = new Date()): string {
+  return String(currentDateNumber(now));
+}
+
+/* 목록 응답에 실려 온 행사 기간만으로 "그날 열리는가"를 판정한다.
+   상세조회를 쓰지 않으므로 외부 조회를 한 건도 더 쓰지 않는다.
+
+   기간을 알 수 없으면 `undefined`를 준다 — 모른다는 것을 "열린다"로도
+   "닫힌다"로도 바꿔 적지 않는다. 판정은 뒤에서 상세조회가 한다. */
+export function eventRunsOnDate(
+  item: KtoItem,
+  visitDate: Date,
+): { runs: boolean; start: number; end: number } | undefined {
+  const start = compactDate(text(item, ["eventstartdate"]));
+  const end = compactDate(text(item, ["eventenddate"]));
+  if (start === null || end === null) return undefined;
+  const day = currentDateNumber(visitDate);
+  return { runs: day >= start && day <= end, start, end };
+}
+
 /* 운영시간을 사람이 읽는 한 줄로.
  *
  * 예전 문구들은 우리 판정 과정을 설명했다 — "단일 명확 구간 안에 전체 체류시간이

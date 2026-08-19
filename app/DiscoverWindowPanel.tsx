@@ -127,6 +127,12 @@ const REJECTION_COPY: Record<string, { ko: string; en: string }> = {
     ko: "제안된 방문 시간에 공식적으로 휴무·폐점",
     en: "Officially closed during the proposed visit",
   },
+  /* 휴무와 나눠 적는다. 작년에 끝난 축제를 "휴무"라고 적으면 여행자는 다른
+     날에 가면 된다고 읽는다. */
+  EVENT_NOT_RUNNING: {
+    ko: "조회 기준 날짜에 열리지 않는 행사",
+    en: "Not running on the selected date",
+  },
   OPERATING_STATUS_UNCONFIRMED: {
     ko: "체류 시간 전체의 운영 여부가 확인되지 않음",
     en: "Opening for the full stay is unconfirmed",

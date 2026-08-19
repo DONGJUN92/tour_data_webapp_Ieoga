@@ -10,7 +10,16 @@ type OptionWithEvidence = {
   availability?: unknown;
   confirmationRequired?: boolean;
   evidenceGaps?: Array<{ code?: string; note?: string; noteEn?: string }>;
+  /* 원래 하려던 활동과 종류가 같은가. 이것이 없으면 화면은 "종류가 달라졌다"와
+     "무언가를 확인하지 못했다"를 구별할 수 없다 — 예전에는 둘 다 똑같이
+     `confirmationRequired`로만 왔고, 그래서 식당 후보에 "공식 확인이 더
+     필요합니다"라는 사실과 다른 문장이 붙었다. */
+  purposePreservation?: { status?: string };
 };
+
+/* 근거 공백은 아니지만 여행자가 직접 정하면 되는 일. 공백 코드와 같은 자리에서
+   다루되 코드 공간을 침범하지 않도록 접두어를 붙인다. */
+const PURPOSE_CHANGED_CODE = "PURPOSE_CHANGED";
 
 export type OptionApplicationSafety = {
   canApply: boolean;
@@ -81,6 +90,19 @@ const SELF_CONFIRMATION_GUIDE: Record<
     en: {
       what: "Indoor or not",
       how: "Official data does not say whether this is indoors. Use the photo and venue notes to decide.",
+    },
+  },
+  /* 이것만은 "확인하지 못했다"가 아니다. 운영시간·경로·필수 조건은 모두 확인됐고,
+     원래 하려던 활동과 종류가 다를 뿐이다. 그 판단은 애초에 우리가 할 일이
+     아니었다 — 관광을 하려다 식사를 하기로 마음을 바꾸는 것은 여행자의 자유다. */
+  PURPOSE_CHANGED: {
+    ko: {
+      what: "여행 종류",
+      how: "원래 하려던 것과 종류가 다른 곳이에요. 운영시간과 경로는 확인했으니, 이 종류로 바꿔도 괜찮은지만 정해 주세요.",
+    },
+    en: {
+      what: "Kind of activity",
+      how: "This is a different kind of place than you planned. Opening and route are verified — only you can decide whether the change suits you.",
     },
   },
 };
@@ -250,12 +272,33 @@ export function optionApplicationSafety(
   }
 
   if (option.confirmationRequired && reasons.length === 0) {
-    unresolvableReason = true;
-    reasons.push(
-      language === "en"
-        ? "A required travel condition still needs official confirmation."
-        : "필수 여행 조건에 공식 확인이 더 필요합니다.",
-    );
+    /* 공백이 하나도 없는데 확인이 필요하다고 표시된 안. 엔진에서 이 조합은
+       **활동 종류가 바뀐 경우 하나뿐**이다(`changed_visit_category`).
+
+       예전에는 여기서 `unresolvableReason`을 세워 영구 적용 불가로 만들고
+       "필수 여행 조건에 공식 확인이 더 필요합니다"라고 적었다. 두 가지가
+       잘못됐다. 첫째, 확인하지 못한 것이 없으므로 그 문장은 거짓이다 —
+       운영시간도 경로도 확인됐다. 둘째, 관광 대신 식사를 하기로 정하는 것은
+       근거의 문제가 아니라 여행자의 선택인데 우리가 그 선택을 막았다.
+       실측: 대전 식당 후보 두 곳이 이 사유로 영구 적용 불가였다. */
+    if (
+      option.purposePreservation?.status === "changed_visit_category" ||
+      option.purposePreservation?.status === undefined
+    ) {
+      selfConfirmableCodes.push(PURPOSE_CHANGED_CODE);
+      reasons.push(
+        language === "en"
+          ? "This is a different kind of place than you originally planned."
+          : "원래 하려던 것과 종류가 다른 곳입니다.",
+      );
+    } else {
+      unresolvableReason = true;
+      reasons.push(
+        language === "en"
+          ? "A required travel condition still needs official confirmation."
+          : "필수 여행 조건에 공식 확인이 더 필요합니다.",
+      );
+    }
   }
 
   return {

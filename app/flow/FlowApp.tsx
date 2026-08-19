@@ -199,6 +199,10 @@ const REJECTION_LABELS: Record<
     ko: "지금 있는 곳과 같은 장소",
     en: "Same as the disrupted place",
   },
+  EVENT_NOT_RUNNING: {
+    ko: "조회 기준 날짜에 열리지 않는 행사",
+    en: "Not running on the selected date",
+  },
   OFFICIALLY_CLOSED: {
     ko: "그 시각에 운영하지 않음",
     en: "Officially closed at that time",

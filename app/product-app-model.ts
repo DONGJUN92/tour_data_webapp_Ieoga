@@ -723,6 +723,41 @@ export function todayInKorea(): string {
 export const MIN_APPOINTMENT_MINUTES = 15;
 export const MAX_APPOINTMENT_MINUTES = 24 * 60;
 
+/* 남은 시간과 약속 시각을 잇는 두 방향.
+ *
+ * 일정 복구 화면은 "다음 예약까지 쓸 수 있는 시간"을 표시용 state에 따로 복사해
+ * 두고 있었다. 그 복사본은 30초마다 도는 시계가 덮어썼기 때문에, 여행자가 그 칸에
+ * 숫자를 넣어도 1분 안에 원래대로 돌아갔다 — 고칠 수 있는 것처럼 보이는데 고쳐지지
+ * 않는 칸이었다. 게다가 그 값은 서버로 보내지도 않았다(요청은 제출 시각에 약속
+ * 시각에서 다시 계산한다). 즉 그 칸은 아무것도 바꾸지 못했다.
+ *
+ * 진실을 하나로 둔다. **약속 시각이 원본이고 남은 시간은 그것에서 나온다.**
+ * 남은 시간을 고치는 것은 곧 약속 시각을 옮기는 것이고, 그러면 표시값은 저절로
+ * 따라온다. 흐름 화면(FlowApp)이 이미 이 방식이므로 두 화면이 같아진다.
+ *
+ * 자정을 넘는 경우가 있어 시각만으로는 부족하다 — 날짜도 함께 돌려준다. */
+export function appointmentFromAvailableMinutes(
+  referenceMs: number,
+  minutes: number,
+): { date: string; time: string } | null {
+  if (!Number.isFinite(referenceMs) || !Number.isInteger(minutes)) return null;
+  if (minutes < MIN_APPOINTMENT_MINUTES || minutes > MAX_APPOINTMENT_MINUTES) {
+    return null;
+  }
+  return appointmentAfterMinutesInKorea(new Date(referenceMs), minutes);
+}
+
+/* 표시할 남은 시간. 약속이 이미 지났으면 음수가 나오는데, 그것을 0이나 15로
+   눌러 적으면 "아직 갈 수 있다"는 거짓이 된다. 지난 것은 지난 대로 돌려주고
+   화면이 그 사실을 말하게 한다. */
+export function availableMinutesFromAppointment(
+  date: string,
+  time: string,
+  referenceMs: number,
+): number | null {
+  return appointmentMinutesFromNow(date, time, referenceMs);
+}
+
 export function appointmentAfterMinutesInKorea(
   now: Date,
   minutes: number,

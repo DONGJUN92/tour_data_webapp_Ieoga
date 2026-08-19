@@ -11,7 +11,7 @@ import {
    운영시간을 대조하지 못한 안이 목록에 오르자 그 안의 스냅숏이 만들어지지 않아
    **응답 전체가 저장 실패로 버려졌다.** 버전을 올려 예전에 저장된 스냅숏이 새
    규칙으로 읽히지 않게 한다 — 옛 계약은 다시 실행해야 한다. */
-export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v5";
+export const APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v6";
 
 /* 화면과 서버가 **같은 목록**을 봐야 하므로 상수는 의존성 없는 파일에 두고 여기서
    다시 내보낸다. 계약 모듈은 세션 비밀 때문에 서버 전용 바인딩을 끌고 오는데, 화면이
@@ -52,7 +52,10 @@ export type ItineraryImpactSnapshot = {
 export function applicationSnapshotClass(
   snapshot: Pick<
     RecoveryApplicationSnapshot,
-    "availability" | "evidenceGapCodes" | "confirmationRequired"
+    | "availability"
+    | "evidenceGapCodes"
+    | "confirmationRequired"
+    | "purposeChanged"
   >,
 ): "verified" | "self_confirmed" | undefined {
   const gaps = Array.isArray(snapshot.evidenceGapCodes)
@@ -86,6 +89,25 @@ export function applicationSnapshotClass(
   ) {
     return "self_confirmed";
   }
+  /* 공백이 하나도 없는데 확인이 필요하다고 표시된 안. 이 조합은 활동 종류가
+     바뀐 경우이고, 그 사실을 스냅숏이 직접 말해야 한다.
+
+     운영시간은 `confirmed_open`으로 확인됐고, 근거 공백은 비어 있고, 경로가 없는
+     후보는 애초에 목록에 오르지 않는다. 즉 안전에 관한 것은 모두 확인된 상태이고
+     남은 것은 "관광 대신 식사"처럼 여행자만 정할 수 있는 선택이다.
+
+     `purposeChanged`를 요구하는 이유. 이 필드가 없으면 두 값이 어긋난 못 믿을
+     스냅숏까지 함께 통과한다 — 어느 쪽이 참인지 알 수 없는 스냅숏은 거절해야
+     한다. `confirmed_open`을 요구하는 것은 또 하나의 안전선이다: 운영시간이
+     대조되지 않은 안은 위쪽 갈래에서 공백을 달고 오므로 여기 들지 않는다. */
+  if (
+    snapshot.availability.status === "confirmed_open" &&
+    gaps.length === 0 &&
+    snapshot.confirmationRequired === true &&
+    snapshot.purposeChanged === true
+  ) {
+    return "self_confirmed";
+  }
   return undefined;
 }
 
@@ -109,6 +131,12 @@ export type RecoveryApplicationSnapshot = {
      `false`로 묶어 두면 그 계약을 아예 표현할 수 없다. */
   confirmationRequired: boolean;
   evidenceGapCodes: string[];
+  /* 원래 하려던 활동과 종류가 바뀐 안인가.
+     v6에서 추가했다. 근거 공백이 없는데 확인이 필요하다고 표시된 스냅숏이
+     들어오면, 서버는 그것이 "종류가 바뀐 안"인지 "두 값이 어긋난 못 믿을
+     스냅숏"인지 구별할 수 없었다. 앞의 것은 여행자가 정하면 되는 일이고 뒤의
+     것은 거절해야 한다. 추측하지 않고 사유를 그대로 싣는다. */
+  purposeChanged: boolean;
   visitStartAt: string;
   visitEndAt: string;
   nextFixed?: {

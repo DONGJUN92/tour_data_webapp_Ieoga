@@ -80,6 +80,9 @@ import {
   type TravelConditionValue,
   makeStop,
   appointmentMinutesFromNow,
+  appointmentFromAvailableMinutes,
+  MIN_APPOINTMENT_MINUTES,
+  MAX_APPOINTMENT_MINUTES,
   normalizeDistricts,
   normalizeJourneyExecution,
   normalizeJourneyPlan,
@@ -464,7 +467,8 @@ export function ProductApp() {
     mode: ReferenceTimeMode;
     iso: string;
   } | null>(null);
-  const [availableMinutes, setAvailableMinutes] = useState(90);
+  /* 약속 시각을 화면에서 고쳤고 아직 저장본에 반영하지 않았는가. */
+  const [appointmentDirty, setAppointmentDirty] = useState(false);
   const [travelMode, setTravelMode] = useState<TravelMode>("walk");
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
   const [minimumStayMinutes, setMinimumStayMinutes] = useState(30);
@@ -838,12 +842,103 @@ export function ProductApp() {
     }
   }, [journeyPlan, affectedStopId, eligibleNextFixedStops, nextFixedStopId]);
 
-  useEffect(() => {
-    if (nextAppointmentMinutes === null) return;
-    setAvailableMinutes(
-      Math.min(1440, Math.max(15, nextAppointmentMinutes)),
+  /* 표시용 남은 시간. 예전에는 이 값을 별도 state에 복사해 두고 위 효과가
+     30초마다 덮어썼다. 그래서 여행자가 그 칸에 숫자를 넣어도 1분 안에 원래대로
+     돌아갔다 — 고칠 수 있는 것처럼 보이는데 고쳐지지 않는 칸이었다. 게다가 그
+     복사본은 서버로 보내지도 않았다(요청은 제출 시각에 약속 시각에서 다시
+     계산한다). 이제 약속 시각 하나만 원본으로 두고 여기서는 읽기만 한다. */
+  const availableMinutes =
+    nextAppointmentMinutes === null
+      ? null
+      : Math.min(
+          MAX_APPOINTMENT_MINUTES,
+          Math.max(MIN_APPOINTMENT_MINUTES, nextAppointmentMinutes),
+        );
+
+  /* 남은 시간을 고치는 것은 곧 약속 시각을 옮기는 것이다. 원본을 바꾸므로
+     표시값은 저절로 따라오고, 30초 시계가 되돌리지도 않는다.
+
+     기준 시각을 바꿀 때와 같은 모양으로 쓴다 — 화면에 남아 있는 복구 결과는
+     바뀌기 전 계약으로 계산된 것이므로 함께 무효화해야 한다. 그러지 않으면
+     적용 시점 검사에서 거절되는 결과가 화면에 남는다. */
+  function moveAppointment(next: { date: string; time: string }) {
+    setJourneyPlan((current) =>
+      current
+        ? {
+            ...current,
+            date: next.date,
+            stops: current.stops.map((stop) =>
+              stop.id === nextFixedStopId ? { ...stop, time: next.time } : stop,
+            ),
+          }
+        : current,
     );
-  }, [nextAppointmentMinutes, nextFixedStopId]);
+    /* 편집 폼(초안)도 함께 옮긴다. 두 벌이 어긋나면 여행자가 일정을 열었을 때
+       방금 고친 시각이 없어진 것처럼 보인다. */
+    setJourneyDraft((current) => ({
+      ...current,
+      date: next.date,
+      stops: current.stops.map((stop) =>
+        stop.id === nextFixedStopId ? { ...stop, time: next.time } : stop,
+      ),
+    }));
+    setAppointmentDirty(true);
+    invalidateRecoveryForReferenceTime();
+  }
+
+  function changeAvailableMinutes(minutes: number) {
+    if (!journeyPlan || !selectedNextFixedStop) return;
+    const reference = resolveReferenceTime(
+      referenceTimeMode,
+      referenceTimeLocal,
+      language,
+      referenceClockMs || Date.now(),
+    );
+    const next = appointmentFromAvailableMinutes(
+      reference.ok ? reference.timestamp : referenceClockMs || Date.now(),
+      Math.trunc(minutes),
+    );
+    /* 범위를 벗어난 값은 약속을 옮기지 않는다. 15분 미만이나 24시간을 넘는
+       약속은 서버가 거절하므로, 여기서 조용히 잘라 넣으면 여행자가 넣은 값과
+       화면에 남는 값이 달라진다. */
+    if (!next) return;
+    moveAppointment(next);
+  }
+
+  function changeAppointmentTime(time: string) {
+    if (!journeyPlan || !selectedNextFixedStop) return;
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) return;
+    moveAppointment({ date: journeyPlan.date, time });
+  }
+
+  /* 고친 약속 시각을 저장된 일정에도 남긴다.
+
+     복구 요청은 화면이 들고 있는 일정을 그대로 실어 보내므로 판정 자체는 로컬
+     값으로 옳게 이뤄진다. 하지만 저장본이 옛 시각으로 남아 있으면 다음에 앱을
+     열었을 때 방금 고친 시각이 사라진다. 타자 한 번마다 저장하면 요청이 쏟아
+     지므로, 손을 멈춘 뒤 한 번만 보낸다. */
+  useEffect(() => {
+    if (!appointmentDirty || !journeyPlan) return;
+    const plan = journeyPlan;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await fetchJson("/api/v1/itineraries", {
+            method: "POST",
+            body: JSON.stringify({
+              itinerary: itineraryContract(plan),
+              audience: plan.audience,
+            }),
+          });
+          setAppointmentDirty(false);
+        } catch {
+          /* 저장에 실패해도 이번 복구 판정은 화면이 들고 있는 값으로 옳게
+             이뤄진다. 다음 편집에서 다시 시도한다. */
+        }
+      })();
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [appointmentDirty, journeyPlan]);
 
   function dismissSimulationGuide() {
     window.localStorage.setItem(GUIDE_STORAGE_KEY, "seen");
@@ -1642,7 +1737,10 @@ export function ProductApp() {
       return;
     }
     if (relaxation.constraint === "available_time") {
-      setAvailableMinutes(relaxation.requiredLimit);
+      /* 표시용 복사본이 아니라 약속 시각을 옮긴다. 예전에는 복사본만 고쳤기
+         때문에, "조건을 이만큼 풀면 갈 수 있다"를 눌러도 30초 뒤면 원래대로
+         돌아가고 다시 조회해도 같은 결과가 나왔다. */
+      changeAvailableMinutes(relaxation.requiredLimit);
     } else if (relaxation.constraint === "minimum_stay") {
       setMinimumStayMinutes(relaxation.requiredLimit);
     } else if (relaxation.constraint === "safety_buffer") {
@@ -3228,15 +3326,111 @@ export function ProductApp() {
                   <div className="derived-time-card">
                     <span>{language === "en" ? "Time you can use before the next booking" : "다음 예약까지 쓸 수 있는 시간"}</span>
                     <strong>
-                      {tr(`${availableMinutes}분`, `${availableMinutes} min`)}
+                      {availableMinutes === null
+                        ? tr("일정을 저장하면 계산돼요", "Save a trip to calculate")
+                        : tr(`${availableMinutes}분`, `${availableMinutes} min`)}
                     </strong>
                     <small>
-                      {tr(
-                        `예약 시각과 남겨 둘 여유 ${safetyBufferMinutes}분을 반영해 자동 계산했어요.`,
-                        `Calculated from the appointment time with a ${safetyBufferMinutes}-minute safety buffer.`,
-                      )}
+                      {/* 예전 문장은 "여유 15분을 반영해 자동 계산했어요"였는데,
+                          위의 숫자는 여유를 빼지 않은 약속까지의 시간이었다.
+                          문장이 숫자를 잘못 설명하고 있었으므로 사실대로 적고,
+                          여유를 뺀 값은 아래에 따로 보여 준다. */}
+                      {availableMinutes === null
+                        ? tr(
+                            "다음 예약 시각을 정하면 남은 시간을 계산해 드려요.",
+                            "Set the next appointment and we calculate the time left.",
+                          )
+                        : tr(
+                            `약속 시각까지 남은 시간이에요. 여유 ${safetyBufferMinutes}분을 빼면 실제로 쓸 수 있는 시간은 ${Math.max(0, availableMinutes - safetyBufferMinutes)}분이에요.`,
+                            `Time until the appointment. After the ${safetyBufferMinutes}-minute buffer, ${Math.max(0, availableMinutes - safetyBufferMinutes)} minutes are actually usable.`,
+                          )}
                     </small>
                   </div>
+
+                  {/* 위 숫자를 만드는 두 값을 바로 아래에 둔다.
+
+                      예전에는 화면 한참 아래 "시간 자세히 정하기"에 접혀 있었고,
+                      그 안의 "지금부터 쓸 수 있는 시간" 칸은 고쳐도 30초 뒤면
+                      원래대로 돌아갔다 — 표시용 복사본이라 시계가 덮어썼고
+                      서버로 보내지도 않았다. 지금은 이 칸을 고치면 약속 시각이
+                      옮겨지고, 위의 숫자는 그 결과로 따라온다. 반대로 약속
+                      시각을 고치면 숫자가 바로 바뀐다. 어느 쪽을 만져도 두 값이
+                      어긋나지 않는다. */}
+                  <div className="essential-constraints field-grid">
+                    <label>
+                      <span>
+                        {tr("다음 예약 시각", "Next appointment time")}
+                      </span>
+                      <input
+                        type="time"
+                        step={300}
+                        value={selectedNextFixedStop?.time ?? ""}
+                        disabled={!selectedNextFixedStop}
+                        onChange={(event) =>
+                          changeAppointmentTime(event.target.value)
+                        }
+                        aria-label={tr(
+                          "다음 예약 시각",
+                          "Next appointment time",
+                        )}
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        {tr("예약까지 남길 시간", "Time to keep before it")}
+                      </span>
+                      <span className="number-input">
+                        <input
+                          aria-label={tr(
+                            `예약까지 남길 시간 (${MIN_APPOINTMENT_MINUTES}~${MAX_APPOINTMENT_MINUTES.toLocaleString("ko-KR")}분)`,
+                            `Time to keep before the appointment (${MIN_APPOINTMENT_MINUTES} to ${MAX_APPOINTMENT_MINUTES} minutes)`,
+                          )}
+                          type="number"
+                          min={MIN_APPOINTMENT_MINUTES}
+                          max={MAX_APPOINTMENT_MINUTES}
+                          step={5}
+                          value={availableMinutes ?? ""}
+                          disabled={availableMinutes === null}
+                          onChange={(event) =>
+                            changeAvailableMinutes(Number(event.target.value))
+                          }
+                        />
+                        <b aria-hidden="true">{tr("분", "min")}</b>
+                      </span>
+                    </label>
+                    <label>
+                      <span>
+                        {tr("예약 전에 남겨 둘 여유", "Safety buffer before the booking")}
+                      </span>
+                      <span className="number-input">
+                        <input
+                          aria-label={tr(
+                            "예약 전에 남겨 둘 여유 (5~60분)",
+                            "Safety buffer before the booking (5 to 60 minutes)",
+                          )}
+                          type="number"
+                          min={5}
+                          max={60}
+                          step={5}
+                          value={safetyBufferMinutes}
+                          onChange={(event) =>
+                            setSafetyBufferMinutes(Number(event.target.value))
+                          }
+                        />
+                        <b aria-hidden="true">{tr("분", "min")}</b>
+                      </span>
+                    </label>
+                  </div>
+                  {availableMinutes !== null &&
+                    availableMinutes <= safetyBufferMinutes && (
+                      /* 제출해야만 알 수 있던 충돌을 그 자리에서 말한다. */
+                      <p className="form-hint is-warning" role="status">
+                        {tr(
+                          `남길 시간이 여유(${safetyBufferMinutes}분)보다 짧아요. 예약 시각을 늦추거나 여유를 줄여 주세요.`,
+                          `The time you keep is shorter than the ${safetyBufferMinutes}-minute buffer. Move the appointment later or reduce the buffer.`,
+                        )}
+                      </p>
+                    )}
                   <div
                     className="travel-mode-row"
                     role="radiogroup"
@@ -3423,51 +3617,14 @@ export function ProductApp() {
                       </p>
                     </div>
                   </details>
+                  {/* 여기에는 결과를 크게 바꾸지 않는 값 하나만 남겼다. 남은
+                      시간과 남겨 둘 여유는 무엇이 나올지를 가장 크게 정하는
+                      값이라 위의 카드로 올렸다 — 접어 두면 대부분 못 본다. */}
                   <details className="advanced-constraints">
                     <summary>
-                      {tr("시간 자세히 정하기", "Set time details")}
+                      {tr("머무는 시간 정하기", "Set how long to stay")}
                     </summary>
-                    <div className="field-grid three">
-                      <label>
-                        <span>
-                          {tr("지금부터 쓸 수 있는 시간", "Time available from now")}
-                        </span>
-                        <span className="number-input">
-                          <input
-                            aria-label={tr(
-                              "지금부터 쓸 수 있는 시간 (15~1,440분)",
-                              "Time available from now (15 to 1,440 minutes)",
-                            )}
-                            type="number"
-                            min={15}
-                            max={1440}
-                            step={5}
-                            value={availableMinutes}
-                            onChange={(event) => setAvailableMinutes(Number(event.target.value))}
-                          />
-                          <b aria-hidden="true">{tr("분", "min")}</b>
-                        </span>
-                      </label>
-                      <label>
-                        <span>
-                          {tr("예약 전에 남겨 둘 여유", "Safety buffer before the booking")}
-                        </span>
-                        <span className="number-input">
-                          <input
-                            aria-label={tr(
-                              "예약 전에 남겨 둘 여유 (5~60분)",
-                              "Safety buffer before the booking (5 to 60 minutes)",
-                            )}
-                            type="number"
-                            min={5}
-                            max={60}
-                            step={5}
-                            value={safetyBufferMinutes}
-                            onChange={(event) => setSafetyBufferMinutes(Number(event.target.value))}
-                          />
-                          <b aria-hidden="true">{tr("분", "min")}</b>
-                        </span>
-                      </label>
+                    <div className="field-grid">
                       <label>
                         <span>
                           {tr("가면 최소 이만큼은 머물기", "Minimum time at the alternative")}
@@ -3798,22 +3955,6 @@ export function ProductApp() {
                       </div>
                     </div>
 
-                    {recovery.warnings && recovery.warnings.length > 0 && (
-                      <div className="notice is-warning">
-                        {/* "일부 데이터 제한이 있습니다"는 무엇이 문제인지
-                            알려 주지 않으면서 결과 전체를 의심하게 만든다.
-                            아래에 실제 사유가 이미 나열되므로 제목은 그것을
-                            가리키는 말이면 된다. */}
-                        <strong>{tr("참고해 주세요", "Please review")}</strong>
-                        {recovery.warnings.map((warning) => (
-                          <p key={warning}>
-                            {language === "en"
-                              ? "An official evidence source was unavailable or incomplete. Affected safety conditions remain blocked and are identified on each option."
-                              : sanitizeTravelerText(warning, language)}
-                          </p>
-                        ))}
-                      </div>
-                    )}
 
                     {!recoveryPersisted && (
                       <div className="notice is-error" role="alert">
@@ -4887,6 +5028,28 @@ export function ProductApp() {
                         {tr("생성 시각", "Generated")} {formatLocalizedDateTime(recovery.generatedAt, language)}
                       </p>
                     </details>
+                    {/* 조회 방식에 대한 참고는 결과 **뒤에** 둔다.
+
+                        예전에는 성공 안내 바로 아래, 후보 목록보다 위에 있었다.
+                        여행자가 결과 화면에서 가장 먼저 보고 싶은 것은 갈 수 있는
+                        곳인데, 반경·호출 예산·집중률 표본 같은 우리 조회 사정을
+                        여섯 줄 읽고 나서야 첫 카드에 닿았다. 감추는 것이 아니다 —
+                        같은 내용이 같은 화면에 그대로 있고, 읽는 순서만 결정 뒤로
+                        옮겼다. */}
+                    {recovery.warnings && recovery.warnings.length > 0 && (
+                      <div className="notice is-warning">
+                        <strong>
+                          {tr("이렇게 찾았어요", "How we searched")}
+                        </strong>
+                        {recovery.warnings.map((warning) => (
+                          <p key={warning}>
+                            {language === "en"
+                              ? "An official evidence source was unavailable or incomplete. Affected safety conditions remain blocked and are identified on each option."
+                              : sanitizeTravelerText(warning, language)}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -4,6 +4,7 @@ import {
   KTO_CANDIDATE_RADIUS_METERS,
   getAccessibilityDetail,
   getConcentrationForecast,
+  getFestivals,
   getNearbyAccessibleTourism,
   getNearbyTourism,
   getRelatedTourism,
@@ -13,6 +14,8 @@ import { ktoTourismCategory } from "@/lib/kto/category";
 import { getRuntimeSecret } from "@/lib/runtime-env";
 import {
   closedForWholeDate,
+  eventRunsOnDate,
+  koreaCompactDateString,
   evaluateAvailabilityItem,
   fetchAvailabilitySource,
   getAvailabilityEvidence,
@@ -92,6 +95,18 @@ export const RECOVERY_RULE_VERSION = "2026.08-continuity-v3";
    `locationBasedList2` itself caps radius at 20 km. We scan more pages while
    enough of the request's 20-second budget remains, then verify in small
    batches so failed candidates can be replaced without an unbounded burst. */
+/* 공사 `contentTypeId` 15 = 행사·공연·축제. */
+const FESTIVAL_CONTENT_TYPE_ID = "15";
+
+/* 행사 전용 조회의 한 페이지 크기. 서울이 실측 32건이라 50이면 대부분 지역을
+   한 번에 덮지만, 넘칠 수 있으므로 넘친 사실을 화면에 밝힌다. */
+const FESTIVAL_PAGE_SIZE = 50;
+
+/* `20260819` → `2026.08.19`. 여행자에게 보이는 문장에 그대로 들어간다. */
+function readableCompactDate(value: number): string {
+  return String(value).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1.$2.$3");
+}
+
 const CANDIDATE_DISCOVERY_MAX_PAGES = 2;
 const CANDIDATE_EXPANSION_TIMEOUT_MS = 2_500;
 const CANDIDATE_DISCOVERY_RESERVE_MS = 10_000;
@@ -4332,7 +4347,117 @@ export async function recoverTrip(
       discoveredItems.push(item);
     }
   };
-  appendDiscoveryPage(nearby.items);
+  /* 행사·공연·축제는 위치 기반 목록으로는 제대로 찾을 수 없다.
+
+     `locationBasedList2` 응답에는 `eventstartdate`/`eventenddate`가 **없다.**
+     행사 기간은 상세조회에만 있으므로, 이미 끝난 행사인지 알아내려면 후보 하나마다
+     외부 조회를 한 건씩 써야 한다. 2026-08-19 실측: 대전역 반경 20km에서 행사
+     10건이 돌아왔고 표본 6건이 전부 작년에 끝난 것이었다(20250829~20250831 등).
+     프로덕션에서 이 분류만 고르면 `OFFICIALLY_CLOSED: 3`, 후보 0곳이었다.
+     끝난 행사를 추천하지는 않았지만 예산을 전부 탈락에 쓰고 화면은 백지였다.
+
+     `searchFestival2`는 조회 기준 날짜 이후에 열리는 행사만 주고, 기간과 좌표가
+     같은 응답에 실려 온다. 외부 조회 한 건으로 날짜가 유효한 후보만 받는다.
+     실측: 대전 3건·서울 32건 모두 이미 끝난 행사 0건, 좌표 누락 0건.
+
+     **위치 목록보다 먼저** 담는 이유. 중복 제거는 먼저 들어온 것을 남기는데,
+     같은 행사가 두 응답에 모두 있으면 나중에 담은 쪽이 버려진다. 위치 목록을
+     먼저 담으면 날짜가 **없는** 사본이 남아, 공짜로 얻은 기간 증거를 그대로
+     버리게 된다. 순서가 곧 정확도다. */
+  const festivalWanted =
+    !input.tourismCategories?.length ||
+    input.tourismCategories.includes("EVENT");
+  let festivalNotRunning = 0;
+  let festivalOutOfRange = 0;
+  let festivalSourceUsed = false;
+  if (festivalWanted && !execution.signal?.aborted) {
+    try {
+      const festivals = await getFestivals(
+        {
+          eventStartDate: koreaCompactDateString(referenceAt),
+          /* 지역 코드가 없으면 전국 검색이 되어 반경 밖 행사로 한 페이지가
+             채워진다. 나머지 파이프라인과 같은 대체 경로를 쓴다 — 출발지에
+             코드가 없으면 첫 후보가 알려 준 행정코드를 쓴다. */
+          regionCode:
+            input.origin.areaCode ??
+            normalizeAnalysisCodes(nearby.items[0] ?? {}).regionCode,
+          numOfRows: FESTIVAL_PAGE_SIZE,
+        },
+        { signal: execution.signal, timeoutMs: 7_000, retry: false },
+      );
+      sourceLedger.push(festivals.audit);
+      festivalSourceUsed = true;
+      const running: KtoItem[] = [];
+      for (const item of festivals.items) {
+        const latitude = numberInRange(item.mapy, 33, 39);
+        const longitude = numberInRange(item.mapx, 124, 132);
+        if (latitude === undefined || longitude === undefined) continue;
+        /* 반경은 우리가 판정한다 — 이 조회는 지역 단위라 도달할 수 없는
+           행사까지 함께 온다. */
+        if (
+          haversineMeters(input.origin, { latitude, longitude }) >
+          candidateRadiusMeters
+        ) {
+          festivalOutOfRange += 1;
+          continue;
+        }
+        /* 조회 기준 날짜에 열리지 않는 행사는 여기서 떨어진다. 목록에 기간이
+           실려 있으므로 상세조회를 쓰지 않는다. `eventStartDate` 이후만 왔으니
+           남는 것은 "아직 시작하지 않은" 행사다. */
+        const window = eventRunsOnDate(item, referenceAt);
+        if (window && !window.runs) {
+          festivalNotRunning += 1;
+          rejected.push({
+            contentId: stringValue(item.contentid),
+            title: stringValue(item.title) || "이름 미확인 행사",
+            reasonCode: "EVENT_NOT_RUNNING",
+            reason: `조회 기준 날짜에 열리지 않는 행사입니다 (${readableCompactDate(window.start)} ~ ${readableCompactDate(window.end)}).`,
+            verificationDepth: "pre_filter",
+          });
+          continue;
+        }
+        running.push(item);
+      }
+      appendDiscoveryPage(running);
+      if (running.length) {
+        warnings.push(
+          `행사·공연·축제는 기간이 있는 콘텐츠라 위치 목록 대신 행사 전용 조회를 썼습니다. 조회 기준 날짜에 열리는 ${running.length.toLocaleString("ko-KR")}건만 후보에 넣었습니다.`,
+        );
+      } else if (festivalNotRunning || festivalOutOfRange) {
+        warnings.push(
+          `조회 기준 날짜에 이 지역에서 열리는 행사를 공식 정보에서 찾지 못했습니다. 기간이 맞지 않는 행사 ${festivalNotRunning}건, 다녀올 수 없는 거리의 행사 ${festivalOutOfRange}건은 후보에 넣지 않았습니다.`,
+        );
+      }
+      /* 집중률 조회에서 겪은 것과 같은 잘림이다 — 가나다순 한 페이지로 자르면
+         뒤 글자의 행사가 통째로 사라진다. 잘렸다면 그 사실을 밝힌다. */
+      if (festivals.totalCount > festivals.items.length) {
+        warnings.push(
+          `이 지역의 행사 ${festivals.totalCount.toLocaleString("ko-KR")}건 중 가나다순 ${festivals.items.length.toLocaleString("ko-KR")}건만 확인했습니다.`,
+        );
+      }
+    } catch (error) {
+      /* 행사 조회 실패가 전체 조회를 무너뜨리지는 않는다. 다른 분류 후보는
+         이미 손에 있다. */
+      sourceLedger.push(
+        auditFromFailure("KorService2", "searchFestival2", error),
+      );
+      warnings.push(
+        "행사 전용 조회를 불러오지 못해 이번에는 행사 후보를 확인하지 못했습니다.",
+      );
+    }
+  }
+
+  /* 행사 전용 조회가 성공했다면 위치 목록의 행사는 버린다. 그쪽 사본에는 기간이
+     없어서, 남겨 두면 후보 하나마다 상세조회를 한 건씩 써서 "작년에 끝났다"를
+     알아내는 데 예산을 쓴다 — 방금 같은 사실을 공짜로 확인해 놓고서. 조회가
+     실패했을 때만 예전처럼 남겨 두어, 상세조회 단계에서 날짜를 본다. */
+  appendDiscoveryPage(
+    festivalSourceUsed
+      ? nearby.items.filter(
+          (item) => stringValue(item.contenttypeid) !== FESTIVAL_CONTENT_TYPE_ID,
+        )
+      : nearby.items,
+  );
 
   const reportedTotal = Math.max(nearby.totalCount, nearby.items.length);
   const reportedPages = Math.max(
@@ -4378,7 +4503,14 @@ export async function recoverTrip(
       );
       sourceLedger.push(page.audit);
       pagesFetched = pageNo;
-      appendDiscoveryPage(page.items);
+      appendDiscoveryPage(
+        festivalSourceUsed
+          ? page.items.filter(
+              (item) =>
+                stringValue(item.contenttypeid) !== FESTIVAL_CONTENT_TYPE_ID,
+            )
+          : page.items,
+      );
       if (page.items.length < KTO_CANDIDATE_PAGE_SIZE) break;
     } catch (error) {
       sourceLedger.push(

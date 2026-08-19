@@ -249,6 +249,10 @@ export async function persistRecovery(params: {
               ? option.availability.status
               : undefined;
           const evidenceGapCodes = option.evidenceGaps.map((gap) => gap.code);
+          /* 활동 종류가 바뀐 안인가. 근거 공백이 없는데 확인이 필요한 이유는
+             이것 하나뿐이므로, 추측하지 않고 사실대로 싣는다. */
+          const purposeChanged =
+            option.purposePreservation?.status === "changed_visit_category";
           /* 계약이 이 안을 **일부러** 배제하는가, 아니면 담을 수 있어야 하는데
              못 담은 것인가. 두 사건은 성격이 완전히 다른데 결과가 똑같이
              "스냅숏 없음"이라 구분되지 않았다. 그래서 계약이 의도적으로
@@ -264,6 +268,7 @@ export async function persistRecovery(params: {
                 },
                 evidenceGapCodes,
                 confirmationRequired: option.confirmationRequired,
+                purposeChanged,
               })
             : undefined;
           if (!snapshotStatus || !contractClass) {
@@ -297,6 +302,7 @@ export async function persistRecovery(params: {
                 },
                 confirmationRequired: option.confirmationRequired,
                 evidenceGapCodes,
+                purposeChanged,
                 visitStartAt: option.scheduleDiff.replacementNode.startAt,
                 visitEndAt: option.scheduleDiff.replacementNode.endAt,
                 nextFixed:

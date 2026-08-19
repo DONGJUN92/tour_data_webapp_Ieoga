@@ -11,13 +11,14 @@ register(new URL("./alias-loader.mjs", import.meta.url));
    테스트는 통과하는데 운영에서는 계약이 만들어지지 않아 응답 전체가 503이 됐다.
    엔진은 근거 공백이 하나라도 있으면 그 값을 참으로 세운다 — 필드를 빠뜨리면
    검사도 함께 빠진다. 그래서 필요한 필드를 전부 갖춘 뒤 필요한 것만 바꾼다. */
-function snapshotFor({ status, gaps }) {
+function snapshotFor({ status, gaps, purposeChanged = false }) {
   const at = new Date().toISOString();
   return {
     availability: { status, checkedAt: at },
     evidenceGapCodes: gaps,
-    /* 엔진과 같은 규칙: 공백이 있으면 확인이 필요하다. */
-    confirmationRequired: gaps.length > 0,
+    /* 엔진과 같은 규칙: 공백이 있거나 활동 종류가 바뀌면 확인이 필요하다. */
+    confirmationRequired: gaps.length > 0 || purposeChanged,
+    purposeChanged,
   };
 }
 
@@ -66,6 +67,16 @@ test("실행 계약은 완전 검증과 직접 확인 가능을 모두 담는다
         status: "confirmed_open",
         gaps: ["CONCENTRATION_UNVERIFIED", "ACCESSIBILITY_UNVERIFIED"],
       }),
+    ),
+    "self_confirmed",
+  );
+
+  /* 활동 종류만 바뀐 안. 운영시간도 경로도 확인됐고 근거 공백은 없다 — 남은
+     것은 "관광 대신 식사"처럼 여행자만 정할 수 있는 선택이므로, 확인을 받고
+     열어야 한다. 실측에서 대전 식당 후보 두 곳이 이 사유로 영구 적용 불가였다. */
+  assert.equal(
+    applicationSnapshotClass(
+      snapshotFor({ status: "confirmed_open", gaps: [], purposeChanged: true }),
     ),
     "self_confirmed",
   );
@@ -145,7 +156,17 @@ test("휴무와 직접 확인으로 풀리지 않는 공백은 어느 계약에�
      알 수 없으므로 계약에 넣지 않는다. */
   assert.equal(
     applicationSnapshotClass(
-      { availability: { status: "confirmed_open", checkedAt: new Date().toISOString() }, evidenceGapCodes: [], confirmationRequired: true },
+      {
+        availability: {
+          status: "confirmed_open",
+          checkedAt: new Date().toISOString(),
+        },
+        evidenceGapCodes: [],
+        confirmationRequired: true,
+        /* 종류가 바뀐 것도 아닌데 확인이 필요하다고 표시된 스냅숏. 두 값이
+           어긋났으므로 어느 쪽이 참인지 알 수 없다 — 거절한다. */
+        purposeChanged: false,
+      },
     ),
     undefined,
   );
@@ -234,6 +255,6 @@ test("계약 버전은 규칙이 바뀌면 함께 올라간다", async () => {
   );
   assert.match(
     source,
-    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v5"/,
+    /APPLICATION_SAFETY_CONTRACT_VERSION = "2026-08-v6"/,
   );
 });

@@ -179,6 +179,63 @@ export function getNearbyTourism(params: {
   );
 }
 
+/* 행사·공연·축제만은 위치 기반 목록으로 찾을 수 없다.
+ *
+ * `locationBasedList2`에 `contentTypeId=15`를 걸면 주변 행사가 돌아오기는 하는데,
+ * 그 응답에는 `eventstartdate`/`eventenddate`가 **없다.** 행사 기간은 상세조회에만
+ * 있으므로, 이미 끝난 행사인지 알아내려면 후보 하나마다 외부 조회를 한 건씩 써야
+ * 한다. 2026-08-19 실측: 대전역 반경 20km에서 10건이 돌아왔고 표본 6건이 전부
+ * 작년에 끝난 행사였다(20250829~20250831 등). 그래서 이 분류를 고르면 예산을 전부
+ * 탈락에 쓰고 화면은 0건이 됐다 — 프로덕션에서 `OFFICIALLY_CLOSED: 3`, 후보 0곳.
+ *
+ * `searchFestival2`는 `eventStartDate`를 받아 그 날짜 이후에 열리는 행사만 준다.
+ * 같은 응답에 기간과 좌표(`mapx`/`mapy`)가 함께 오므로, 조회 한 건으로 날짜가
+ * 유효한 후보만 받고 거리는 우리가 계산한다. 실측: 대전 3건·서울 32건 모두 끝난
+ * 행사 0건, 좌표 누락 0건.
+ *
+ * 반경을 받지 않으므로 지역 코드로 받는다. 거리 판정은 호출한 쪽이 좌표로 한다.
+ */
+export function getFestivals(params: {
+  eventStartDate: string;
+  regionCode?: string;
+  districtCode?: string;
+  numOfRows?: number;
+}, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
+  return callKto(
+    "KorService2",
+    "searchFestival2",
+    {
+      pageNo: 1,
+      numOfRows: params.numOfRows ?? 50,
+      arrange: "A",
+      eventStartDate: params.eventStartDate,
+      lDongRegnCd: analysisRegionCode(params.regionCode),
+      lDongSignguCd: rawDistrictCode(params.regionCode, params.districtCode),
+    },
+    {
+      ...requestOptions,
+      fieldsUsed: [
+        "contentid",
+        "contenttypeid",
+        "title",
+        "addr1",
+        "mapx",
+        "mapy",
+        "firstimage",
+        "firstimage2",
+        "modifiedtime",
+        "eventstartdate",
+        "eventenddate",
+        "lDongRegnCd",
+        "lDongSignguCd",
+        "lclsSystm1",
+        "lclsSystm2",
+        "lclsSystm3",
+      ],
+    },
+  );
+}
+
 export function searchTourism(params: {
   keyword: string;
   regionCode?: string;

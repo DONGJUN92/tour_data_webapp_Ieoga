@@ -4253,8 +4253,46 @@ input:disabled {
   font-size: 12px;
 }
 
+/* 계산 카드 바로 아래에서 그 숫자를 만드는 값들을 조작하는 줄.
+
+   예전에는 이 클래스가 정의만 되어 있고 쓰는 곳이 없었다 — 원래 이런 자리를
+   두려던 흔적으로 보인다. 이제 실제로 쓴다. 세 칸이 나란히 서고, 좁은 화면에서는
+   한 칸씩 내려간다. */
 .essential-constraints {
   align-items: end;
+  margin: -4px 0 4px;
+  padding: 14px;
+  border: 1px solid var(--line, #e5e8eb);
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.essential-constraints input[type="time"] {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong, #ced4da);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink, #212529);
+}
+
+.essential-constraints input:disabled {
+  background: #f2f4f6;
+  color: #8b949e;
+  cursor: not-allowed;
+}
+
+.form-hint.is-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2c899;
+  border-radius: 10px;
+  background: #fff7e8;
+  color: #815414;
+  font-weight: 700;
 }
 
 .derived-time-card {
@@ -5609,6 +5647,34 @@ body .recovery-preferences-body {
 body .recovery-preferences-body > label:first-child {
   display: grid;
   gap: 7px;
+}
+
+/* 결과 묶음의 세로 리듬을 컨테이너가 가진다.
+
+   예전에는 이 클래스에 CSS 규칙이 아예 없었다. 그래서 자식들은 각자의 마진만으로
+   떨어져 있었고, `조회 기준` 알림은 `margin: 0`이라 아래 성공 상자와 완전히
+   맞붙었다 — 채워진 상자 두 개가 맞닿아 글자가 잘린 것처럼 보였다.
+
+   빈 시간 화면의 `.results2`는 이미 `display: grid; gap: 18px`로 같은 일을 하고
+   있었고, `조회 기준`의 `margin: 0`은 그 gap을 전제로 쓴 값이었다. 이쪽은 그
+   전제를 복사하면서 gap을 주지 않았다. 같은 방식으로 맞춘다. */
+body .recovery-results {
+  display: grid;
+  gap: 16px;
+}
+
+/* 컨테이너가 간격을 가지므로 자식의 아래 마진은 지운다. 둘을 함께 두면 간격이
+   두 배가 된다. `.notice`는 다른 화면과 공유하는 클래스이므로 여기서만 좁혀
+   끈다. */
+body .recovery-results > .notice,
+body .recovery-results > .recovery-ready-banner {
+  margin-bottom: 0;
+}
+
+/* 후보가 0곳인 갈래도 같은 알림을 쓴다. 이쪽 컨테이너는 가운데 정렬 플렉스라
+   gap이 없었으므로 함께 준다. */
+body .no-candidate {
+  gap: 14px;
 }
 
 body .recovery-ready-banner {

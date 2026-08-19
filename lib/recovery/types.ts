@@ -423,6 +423,10 @@ export type RejectionReasonCode =
   | "SAME_AS_DISRUPTED_PLACE"
   | "TRAVEL_PURPOSE_MISMATCH"
   | "OFFICIALLY_CLOSED"
+  /* 기간이 있는 콘텐츠(행사·공연·축제)가 조회 기준 날짜에 열리지 않는 경우.
+     휴무와 구별한다 — 작년에 끝난 축제를 "휴무"라고 적으면 여행자는 다른 날
+     가면 된다고 읽는다. */
+  | "EVENT_NOT_RUNNING"
   /* The official endpoint responded, but did not contain enough structured
      operating data to prove the whole proposed stay is open. */
   | "OPERATING_STATUS_UNCONFIRMED"

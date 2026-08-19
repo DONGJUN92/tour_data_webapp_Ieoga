@@ -22,6 +22,9 @@ const listDefaults = { pageNo: 1, numOfRows: 100 };
 export const KTO_CANDIDATE_RADIUS_METERS = 20_000;
 export const KTO_CANDIDATE_PAGE_SIZE = 100;
 
+/* 공사 `contentTypeId` 25 = 추천코스. */
+const COURSE_CONTENT_TYPE_ID = "25";
+
 /* 월 단위 API의 기준월 해석.
 
    `baseYm`을 받는 공사 API는 직전 달이 아직 발행되지 않은 기간이 있다. 2026-08-04
@@ -332,6 +335,126 @@ export function getTourismIntro(
         "chkcreditcard",
         "chkcreditcardfood",
         "chkpet",
+      ],
+    },
+  );
+}
+
+/* 행정구역 안의 공사 공식 추천코스 목록.
+ *
+ * 위치 기반이 아니라 지역 기반이다 — 코스는 여러 시·군을 넘나드는 것이 많아
+ * 반경으로 자르면 시작 지점만 가까운 코스가 걸리거나 아무것도 안 걸린다.
+ *
+ * 2026-08-19 실측 커버리지: 16개 시·도 중 11곳, 전국 53건. 서울·대전·울산·제주·
+ * 세종은 **0건**이다. 호출한 쪽은 반드시 빈 결과를 정상 상태로 다뤄야 한다. */
+export function getAreaCourses(params: {
+  regionCode?: string;
+  districtCode?: string;
+  numOfRows?: number;
+}, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
+  return callKto(
+    "KorService2",
+    "areaBasedList2",
+    {
+      pageNo: 1,
+      numOfRows: params.numOfRows ?? 30,
+      arrange: "A",
+      contentTypeId: COURSE_CONTENT_TYPE_ID,
+      lDongRegnCd: analysisRegionCode(params.regionCode),
+      lDongSignguCd: rawDistrictCode(params.regionCode, params.districtCode),
+    },
+    {
+      ...requestOptions,
+      timeoutMs: requestOptions.timeoutMs ?? 7_000,
+      fieldsUsed: [
+        "contentid",
+        "contenttypeid",
+        "title",
+        "addr1",
+        "mapx",
+        "mapy",
+        "firstimage",
+        "firstimage2",
+        "modifiedtime",
+        "lDongRegnCd",
+        "lDongSignguCd",
+      ],
+    },
+  );
+}
+
+/* 코스를 이루는 지점 목록. `detailInfo2`가 `subname`·`subcontentid`·`subnum`을
+   주지만 **좌표는 주지 않는다** — 지점 좌표는 `subcontentid`로 `detailCommon2`를
+   한 번 더 불러야 한다. 그래서 코스 하나를 일정으로 만드는 비용은
+   1(목록) + 1(지점) + N(지점별 좌표)이다. 실측 중앙값이 7지점이므로 약 9건. */
+export function getCourseStops(
+  contentId: string,
+  requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {},
+): Promise<KtoCallResult> {
+  return callKto(
+    "KorService2",
+    "detailInfo2",
+    {
+      contentId,
+      contentTypeId: COURSE_CONTENT_TYPE_ID,
+      pageNo: 1,
+      numOfRows: 30,
+    },
+    {
+      ...requestOptions,
+      timeoutMs: requestOptions.timeoutMs ?? 7_000,
+      fieldsUsed: [
+        "contentid",
+        "contenttypeid",
+        "subcontentid",
+        "subname",
+        "subnum",
+        "subdetailoverview",
+        "subdetailimg",
+      ],
+    },
+  );
+}
+
+/* 행정구역 안의 관광 콘텐츠. 공식 코스가 없는 지역에서 실제 장소로 하루 코스를
+   엮을 때 쓴다. 유형을 지정해 부른다(관광지 12 / 문화시설 14 / 식당 39 등). */
+export function getAreaPlaces(params: {
+  regionCode?: string;
+  districtCode?: string;
+  contentTypeId: string;
+  numOfRows?: number;
+}, requestOptions: Pick<KtoCallOptions, "signal" | "timeoutMs" | "retry"> = {}): Promise<KtoCallResult> {
+  return callKto(
+    "KorService2",
+    "areaBasedList2",
+    {
+      pageNo: 1,
+      numOfRows: params.numOfRows ?? 50,
+      /* 수정일 역순. 가나다순으로 받으면 앞 글자에 몰린 표본만 보게 되고,
+         실제로 집중률 조회에서 그렇게 잘려 명소가 통째로 빠진 적이 있다. */
+      arrange: "S",
+      contentTypeId: params.contentTypeId,
+      lDongRegnCd: analysisRegionCode(params.regionCode),
+      lDongSignguCd: rawDistrictCode(params.regionCode, params.districtCode),
+    },
+    {
+      ...requestOptions,
+      timeoutMs: requestOptions.timeoutMs ?? 7_000,
+      fieldsUsed: [
+        "contentid",
+        "contenttypeid",
+        "title",
+        "addr1",
+        "mapx",
+        "mapy",
+        "firstimage",
+        "firstimage2",
+        "modifiedtime",
+        "lclsSystm1",
+        "lclsSystm2",
+        "lclsSystm3",
+        "lDongRegnCd",
+        "lDongSignguCd",
       ],
     },
   );

@@ -349,14 +349,29 @@ test("빈 시간 결과는 제외사유·반사실과 별도 복귀 경로 근�
   assert.match(panel, /ledgerStatusLabel/);
 });
 
-test("/app과 /flow는 우천 복구를 모두 실내 우선으로 요청한다", async () => {
+test("우천은 실내를 제안하되 여행자가 고르지 않은 조건을 켜지 않는다", async () => {
   const [product, flow] = await Promise.all([
     readFile(new URL("../app/ProductApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/flow/FlowApp.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(product, /useState\(true\).*indoorTouched/s);
+
+  /* 예전에는 `/app`에서 우천을 고르면 `indoorTouched` 가드 아래에서 실내 조건이
+     조용히 켜졌다. 그러면 「몸이 편해야 하는 조건」 드롭다운이 여행자가 고르지도
+     않은 "실내에 있고 싶어요"로 시작하고, 실외 후보가 사라진 이유를 화면 어디에서도
+     알 수 없다 — 실측 최다 탈락 사유가 실내 미확인이었던 것도 그 때문이다.
+
+     기본값은 조건 없음이고, 상황에 맞는 제안은 제안으로만 남는다. */
+  assert.doesNotMatch(product, /indoorTouched/);
+  assert.doesNotMatch(product, /setIndoorOnly\(item\.value === "rain"\)/);
+  /* 제안은 남아 있어야 한다. 조용히 켜지 않는 것과 알려 주지 않는 것은 다르다. */
+  assert.match(product, /비 오는 상황을 고르셨어요/);
+  /* 여행자가 고른 조건은 그대로 서버로 간다. */
   assert.match(product, /indoorOnly,/);
+
+  /* `/flow`는 드롭다운이 없고, 실외를 되돌리는 버튼이 결과 화면에 있다. 그쪽은
+     조용한 기본값이 아니라 눈에 보이는 되돌림이므로 그대로 둔다. */
   assert.match(flow, /indoorOnly:\s*incident === "rain" \? !includeOutdoor : false/);
+  assert.match(flow, /실외 후보까지 포함해 다시 찾기/);
 });
 
 test("/app 직접 위치 입력은 한 개의 장소 검색 폼만 제공한다", async () => {

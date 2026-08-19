@@ -31,7 +31,7 @@ import {
   optimisticTravelMinutes,
 } from "@/lib/geo";
 import { withParticle } from "@/lib/text/korean";
-import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
+import { ALTERNATIVE_TOURISM_CATEGORIES } from "@/lib/kto/category";
 import {
   TRAVEL_MODES,
   asRecord,
@@ -1272,7 +1272,7 @@ export default function DiscoverWindowPanel({
               >
                 {tr(language, "전체", "All")}
               </button>
-              {KTO_TOURISM_CATEGORIES.map((item) => {
+              {ALTERNATIVE_TOURISM_CATEGORIES.map((item) => {
                 const on = wantedCategories.includes(item.code);
                 return (
                   <button

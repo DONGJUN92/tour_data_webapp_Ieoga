@@ -10,6 +10,96 @@ type Step = "date" | "start" | "appointment" | "confirm";
 type Language = "ko" | "en";
 type PlanEntry = { place: ManualPlace; time: string; locked: boolean };
 
+type CourseStopSummary = {
+  contentId: string;
+  contentTypeId: string;
+  title: string;
+  address?: string;
+  latitude: number;
+  longitude: number;
+};
+
+type CourseSummary = {
+  source: "official" | "assembled";
+  contentId?: string;
+  title: string;
+  imageUrl?: string;
+  stops: CourseStopSummary[];
+};
+
+/* 코스 지점에 시각을 붙인다.
+ *
+ * 계약은 시작 시각이 순서대로 **엄격히 증가**할 것을 요구하고, 화면의 시각은 30분
+ * 격자를 쓴다. 오늘 날짜면 지금보다 넉넉히 뒤에서 시작해야 하고(과거 시각은 저장
+ * 자체가 거절된다), 다른 날이면 오전 11시부터 시작한다.
+ *
+ * 마지막 지점을 잠근다. 그것이 여행자가 "꼭 지킬 곳"이 되고, 나중에 일정이 틀어졌을
+ * 때 복구가 지켜야 할 다음 고정 일정이 된다 — 전부 잠그면 바꿀 수 있는 곳이 없어져
+ * "한 곳만 바꿔 약속을 지킨다"가 성립하지 않는다. */
+/* 지점 간격 120분 = 체류 60분 + 이동 여유 60분.
+ *
+ * 이 숫자는 재서 정했다. 코스로 만든 일정이 나중에 실제로 복구되는지 같은 지점
+ * 목록으로 세 값을 돌려 봤다(2026-08-19, 종로 하루 코스, 도보):
+ *   · 90분  → 대안 0곳  (`NEXT_FIXED_APPOINTMENT_AT_RISK` 27건)
+ *   · 120분 → 대안 19곳
+ *   · 150분 → 대안 19곳 (더 늘어나지 않는다)
+ *
+ * 90분은 체류 60분을 빼면 이동 여유가 30분뿐이라, 한 곳을 바꾼 뒤 다음 지점까지
+ * 걸어갈 수 없다. 등록은 되지만 정작 복구가 되지 않으니 코스를 일정으로 삼는
+ * 목적을 이루지 못한다. 150분은 하루를 늘리기만 하고 얻는 것이 없어 120분을 쓴다. */
+const COURSE_STOP_GAP_MINUTES = 120;
+const COURSE_MAX_STOPS = 5;
+
+function courseStartMinutes(date: string, now = Date.now()): number {
+  const todayKst = todayInKorea();
+  if (date !== todayKst) return 11 * 60;
+  /* 지금 시각(한국)을 분으로. 90분 뒤로 밀고 30분 격자에 올린다. */
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(now));
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const nowMinutes = Number(value.hour) * 60 + Number(value.minute);
+  return Math.ceil((nowMinutes + COURSE_STOP_GAP_MINUTES) / 30) * 30;
+}
+
+function minutesToClock(minutes: number): string {
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+export function coursePlanEntries(
+  stops: CourseStopSummary[],
+  date: string,
+  now = Date.now(),
+): PlanEntry[] {
+  const used = stops.slice(0, COURSE_MAX_STOPS);
+  const first = courseStartMinutes(date, now);
+  const entries: PlanEntry[] = [];
+  used.forEach((stop, index) => {
+    const minutes = first + index * COURSE_STOP_GAP_MINUTES;
+    /* 자정을 넘기면 그 지점부터는 넣지 않는다. 날짜를 넘긴 시각을 같은 날짜에
+       붙이면 시각이 거꾸로 가고, 계약이 그것을 거절한다. */
+    if (minutes >= 24 * 60) return;
+    entries.push({
+      place: {
+        title: stop.title,
+        latitude: stop.latitude,
+        longitude: stop.longitude,
+        address: stop.address,
+        sourceLabel: "한국관광공사 국문 관광정보",
+      },
+      time: minutesToClock(minutes),
+      locked: false,
+    });
+  });
+  if (entries.length) entries[entries.length - 1].locked = true;
+  return entries;
+}
+
 const STEPS: Step[] = ["date", "start", "appointment", "confirm"];
 const START_TIME = "09:00";
 const MIN_LEAD_MINUTES = 15;
@@ -83,6 +173,21 @@ export function PlanWizard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState("");
+  /* 추천코스를 받아 일정으로 삼는 경로. 꼭 지킬 약속이 아직 없어서 무엇을 할지부터
+     정하고 싶은 여행자를 위한 자리다. 새 단계를 만들지 않고 이 단계 안에서 처리한다
+     — 단계 배열은 진행 표시와 뒤로가기 규칙이 함께 걸려 있다. */
+  const [courseState, setCourseState] = useState<
+    "idle" | "loading" | "ready" | "empty"
+  >("idle");
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
+  const [courseNotes, setCourseNotes] = useState<string[]>([]);
+  const [courseArea, setCourseArea] = useState<{
+    regionCode: string;
+    districtCode: string;
+    regionName: string;
+    districtName: string;
+  } | null>(null);
+  const [courseApplying, setCourseApplying] = useState("");
   const index = STEPS.indexOf(step);
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const times = useMemo(() => HALF_HOUR_TIMES, []);
@@ -152,6 +257,121 @@ export function PlanWizard() {
       const currentIndex = times.findIndex((time) => time.value === current);
       return times[Math.min(currentIndex + 2, times.length - 1)]?.value ?? current;
     });
+  }
+
+  async function requestCourses(area: {
+    regionCode: string;
+    districtCode: string;
+    regionName: string;
+    districtName: string;
+  }) {
+    clearError();
+    setCourseArea(area);
+    setCourseState("loading");
+    setCourses([]);
+    setCourseNotes([]);
+    try {
+      const response = await fetch("/api/v1/courses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          regionCode: area.regionCode,
+          districtCode: area.districtCode,
+          regionName: area.districtName || area.regionName,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        status?: string;
+        courses?: CourseSummary[];
+        notes?: string[];
+        error?: { message?: string };
+      } | null;
+      if (!response.ok) {
+        setCourseState("idle");
+        setError(
+          payload?.error?.message ??
+            tr(
+              "추천코스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+              "Could not load courses. Please try again shortly.",
+            ),
+        );
+        return;
+      }
+      const list = payload?.courses ?? [];
+      setCourses(list);
+      setCourseNotes(payload?.notes ?? []);
+      setCourseState(list.length ? "ready" : "empty");
+    } catch {
+      setCourseState("idle");
+      setError(
+        tr(
+          "추천코스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          "Could not load courses. Please try again shortly.",
+        ),
+      );
+    }
+  }
+
+  /* 고른 코스를 일정으로 삼는다. 공식 코스는 구성 지점을 한 번 더 받아야 한다 —
+     목록 응답에는 지점이 없다. 우리가 엮은 코스는 이미 지점을 들고 있다. */
+  async function applyCourse(course: CourseSummary) {
+    clearError();
+    setCourseApplying(course.contentId ?? course.title);
+    try {
+      let stops = course.stops;
+      if (course.source === "official" && course.contentId) {
+        const response = await fetch("/api/v1/courses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            regionCode: courseArea?.regionCode,
+            districtCode: courseArea?.districtCode,
+            contentId: course.contentId,
+          }),
+        });
+        const payload = (await response.json().catch(() => null)) as {
+          course?: { stops?: CourseStopSummary[] };
+          notes?: string[];
+          error?: { message?: string };
+        } | null;
+        if (!response.ok) {
+          setError(
+            payload?.error?.message ??
+              tr(
+                "코스의 지점 정보를 불러오지 못했습니다.",
+                "Could not load the course stops.",
+              ),
+          );
+          return;
+        }
+        stops = payload?.course?.stops ?? [];
+        if (payload?.notes?.length) setCourseNotes(payload.notes);
+      }
+      const entries = coursePlanEntries(stops, date);
+      if (entries.length < 1) {
+        setError(
+          tr(
+            "이 코스에서 일정으로 옮길 수 있는 지점을 찾지 못했습니다.",
+            "No usable stops were found in this course.",
+          ),
+        );
+        return;
+      }
+      /* 출발지가 아직 없으면 코스의 첫 지점을 출발지로 쓴다. 코스만 받고 들어온
+         여행자에게 출발지를 또 묻지 않는다. */
+      if (!start) {
+        setStart(entries[0].place);
+        setPlan(entries.slice(1));
+      } else {
+        setPlan(entries);
+      }
+      setCourseState("idle");
+      setCourses([]);
+      setPending(null);
+      setStep("confirm");
+    } finally {
+      setCourseApplying("");
+    }
   }
 
   function review() {
@@ -492,7 +712,84 @@ export function PlanWizard() {
                 setPending(place);
                 clearError();
               }}
+              /* 꼭 지킬 약속이 아직 없어 무엇을 할지부터 정하고 싶은 경우.
+                 추천코스는 행정구역 단위로 제공되므로, 이 고르개에서 고른
+                 시·군·구가 그대로 조회 조건이 된다. */
+              onCourseRequest={plan.length === 0 ? requestCourses : undefined}
+              courseBusy={courseState === "loading"}
             />
+          )}
+
+          {courseState === "empty" && (
+            <div className={styles.courseBlock} role="status">
+              <p className={styles.courseEmpty}>
+                {tr(
+                  "이 지역에서 엮을 수 있는 코스를 공사 관광정보에서 찾지 못했습니다. 없는 코스를 만들어 드리지는 않습니다.",
+                  "We found nothing in the official tourism data to build a course from here. We do not invent one.",
+                )}
+              </p>
+            </div>
+          )}
+
+          {courseState === "ready" && courses.length > 0 && (
+            <div className={styles.courseBlock}>
+              <h2 className={styles.courseHeading}>
+                {courses[0].source === "official"
+                  ? tr(
+                      `${courseArea?.districtName ?? ""} 공사 공식 추천코스`,
+                      "Official KTO travel courses",
+                    )
+                  : tr("이어가가 엮은 하루 코스", "A day course we assembled")}
+              </h2>
+              {/* 출처를 섞지 않는다. 공사가 만든 코스와 우리가 엮은 코스는 서로
+                  다른 물건이고, 그 차이를 화면이 말하지 않으면 여행자는 둘 다
+                  공사 코스로 읽는다. */}
+              <p className={styles.courseSource}>
+                {courses[0].source === "official"
+                  ? tr(
+                      "한국관광공사가 등록한 추천코스입니다.",
+                      "Registered by the Korea Tourism Organization.",
+                    )
+                  : tr(
+                      "지점은 모두 한국관광공사 관광정보이고, 엮은 순서는 이어가가 정했습니다. 공사 공식 추천코스가 아닙니다.",
+                      "Every stop is official KTO tourism data; the order is ours. This is not an official KTO course.",
+                    )}
+              </p>
+              {courseNotes.map((note) => (
+                <p key={note} className={styles.courseNote}>
+                  {note}
+                </p>
+              ))}
+              <ul className={styles.courseList}>
+                {courses.map((course) => (
+                  <li key={course.contentId ?? course.title}>
+                    <strong>{course.title}</strong>
+                    {course.stops.length > 0 && (
+                      <em>
+                        {course.stops.map((stop) => stop.title).join(" → ")}
+                      </em>
+                    )}
+                    <button
+                      type="button"
+                      className={styles.primary}
+                      data-testid="plan-use-course"
+                      disabled={Boolean(courseApplying)}
+                      onClick={() => void applyCourse(course)}
+                    >
+                      {courseApplying === (course.contentId ?? course.title)
+                        ? tr("일정으로 옮기는 중…", "Adding to your trip…")
+                        : tr("이 코스로 일정 만들기", "Use this course")}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className={styles.courseNote}>
+                {tr(
+                  "지점별 머무는 시간은 공사가 제공하지 않아 이어가가 2시간 간격으로 잡았습니다. 일정이 틀어졌을 때 한 곳을 바꿔도 다음 지점에 닿을 수 있는 간격이에요. 다음 화면에서 시각을 고칠 수 있어요.",
+                  "The agency does not publish per-stop durations, so we spaced them two hours apart — enough slack to swap one stop and still reach the next. You can adjust the times next.",
+                )}
+              </p>
+            </div>
           )}
 
           {error && !pending && <p className={styles.error} role="alert">{error}</p>}

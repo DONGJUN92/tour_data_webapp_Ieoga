@@ -7,7 +7,7 @@ import type {
   JourneyExecutionStep,
 } from "@/lib/recovery/execution";
 import type { RejectionReasonCode } from "@/lib/recovery/types";
-import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
+import { ALTERNATIVE_TOURISM_CATEGORIES } from "@/lib/kto/category";
 import { PlacePhoto } from "../PlacePhoto";
 import { exportJourneyCard } from "../journey-card";
 import {
@@ -2620,7 +2620,7 @@ export default function FlowApp() {
                   >
                     {tr("전체", "All")}
                   </button>
-                  {KTO_TOURISM_CATEGORIES.map((entry) => {
+                  {ALTERNATIVE_TOURISM_CATEGORIES.map((entry) => {
                     const on = wantedCategories.includes(entry.code);
                     return (
                       <button

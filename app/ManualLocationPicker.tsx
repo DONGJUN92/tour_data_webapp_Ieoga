@@ -65,6 +65,16 @@ type Props = {
      직접 입력`이 떴다 — 무엇을 묻는지가 화면마다 다른데 안내가 하나였다. */
   heading?: string;
   areaHint?: string;
+  /* 고른 시·군·구로 추천코스를 받는 경로. 이 고르개는 세 자리에서 쓰는데 코스는
+     여행을 **처음 계획할 때만** 의미가 있으므로, 이 콜백을 넘긴 화면에서만
+     버튼이 생긴다. */
+  onCourseRequest?: (area: {
+    regionCode: string;
+    districtCode: string;
+    regionName: string;
+    districtName: string;
+  }) => void;
+  courseBusy?: boolean;
 };
 
 async function getJson(url: string): Promise<Record<string, unknown>> {
@@ -135,6 +145,8 @@ export function ManualLocationPicker({
   purpose = "current_origin",
   heading,
   areaHint,
+  onCourseRequest,
+  courseBusy = false,
 }: Props) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
 
@@ -487,6 +499,36 @@ export function ManualLocationPicker({
               ? tr("확인 중…", "Resolving…")
               : tr("이 지역으로", "Use this area")}
           </button>
+          {/* 꼭 지킬 약속이 아직 없어 코스를 받아 보고 싶은 경우. 추천코스는
+              행정구역 단위로 제공되므로, 여기 고른 시·군·구가 그대로 조회 조건이
+              된다 — 좌표가 아니라 행정구역이 기준이라는 뜻이다. */}
+          {onCourseRequest && (
+            <button
+              type="button"
+              className="manual-picker-course"
+              data-testid="manual-picker-course-request"
+              disabled={!districtCode || courseBusy}
+              onClick={() => {
+                const region = regions.find(
+                  (item) => item.code === regionCode,
+                );
+                const district = districts.find(
+                  (item) => item.code === districtCode,
+                );
+                if (!regionCode || !districtCode) return;
+                onCourseRequest({
+                  regionCode,
+                  districtCode,
+                  regionName: region?.name ?? "",
+                  districtName: district?.name ?? "",
+                });
+              }}
+            >
+              {courseBusy
+                ? tr("코스 찾는 중…", "Finding courses…")
+                : tr("코스 추천 받기", "Suggest a course")}
+            </button>
+          )}
         </div>
         {/* 구 전체를 대표하는 근사 지점이라는 사실을 적는다. 정확한 좌표인 것처럼
             보이면 "왜 이 근처가 아니지?"라는 오해가 생긴다. */}

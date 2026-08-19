@@ -14,7 +14,7 @@ import { WeatherGlanceStrip } from "./WeatherGlanceStrip";
 import { ManualLocationPicker, type ManualPlace } from "./ManualLocationPicker";
 import DiscoverWindowPanel from "./DiscoverWindowPanel";
 import { RouteMap, type RouteMapMarker, type RoutePoint } from "./RouteMap";
-import { KTO_TOURISM_CATEGORIES } from "@/lib/kto/category";
+import { ALTERNATIVE_TOURISM_CATEGORIES } from "@/lib/kto/category";
 import { OptionCarousel } from "./OptionCarousel";
 import { PlacePhoto } from "./PlacePhoto";
 import { ActiveJourneyCockpit } from "./ActiveJourneyCockpit";
@@ -477,7 +477,6 @@ export function ProductApp() {
      강제하지 않으므로(명시적으로 보낸 값이 이긴다) 그 기본값을 화면이 만들어야
      한다. 사용자가 끄면 그 선택이 유지되며, 그때 비로소 실외 후보까지 검토된다. */
   const [indoorOnly, setIndoorOnly] = useState(true);
-  const [indoorTouched, setIndoorTouched] = useState(false);
   /* 심사용 제거실험. 끈 서비스는 이 요청에서 호출되지 않고, 응답의 ablation이
      무엇을 끄고 얻은 수치인지 함께 적는다. */
   const [disabledSources, setDisabledSources] = useState<string[]>([]);
@@ -1746,7 +1745,6 @@ export function ProductApp() {
     } else if (relaxation.constraint === "safety_buffer") {
       setSafetyBufferMinutes(relaxation.requiredLimit);
     } else if (relaxation.constraint === "indoor_requirement") {
-      setIndoorTouched(true);
       setIndoorOnly(false);
     } else {
       return;
@@ -3280,14 +3278,7 @@ export function ProductApp() {
                           name="incident"
                           value={item.value}
                           checked={incident === item.value}
-                          onChange={() => {
-                            setIncident(item.value);
-                            /* 사용자가 직접 손대지 않았다면 상황에 맞는 기본값을
-                               따라간다. 손댄 뒤에는 그 선택을 덮지 않는다. */
-                            if (!indoorTouched) {
-                              setIndoorOnly(item.value === "rain");
-                            }
-                          }}
+                          onChange={() => setIncident(item.value)}
                         />
                         <span className="incident-marker" aria-hidden="true">
                           {item.marker}
@@ -3543,7 +3534,7 @@ export function ProductApp() {
                     >
                       {tr("전체", "All")}
                     </button>
-                    {KTO_TOURISM_CATEGORIES.map((entry) => {
+                    {ALTERNATIVE_TOURISM_CATEGORIES.map((entry) => {
                       const on = wantedCategories.includes(entry.code);
                       return (
                         <button
@@ -3597,7 +3588,6 @@ export function ProductApp() {
                             const next = travelConditionFields(
                               event.target.value as TravelConditionValue,
                             );
-                            setIndoorTouched(true);
                             setAudience(next.audience);
                             setIndoorOnly(next.indoorOnly);
                           }}
@@ -3615,6 +3605,20 @@ export function ProductApp() {
                           language === "en" ? "en" : "ko",
                         )}
                       </p>
+                      {/* 예전에는 우천을 고르면 이 조건이 조용히 "실내에 있고
+                          싶어요"로 바뀌었다. 여행자가 고르지 않은 조건이 켜져
+                          있으면, 실외 후보가 사라진 이유를 화면 어디에서도 알 수
+                          없다 — 실측 최다 탈락 사유가 실내 미확인이었던 것도 그
+                          때문이다. 기본값은 조건 없음으로 두고, 상황에 맞는
+                          제안은 제안으로만 남긴다. */}
+                      {incident === "rain" && !indoorOnly && (
+                        <p className="form-hint" role="status">
+                          {tr(
+                            "비 오는 상황을 고르셨어요. 실내가 필요하면 위에서 직접 골라 주세요 — 고르지 않으면 실외까지 함께 찾습니다.",
+                            "You chose rain. Pick an indoor condition above if you need one — otherwise we search outdoors too.",
+                          )}
+                        </p>
+                      )}
                     </div>
                   </details>
                   {/* 여기에는 결과를 크게 바꾸지 않는 값 하나만 남겼다. 남은

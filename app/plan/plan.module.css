@@ -318,3 +318,73 @@
   color: var(--ink-soft);
   word-break: keep-all;
 }
+
+/* 추천코스를 받아 일정으로 삼는 자리. 공사 공식 코스와 이어가가 엮은 코스를 같은
+   틀에 담되, 출처 문구는 서로 다르게 적는다 — 둘은 다른 물건이다. */
+.courseBlock {
+  margin: 18px 0 6px;
+  padding: 16px;
+  border: 1px solid #d7dee6;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.courseHeading {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #191f28;
+}
+
+.courseSource {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0b7570;
+  line-height: 1.5;
+}
+
+.courseNote {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: #5c6670;
+  line-height: 1.55;
+}
+
+.courseEmpty {
+  margin: 0;
+  font-size: 13.5px;
+  color: #5c6670;
+  line-height: 1.6;
+}
+
+.courseList {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.courseList li {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #e5e8eb;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.courseList strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: #191f28;
+  line-height: 1.4;
+}
+
+.courseList em {
+  font-size: 13px;
+  font-style: normal;
+  color: #4e5968;
+  line-height: 1.55;
+}

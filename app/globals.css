@@ -6988,6 +6988,31 @@ body .hero-promise {
   font-size: 15px;
 }
 
+/* "이 지역으로" 옆에 서는 두 번째 행동. 주된 행동이 아니므로 채우지 않고 테두리만
+   둔다 — 둘이 같은 무게로 보이면 어느 것이 기본인지 알 수 없다. */
+.manual-picker-course {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--brand, #0e9594);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--brand-deep, #0b7570);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.manual-picker-course:hover:not(:disabled) {
+  background: var(--brand-tint, #e7f4f3);
+}
+
+.manual-picker-course:disabled {
+  border-color: #d7dee6;
+  color: #8b949e;
+  cursor: not-allowed;
+}
+
 .manual-picker-hint {
   margin: 8px 0 0;
   color: #4e5968;

@@ -20,6 +20,11 @@ export type PlaceFacts = {
   checkOut?: string;
   /* 행사(15) 기간. */
   eventPeriod?: string;
+  /* 추천코스(25)의 공식 소요시간과 길이. 코스는 여러 지점을 잇는 경로라
+     "몇 시에 여는가"가 없고, 대신 이 두 값이 갈지 말지를 정한다.
+     2026-08-19 실표본 — `taketime: "7시간"`, `distance: "11.69km"`. */
+  courseDuration?: string;
+  courseDistance?: string;
 };
 
 export type AvailabilityEvidence = {
@@ -250,8 +255,21 @@ const OPERATING_HOURS_FIELDS = [
   "opentime",
   "opentimefood",
   "playtime",
-  "checkintime",
 ] as const;
+
+/* 함정 둘: 숙박(32)의 `checkintime`은 **입실 시각**이지 운영시간이 아니다.
+   2026-08-19 실표본 — 더 플라자 호텔 서울 `checkintime: "15:00"`,
+   `checkouttime: "11:00"`.
+
+   운영시간 목록에 두었더니 세 가지가 한꺼번에 어긋났다. 카드에 "운영시간 15:00"이
+   찍혔고(호텔은 15시에 문을 여는 곳이 아니다), `placeFacts`가 같은 값이라며
+   입실 사실을 버려 정작 필요한 "입실 15:00 · 퇴실 11:00"이 사라졌으며,
+   `"15:00"`에는 구간이 없어 체류 시간을 대조할 수 없으니 판정이 영원히
+   `official_hours_unstructured`에 머물렀다.
+
+   숙박에는 운영시간 필드가 없는 것이 맞다. 24시간 열려 있는 곳이고, 여행자가
+   물은 것은 입실·퇴실 시각이다. 그 두 값은 아래 `FACT_FIELDS`에서 제자리를
+   찾아간다. 운영 판정은 미확인으로 남고, 그것은 사실대로다. */
 
 const REST_DATE_FIELDS = [
   "restdate",
@@ -309,6 +327,9 @@ const FACT_FIELDS = {
   checkOut: ["checkouttime"],
 } as const satisfies Record<string, readonly string[]>;
 
+/* 공사 `contentTypeId` 25 = 추천코스. */
+const COURSE_CONTENT_TYPE_ID = "25";
+
 /* `usetimeleports`는 레포츠에서 운영시간으로도 읽는 필드다. 이용요금 자리에서는
    운영시간이 이미 그 값을 쓴 경우 중복으로 적지 않는다. */
 function placeFacts(item: KtoItem, operatingHours: string): PlaceFacts {
@@ -318,6 +339,14 @@ function placeFacts(item: KtoItem, operatingHours: string): PlaceFacts {
     if (!value) continue;
     if (value === operatingHours) continue;
     facts[key as keyof PlaceFacts] = value;
+  }
+  /* 코스 고유의 두 값은 유형을 확인하고 읽는다. `distance`라는 이름은 다른
+     유형에서 다른 뜻으로 쓰일 수 있고, 그때 "코스 길이"라고 적으면 거짓이 된다. */
+  if (text(item, ["contenttypeid"]) === COURSE_CONTENT_TYPE_ID) {
+    const duration = text(item, ["taketime"]);
+    const length = text(item, ["distance"]);
+    if (duration) facts.courseDuration = duration;
+    if (length) facts.courseDistance = length;
   }
   const eventStart = text(item, ["eventstartdate"]);
   const eventEnd = text(item, ["eventenddate"]);

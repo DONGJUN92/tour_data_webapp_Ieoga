@@ -323,6 +323,9 @@ export type TravelerFact = {
     | "pet"
     | "check_in_out"
     | "event_period"
+    /* 추천코스(25)의 공식 소요시간·길이. 코스는 여러 지점을 잇는 경로라
+       "몇 시에 여는가"가 없고, 대신 이 값이 갈지 말지를 정한다. */
+    | "course_scale"
     | "contact"
     | "crowd"
     | "indoor"

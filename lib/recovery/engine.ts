@@ -3209,6 +3209,17 @@ function buildTravelerFacts(
       prominent: true,
     });
   }
+  if (place?.courseDuration || place?.courseDistance) {
+    add({
+      code: "course_scale",
+      label: "코스 전체",
+      labelEn: "Whole course",
+      value: [place.courseDuration, place.courseDistance]
+        .filter(Boolean)
+        .join(" · "),
+      prominent: true,
+    });
+  }
   if (place?.eventPeriod) {
     add({
       code: "event_period",
@@ -3397,6 +3408,30 @@ function buildWhy(
     ko.push(korean);
     en.push(english);
   };
+
+  /* 추천코스는 한 장소가 아니라 여러 지점을 잇는 경로다.
+     계산은 틀리지 않았다 — "여기서 N분 머물고 다음 약속에 늦지 않는다"는 산수는
+     참이다. 틀린 것은 **읽히는 방식**이었다. 카드가 코스를 다 도는 것처럼 보이는데
+     공식 소요시간은 7시간이고(2026-08-19 실표본) 우리가 계획한 것은 30분이다.
+     그 차이를 적지 않으면 여행자는 코스를 완주하는 계획으로 읽는다.
+
+     경로도 코스의 시작 지점 좌표 하나로만 계산한다. 그 사실도 함께 밝힌다. */
+  const courseDuration = candidate.availability?.placeFacts?.courseDuration;
+  if (courseDuration) {
+    const planned = candidate.scheduleDiff?.replacementNode?.durationMinutes;
+    push(
+      planned
+        ? `추천코스는 여러 지점을 잇는 경로입니다. 공식 소요시간은 ${courseDuration}이고, 이 계획의 ${planned}분은 코스 전체가 아니라 시작 지점 주변을 둘러보는 시간입니다.`
+        : `추천코스는 여러 지점을 잇는 경로입니다. 공식 소요시간은 ${courseDuration}이며, 이 계획은 코스 전체를 마치는 시간을 포함하지 않습니다.`,
+      planned
+        ? `A travel course links several stops. The official course takes ${courseDuration}; the ${planned} minutes planned here cover the area around its starting point, not the whole route.`
+        : `A travel course links several stops. The official course takes ${courseDuration}; this plan does not include finishing the whole route.`,
+    );
+    push(
+      "이동 경로는 코스의 시작 지점 좌표로 계산했습니다. 코스를 따라 걷는 거리는 포함하지 않습니다.",
+      "The route was calculated to the course's starting coordinate. It does not include walking the course itself.",
+    );
+  }
 
   const meters = Math.round(candidate.distanceMeters);
   if (candidate.routeEvidence.status === "routed") {

@@ -44,8 +44,19 @@ const SAMPLES = [
     item: { opentimefood: "07:30~23:00", restdatefood: "연중무휴" },
   },
   { label: "행사(15)", item: { playtime: "18:00~23:00" } },
-  { label: "숙박(32)", item: { checkintime: "15:00" } },
 ];
+
+/* 숙박(32)은 이 표에서 뺐다.
+ *
+ * 예전에는 `{ checkintime: "15:00" }`을 넣고 "운영시간을 읽었으니 unknown이 아니어야
+ * 한다"고 검사했다. 그 전제가 틀렸다 — 2026-08-19 실표본(더 플라자 호텔 서울)에서
+ * `checkintime: "15:00"`, `checkouttime: "11:00"`이고 운영시간 필드는 하나도 없다.
+ * 호텔은 15시에 문을 여는 곳이 아니라 24시간 열려 있고 15시부터 입실하는 곳이다.
+ *
+ * 그 전제로 `checkintime`을 운영시간으로 읽었더니 카드에 "운영시간 15:00"이 찍혔고,
+ * `placeFacts`가 같은 값이라며 입실 사실을 버렸으며, `"15:00"`에는 구간이 없어
+ * 판정이 영원히 대조 불가에 머물렀다. 숙박의 올바른 판정은 "운영시간 미확인"이고,
+ * 답은 입실·퇴실 시각이다. 그 검사는 tests/course-and-lodging.test.mjs에 있다. */
 
 test("유형별 운영시간 필드를 모두 읽어 '정보 없음'으로 오판하지 않는다", async () => {
   const { evaluateAvailabilityItem } = await import(

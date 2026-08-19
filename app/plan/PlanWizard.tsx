@@ -886,6 +886,7 @@ export function PlanWizard() {
                     onApply={() => void applyCourse(openedCourse)}
                     applying={Boolean(courseApplying)}
                     onBack={() => setOpenedCourse(null)}
+                    canGoBack={courses.length > 1}
                   />
                 </div>
               )}

@@ -67,12 +67,16 @@ export function CoursePreview({
   onApply,
   applying,
   onBack,
+  /* 돌아갈 목록이 있는가. 코스가 하나뿐이면 「다른 코스 보기」를 눌러도 같은
+     화면으로 돌아오므로, 있으나 없으나인 버튼을 두지 않는다. */
+  canGoBack,
 }: {
   course: Course;
   language: Language;
   onApply: () => void;
   applying: boolean;
   onBack: () => void;
+  canGoBack: boolean;
 }) {
   const tr = (ko: string, en: string) => (language === "en" ? en : ko);
   const stops = course.stops;
@@ -225,9 +229,11 @@ export function CoursePreview({
             ? tr("일정으로 옮기는 중…", "Adding to your trip…")
             : tr("이 코스로 일정 만들기", "Use this course")}
         </button>
-        <button type="button" className={styles.back} onClick={onBack}>
-          {tr("다른 코스 보기", "See other courses")}
-        </button>
+        {canGoBack && (
+          <button type="button" className={styles.back} onClick={onBack}>
+            {tr("다른 코스 보기", "See other courses")}
+          </button>
+        )}
       </div>
     </>
   );

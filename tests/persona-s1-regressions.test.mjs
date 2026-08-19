@@ -363,6 +363,9 @@ test("우천은 실내를 제안하되 여행자가 고르지 않은 조건을 �
      기본값은 조건 없음이고, 상황에 맞는 제안은 제안으로만 남는다. */
   assert.doesNotMatch(product, /indoorTouched/);
   assert.doesNotMatch(product, /setIndoorOnly\(item\.value === "rain"\)/);
+  /* 초기값 자체가 조건 없음이어야 한다. 지난번에 우천 자동 설정만 지우고 이
+     초기값을 놓쳐서, 드롭다운이 여전히 "실내에 있고 싶어요"로 열렸다. */
+  assert.match(product, /const \[indoorOnly, setIndoorOnly\] = useState\(false\);/);
   /* 제안은 남아 있어야 한다. 조용히 켜지 않는 것과 알려 주지 않는 것은 다르다. */
   assert.match(product, /비 오는 상황을 고르셨어요/);
   /* 여행자가 고른 조건은 그대로 서버로 간다. */
@@ -372,6 +375,24 @@ test("우천은 실내를 제안하되 여행자가 고르지 않은 조건을 �
      조용한 기본값이 아니라 눈에 보이는 되돌림이므로 그대로 둔다. */
   assert.match(flow, /indoorOnly:\s*incident === "rain" \? !includeOutdoor : false/);
   assert.match(flow, /실외 후보까지 포함해 다시 찾기/);
+});
+
+test("막힌 복구 조회는 버튼을 끄지 않고 고칠 곳으로 데려간다", async () => {
+  const product = await readFile(
+    new URL("../app/ProductApp.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 끄면 클릭이 삼켜져 왜 못 누르는지 알 수 없다 — 눌러도 아무 일이 없으면
+     여행자는 화면이 고장난 것으로 읽는다. */
+  assert.match(product, /disabled=\{recoverState === "loading"\}/);
+  assert.doesNotMatch(product, /recoverState === "loading" \|\| !originSelectionCurrent/);
+  /* 대신 누르면 부족한 곳으로 데려간다. */
+  const submit = product.slice(product.indexOf("async function submitRecovery"));
+  const head = submit.slice(0, 2_000);
+  assert.match(head, /callAttention\("next-fixed-stop"\)/);
+  assert.match(head, /!originSelectionCurrent/);
+  assert.match(head, /callAttention\("origin-location"\)/);
+  assert.match(head, /지금 있는 곳을 먼저 확인해 주세요/);
 });
 
 test("/app 직접 위치 입력은 한 개의 장소 검색 폼만 제공한다", async () => {

@@ -126,10 +126,27 @@ function asPlaces(payload: Record<string, unknown>): ManualPlace[] {
         title: String(item.title ?? "").trim() || "이름 없는 장소",
         latitude,
         longitude,
+        /* 장소 검색 응답은 `regionCode`/`districtCode`로 준다.
+           예전에는 `areaCode`/`sigunguCode`만 읽어서 검색으로 고른 장소는 늘
+           행정구역이 없는 것으로 취급됐다 — 코드는 응답에 처음부터 있었는데
+           이름이 달라 못 읽은 것이다(실측: 대전역 동광장 `regionCode: "30"`,
+           `districtCode: "30110"`). 그래서 「행정구역 정보가 없었습니다」가
+           떴고 코스 추천이 시·도를 다시 물었다.
+
+           두 이름을 모두 받는다 — 시·군·구 직접 선택 경로는 우리가 만든 객체를
+           넘기고 그쪽은 `areaCode`를 쓴다. */
         areaCode:
-          typeof item.areaCode === "string" ? item.areaCode : undefined,
+          typeof item.regionCode === "string"
+            ? item.regionCode
+            : typeof item.areaCode === "string"
+              ? item.areaCode
+              : undefined,
         sigunguCode:
-          typeof item.sigunguCode === "string" ? item.sigunguCode : undefined,
+          typeof item.districtCode === "string"
+            ? item.districtCode
+            : typeof item.sigunguCode === "string"
+              ? item.sigunguCode
+              : undefined,
         address: typeof item.address === "string" ? item.address : undefined,
         sourceLabel:
           typeof item.sourceLabel === "string" ? item.sourceLabel : undefined,

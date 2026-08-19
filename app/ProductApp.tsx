@@ -473,10 +473,13 @@ export function ProductApp() {
   const [safetyBufferMinutes, setSafetyBufferMinutes] = useState(15);
   const [minimumStayMinutes, setMinimumStayMinutes] = useState(30);
   const [audience, setAudience] = useState<Audience>("general");
-  /* 우천이면 실내 조건을 기본으로 켠다. 엔진이 더 이상 우천을 이유로 실내를
-     강제하지 않으므로(명시적으로 보낸 값이 이긴다) 그 기본값을 화면이 만들어야
-     한다. 사용자가 끄면 그 선택이 유지되며, 그때 비로소 실외 후보까지 검토된다. */
-  const [indoorOnly, setIndoorOnly] = useState(true);
+  /* 기본은 조건 없음이다.
+     예전에는 이 값이 `true`로 시작했다. 그래서 「몸이 편해야 하는 조건」 드롭다운이
+     여행자가 고르지도 않은 "실내에 있고 싶어요"로 열렸고, 실외 후보가 사라진 이유를
+     화면 어디에서도 알 수 없었다 — 실측 최다 탈락 사유가 실내 미확인이었던 것도 그
+     때문이다. 지난번에 우천 자동 설정은 지웠지만 이 초기값을 놓쳤다.
+     상황에 맞는 제안은 아래 안내로만 남긴다. */
+  const [indoorOnly, setIndoorOnly] = useState(false);
   /* 심사용 제거실험. 끈 서비스는 이 요청에서 호출되지 않고, 응답의 ablation이
      무엇을 끄고 얻은 수치인지 함께 적는다. */
   const [disabledSources, setDisabledSources] = useState<string[]>([]);
@@ -1526,6 +1529,9 @@ export function ProductApp() {
   async function submitRecovery(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setRecoverError("");
+    /* 눌렀을 때 부족한 것을 말하고 그 자리로 데려간다. 예전에는 출발지가 없으면
+       버튼 자체가 꺼져 있어서, 무엇이 빠졌는지도 어디를 고쳐야 하는지도 알 수
+       없었다. */
     if (!journeyPlan || !selectedAffectedStop || !selectedNextFixedStop) {
       setRecoverState("error");
       setRecoverError(
@@ -1534,6 +1540,18 @@ export function ProductApp() {
           "Select the disrupted stop and the next fixed appointment first.",
         ),
       );
+      callAttention("next-fixed-stop");
+      return;
+    }
+    if (!originSelectionCurrent) {
+      setRecoverState("error");
+      setRecoverError(
+        tr(
+          "지금 있는 곳을 먼저 확인해 주세요. 현재 위치를 불러오거나 장소를 직접 골라야 갈 수 있는 곳을 계산할 수 있어요.",
+          "Confirm where you are first — we need your position to calculate what you can reach.",
+        ),
+      );
+      callAttention("origin-location");
       return;
     }
     const requestNowMs = Date.now();
@@ -3685,12 +3703,14 @@ export function ProductApp() {
                   </div>
                 )}
 
+                {/* 부족한 입력이 있어도 버튼을 끄지 않는다.
+                    끄면 클릭이 삼켜져 왜 못 누르는지 알 수 없다 — 여행자는 눌러
+                    보고서야 무엇이 빠졌는지 알게 되고, 눌러도 아무 일이 없으면
+                    화면이 고장난 것으로 읽는다. 누르면 부족한 곳으로 데려간다. */}
                 <button
                   className="primary-action"
                   type="submit"
-                  disabled={
-                    recoverState === "loading" || !originSelectionCurrent
-                  }
+                  disabled={recoverState === "loading"}
                   data-testid="recover-submit"
                 >
                   {recoverState === "loading"

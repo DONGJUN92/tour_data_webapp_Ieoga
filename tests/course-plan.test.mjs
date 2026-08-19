@@ -283,3 +283,29 @@ test("캐러셀의 끝 판정은 한 칸 폭을 기준으로 한다", async () =
   assert.match(carousel, /Math\.max\(12, step \* 0\.4\)/);
   assert.doesNotMatch(carousel, /SCROLL_EDGE_TOLERANCE/);
 });
+
+test("검색으로 고른 장소도 행정구역 코드를 들고 온다", async () => {
+  const picker = await readFile(
+    new URL("../app/ManualLocationPicker.tsx", import.meta.url),
+    "utf8",
+  );
+  /* 장소 검색 응답은 `regionCode`/`districtCode`로 준다(실측: 대전역 동광장
+     regionCode "30", districtCode "30110"). 예전에는 `areaCode`/`sigunguCode`만
+     읽어서 검색으로 고른 장소는 늘 행정구역이 없는 것으로 취급됐고, 코스 추천이
+     시·도를 다시 물었다 — 코드는 응답에 처음부터 있었는데 이름이 달라 못 읽었다. */
+  assert.match(picker, /typeof item\.regionCode === "string"/);
+  assert.match(picker, /typeof item\.districtCode === "string"/);
+  /* 시·군·구 직접 선택 경로는 우리가 만든 객체를 넘기고 그쪽은 areaCode를 쓰므로
+     두 이름을 모두 받아야 한다. */
+  assert.match(picker, /typeof item\.areaCode === "string"/);
+});
+
+test("코스가 하나뿐이면 다른 코스 보기를 두지 않는다", async () => {
+  const [preview, wizard] = await Promise.all([
+    readFile(new URL("../app/plan/CoursePreview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/plan/PlanWizard.tsx", import.meta.url), "utf8"),
+  ]);
+  /* 돌아갈 목록이 없는데 버튼이 있으면 눌러도 같은 화면으로 돌아온다. */
+  assert.match(preview, /\{canGoBack && \(/);
+  assert.match(wizard, /canGoBack=\{courses\.length > 1\}/);
+});

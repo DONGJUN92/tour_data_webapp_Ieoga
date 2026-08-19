@@ -4,6 +4,7 @@ import {
   desc,
   eq,
   gt,
+  inArray,
   isNull,
   notInArray,
   or,
@@ -716,6 +717,37 @@ export async function saveItinerary(params: {
          a new insert keeps the active set at ten even when concurrent creates
          reached the Worker through different isolates. Cascading foreign keys
          remove nodes belonging to the replaced oldest itinerary. */
+      const prunedItineraries = db
+        .select({ id: itineraries.id })
+        .from(itineraries)
+        .where(
+          and(
+            eq(itineraries.sessionId, params.sessionId),
+            eq(itineraries.status, "active"),
+            isNull(itineraries.deletedAt),
+            gt(itineraries.expiresAt, now),
+            notInArray(itineraries.id, newestActiveItineraries),
+          ),
+        );
+      /* 지울 일정을 가리키는 복구 기록의 링크를 먼저 끊는다.
+         `db/schema.ts`는 이 외래키를 `onDelete: "set null"`로 선언했지만, 실제
+         DDL에는 그 절이 없다 — 0002에서 `ALTER TABLE ... ADD COLUMN`으로 열을
+         추가할 때 빠졌고, drizzle 스냅샷에는 set null로 적혀 있어 이후 generate
+         로도 드러나지 않았다. SQLite 기본값은 NO ACTION 이고, 그것은 자식 행이
+         있으면 부모 삭제를 **막는다**.
+         2026-08-19 실측 결과: 복구를 한 번 돌린 세션이 활성 일정 10건에 닿으면
+         이 배치가 FOREIGN KEY constraint failed 로 전부 롤백되어, 그 세션은 그
+         뒤로 영구히 일정을 저장할 수 없었다(여행자에게는 DB_UNAVAILABLE).
+         선언대로 동작하게 만드는 마이그레이션은 `db/proposed/`에 있다 — 릴리스가
+         `drizzle/`을 자동 적용하므로 테이블 재구축을 그쪽에 두지 않았다.
+         여기서 링크를 끊는 것은 set null 이 했어야 할 일과 같고, 복구 기록 자체는
+         남으므로 감사 기록을 잃지 않는다. */
+      writes.push(
+        db
+          .update(recoveryRuns)
+          .set({ itineraryId: null })
+          .where(inArray(recoveryRuns.itineraryId, prunedItineraries)),
+      );
       writes.push(
         db
           .delete(itineraries)

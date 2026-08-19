@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   administrativeAreas,
@@ -47,6 +47,24 @@ export async function purgeExpiredData(): Promise<{
     .delete(recoveryRuns)
     .where(lte(recoveryRuns.expiresAt, now))
     .returning({ id: recoveryRuns.id });
+  /* 만료된 일정을 지우기 전에, 아직 만료되지 않은 복구 기록이 그것을 가리키고
+     있으면 링크를 끊는다. 두 만료 시각은 서로 다른 시계로 움직이므로 복구 기록이
+     남아 있는 채 일정이 만료되는 상태가 정상적으로 생긴다.
+     이 외래키의 실제 DDL 에는 `ON DELETE` 절이 없어 기본값 NO ACTION 이고,
+     그것은 삭제를 막는다. 끊지 않으면 지워야 할 일정이 남아 보관기간 약속이
+     조용히 깨진다 — 실패가 밖으로 드러나지도 않는다. */
+  await db
+    .update(recoveryRuns)
+    .set({ itineraryId: null })
+    .where(
+      inArray(
+        recoveryRuns.itineraryId,
+        db
+          .select({ id: itineraries.id })
+          .from(itineraries)
+          .where(lte(itineraries.expiresAt, now)),
+      ),
+    );
   const itinerariesDeleted = await db
     .delete(itineraries)
     .where(lte(itineraries.expiresAt, now))

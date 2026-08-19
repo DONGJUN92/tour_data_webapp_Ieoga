@@ -45,6 +45,32 @@ test("남은 시간 → 약속 시각 → 남은 시간이 제자리로 돌아�
   }
 });
 
+test("초가 남아 있어도 넣은 분이 그대로 남는다", async () => {
+  const { appointmentFromAvailableMinutes, availableMinutesFromAppointment } =
+    await import("../app/product-app-model.ts");
+
+  /* 실제 화면은 초가 붙은 시각에서 계산한다. 프로덕션 실측에서 15:41:23에 60을
+     넣었더니 약속이 16:41이 되고 다시 세면 59분이 나왔다 — 방금 넣은 값이
+     1 줄어드는 것은 여행자에게 고장으로 보인다. 분 경계로 올려 막는다. */
+  for (const seconds of [0, 1, 23, 30, 59]) {
+    const reference = Date.parse(`2026-08-19T15:41:${String(seconds).padStart(2, "0")}${KST}`);
+    for (const minutes of [15, 60, 140, 300]) {
+      const appointment = appointmentFromAvailableMinutes(reference, minutes);
+      assert.ok(appointment);
+      const back = availableMinutesFromAppointment(
+        appointment.date,
+        appointment.time,
+        reference,
+      );
+      assert.equal(
+        back,
+        minutes,
+        `${seconds}초에서 ${minutes}분을 넣었더니 ${back}분이 됐다`,
+      );
+    }
+  }
+});
+
 test("자정을 넘는 약속은 날짜까지 함께 옮긴다", async () => {
   const { appointmentFromAvailableMinutes, availableMinutesFromAppointment } =
     await import("../app/product-app-model.ts");

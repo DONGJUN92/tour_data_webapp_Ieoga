@@ -744,7 +744,18 @@ export function appointmentFromAvailableMinutes(
   if (minutes < MIN_APPOINTMENT_MINUTES || minutes > MAX_APPOINTMENT_MINUTES) {
     return null;
   }
-  return appointmentAfterMinutesInKorea(new Date(referenceMs), minutes);
+  /* 분 경계로 올림한다.
+   *
+   * 약속 시각은 `HH:MM`이라 초를 담지 못하고, 남은 시간은 내림으로 센다(안전한
+   * 쪽으로 세는 것이 맞다 — 남은 시간을 넉넉하게 말하면 여행자가 늦는다).
+   * 그래서 15:41:23에 "60분"을 넣으면 약속이 16:41:00이 되고, 다시 세면 59.6분
+   * → 59분이 되어 방금 넣은 60이 59로 바뀐다. 고장으로 보인다.
+   *
+   * 목표 시각을 다음 분 경계로 올리면 16:42:00이 되고, 다시 세면 60.6분 →
+   * 60분으로 넣은 값이 그대로 남는다. 올림이므로 시간이 줄지 않아 안전하다. */
+  const target = referenceMs + minutes * 60_000;
+  const onMinuteBoundary = Math.ceil(target / 60_000) * 60_000;
+  return appointmentAfterMinutesInKorea(new Date(onMinuteBoundary), 0);
 }
 
 /* 표시할 남은 시간. 약속이 이미 지났으면 음수가 나오는데, 그것을 0이나 15로
